@@ -9,30 +9,39 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
 
 jobs:
   build:
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          # Linux x86_64 — musl static (works on CentOS 7+, Ubuntu 18+, Alibaba/Amazon Linux, Alpine)
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-x86_64
-          - target: aarch64-unknown-linux-gnu
+            cross: true
+          # Linux ARM64 — musl static
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-aarch64
             cross: true
-          - target: x86_64-apple-darwin
-            os: macos-14
-            name: macos-x86_64
+          # macOS Apple Silicon (M1/M2/M3/M4)
           - target: aarch64-apple-darwin
             os: macos-14
             name: macos-aarch64
+          # macOS Intel
+          - target: x86_64-apple-darwin
+            os: macos-14
+            name: macos-x86_64
+          # Windows x86_64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             name: windows-x86_64
 
     runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -41,19 +50,44 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross (Linux aarch64)
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            claw-node/target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('claw-node/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install cross
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build (cross)
+      - name: Build (cross — Linux musl static)
         if: matrix.cross
         working-directory: claw-node
         run: cross build --release --target ${{ matrix.target }} -p claw-node
 
-      - name: Build (native)
+      - name: Build (native — macOS/Windows)
         if: "!matrix.cross"
         working-directory: claw-node
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || contains(matrix.target, 'x86_64-apple') && '10.15' || '' }}
         run: cargo build --release --target ${{ matrix.target }} -p claw-node
+
+      - name: Verify binary (Unix)
+        if: runner.os != 'Windows' && !matrix.cross
+        run: |
+          file claw-node/target/${{ matrix.target }}/release/claw-node
+          claw-node/target/${{ matrix.target }}/release/claw-node --version
+
+      - name: Verify static linking (Linux musl)
+        if: matrix.cross
+        run: |
+          file claw-node/target/${{ matrix.target }}/release/claw-node
+          # Should show "statically linked"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -82,10 +116,51 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Generate checksums
+        run: sha256sum claw-node-*.tar.gz claw-node-*.zip > SHA256SUMS.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          body: |
+            ## Install
+
+            **Linux** (x86_64, static binary — works on any distro):
+            ```bash
+            curl -L https://github.com/clawlabz/claw-network/releases/download/${{ github.ref_name }}/claw-node-linux-x86_64.tar.gz | tar xz
+            sudo mv claw-node /usr/local/bin/
+            claw-node --version
+            ```
+
+            **Linux ARM64**:
+            ```bash
+            curl -L https://github.com/clawlabz/claw-network/releases/download/${{ github.ref_name }}/claw-node-linux-aarch64.tar.gz | tar xz
+            sudo mv claw-node /usr/local/bin/
+            ```
+
+            **macOS** (Apple Silicon):
+            ```bash
+            curl -L https://github.com/clawlabz/claw-network/releases/download/${{ github.ref_name }}/claw-node-macos-aarch64.tar.gz | tar xz
+            sudo mv claw-node /usr/local/bin/
+            ```
+
+            **macOS** (Intel):
+            ```bash
+            curl -L https://github.com/clawlabz/claw-network/releases/download/${{ github.ref_name }}/claw-node-macos-x86_64.tar.gz | tar xz
+            sudo mv claw-node /usr/local/bin/
+            ```
+
+            **Docker**:
+            ```bash
+            docker run -d -p 9710:9710 -p 9711:9711 ghcr.io/clawlabz/claw-node:latest
+            ```
+
+            **Verify checksums**:
+            ```bash
+            sha256sum --check SHA256SUMS.txt
+            ```
           files: |
             claw-node-*.tar.gz
             claw-node-*.zip
+            SHA256SUMS.txt
