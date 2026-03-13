@@ -4,17 +4,56 @@ Run a ClawNetwork node in under 2 minutes.
 
 ## Install
 
-### macOS / Linux (one-liner)
+### macOS / Linux (auto-installer)
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/claw-node/scripts/install.sh | bash
 ```
 
+This downloads the binary, adds it to PATH, and initializes your node automatically.
+
 Or with a specific version:
 
 ```bash
-CLAW_VERSION=v0.1.0 curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/claw-node/scripts/install.sh | bash
+CLAW_VERSION=v0.1.1 curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/claw-node/scripts/install.sh | bash
 ```
+
+### macOS / Linux (manual)
+
+```bash
+# macOS Apple Silicon (M1/M2/M3/M4)
+curl -L https://github.com/clawlabz/claw-network/releases/latest/download/claw-node-macos-aarch64.tar.gz | tar xz
+
+# macOS Intel
+curl -L https://github.com/clawlabz/claw-network/releases/latest/download/claw-node-macos-x86_64.tar.gz | tar xz
+
+# Linux x86_64 (works on any distro — static binary, no dependencies)
+curl -L https://github.com/clawlabz/claw-network/releases/latest/download/claw-node-linux-x86_64.tar.gz | tar xz
+
+# Linux ARM64
+curl -L https://github.com/clawlabz/claw-network/releases/latest/download/claw-node-linux-aarch64.tar.gz | tar xz
+```
+
+After download, you have two options:
+
+**Option A: Install system-wide** (recommended, use `claw-node` from anywhere)
+```bash
+chmod +x claw-node
+sudo mv claw-node /usr/local/bin/
+claw-node --version
+```
+
+**Option B: Run from current directory** (no install needed)
+```bash
+chmod +x claw-node
+./claw-node --version
+```
+
+> **Note**: If `claw-node: command not found` after Option A, your shell PATH may not include `/usr/local/bin`. Fix with:
+> ```bash
+> export PATH=$PATH:/usr/local/bin
+> echo 'export PATH=$PATH:/usr/local/bin' >> ~/.bashrc  # or ~/.zshrc
+> ```
 
 ### Windows (PowerShell)
 
@@ -22,13 +61,15 @@ CLAW_VERSION=v0.1.0 curl -sSf https://raw.githubusercontent.com/clawlabz/claw-ne
 irm https://raw.githubusercontent.com/clawlabz/claw-network/main/claw-node/scripts/install.ps1 | iex
 ```
 
+Or manual download: get `claw-node-windows-x86_64.zip` from [Releases](https://github.com/clawlabz/claw-network/releases), extract, and run `claw-node.exe`.
+
 ### Docker
 
 ```bash
 docker run -d --name claw-node -p 9710:9710 -p 9711:9711 ghcr.io/clawlabz/claw-node:latest
 ```
 
-### From source (any platform with Rust)
+### From source (any platform with Rust 1.87+)
 
 ```bash
 git clone https://github.com/clawlabz/claw-network.git
@@ -39,18 +80,34 @@ cargo build --release
 
 ## Start a node
 
-### Solo testnet (for development)
+### Initialize (first time only)
+
+```bash
+claw-node init --network testnet
+```
+
+This creates `~/.clawnetwork/` with your keypair and config. Your node address will be printed.
+
+### Solo mode (local development)
 
 ```bash
 claw-node start --single
 ```
 
-This starts a single-node chain on `localhost:9710`. Blocks are produced when transactions arrive.
+Single-node chain on `localhost:9710`. Blocks are produced when transactions arrive.
 
-### Join an existing network
+### Join the testnet
 
 ```bash
-claw-node start --bootstrap /ip4/<BOOTSTRAP_IP>/tcp/9711
+claw-node start --network testnet
+```
+
+The testnet bootstrap peers are built into the binary. Your node will automatically discover and connect to the network.
+
+To manually specify a bootstrap peer:
+
+```bash
+claw-node start --network testnet --bootstrap /ip4/<BOOTSTRAP_IP>/tcp/9711
 ```
 
 ### Run a local 3-node testnet (Docker)
