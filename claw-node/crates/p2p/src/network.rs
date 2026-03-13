@@ -84,11 +84,14 @@ impl P2pNetwork {
         let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
         swarm.listen_on(listen_addr)?;
 
-        // Dial bootstrap peers
+        // Dial bootstrap peers (deduplicated)
+        let mut seen_addrs = HashSet::new();
         for addr in bootstrap_addrs {
-            tracing::info!(%addr, "Dialing bootstrap peer");
-            if let Err(e) = swarm.dial(addr.clone()) {
-                tracing::warn!(%addr, error=%e, "Failed to dial bootstrap");
+            if seen_addrs.insert(addr.clone()) {
+                tracing::info!(%addr, "Dialing bootstrap peer");
+                if let Err(e) = swarm.dial(addr.clone()) {
+                    tracing::warn!(%addr, error=%e, "Failed to dial bootstrap");
+                }
             }
         }
 
@@ -242,6 +245,10 @@ impl P2pNetwork {
                     peers,
                 ))) => {
                     for (peer_id, addr) in peers {
+                        // Skip already-known peers
+                        if self.peers.contains(&peer_id) {
+                            continue;
+                        }
                         if self.peers.len() >= protocol::MAX_PEER_CONNECTIONS {
                             tracing::warn!(
                                 max = protocol::MAX_PEER_CONNECTIONS,
@@ -273,31 +280,37 @@ impl P2pNetwork {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     tracing::info!(%address, "Listening on");
                 }
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    if self.peers.len() >= protocol::MAX_PEER_CONNECTIONS {
-                        tracing::warn!(
-                            %peer_id,
-                            max = protocol::MAX_PEER_CONNECTIONS,
-                            "Max peer connections reached, not tracking new peer"
-                        );
-                    } else {
-                        tracing::info!(%peer_id, "Peer connected");
+                SwarmEvent::ConnectionEstablished { peer_id, num_established, .. } => {
+                    // Only count each peer once (ignore additional connections to same peer)
+                    if num_established.get() == 1 {
+                        if self.peers.len() >= protocol::MAX_PEER_CONNECTIONS {
+                            tracing::warn!(
+                                %peer_id,
+                                max = protocol::MAX_PEER_CONNECTIONS,
+                                "Max peer connections reached, not tracking new peer"
+                            );
+                        } else {
+                            tracing::info!(%peer_id, "Peer connected");
+                            self.swarm
+                                .behaviour_mut()
+                                .gossipsub
+                                .add_explicit_peer(&peer_id);
+                            self.peers.insert(peer_id);
+                            let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
+                        }
+                    }
+                }
+                SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
+                    // Only remove when last connection to this peer closes
+                    if num_established == 0 {
+                        tracing::info!(%peer_id, "Peer disconnected");
                         self.swarm
                             .behaviour_mut()
                             .gossipsub
-                            .add_explicit_peer(&peer_id);
-                        self.peers.insert(peer_id);
-                        let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
+                            .remove_explicit_peer(&peer_id);
+                        self.peers.remove(&peer_id);
+                        let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
                     }
-                }
-                SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                    tracing::info!(%peer_id, "Peer disconnected");
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .remove_explicit_peer(&peer_id);
-                    self.peers.remove(&peer_id);
-                    let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
                 }
                 _ => {}
             }
