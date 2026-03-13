@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use claw_consensus::{elect_proposer, ValidatorSet, MIN_STAKE};
@@ -20,6 +21,7 @@ use crate::metrics;
 #[derive(Clone)]
 pub struct Chain {
     inner: Arc<Mutex<ChainInner>>,
+    p2p_peer_count: Arc<AtomicUsize>,
 }
 
 struct ChainInner {
@@ -86,6 +88,7 @@ impl Chain {
                 latest_block,
                 validator_set,
             })),
+            p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -398,10 +401,12 @@ impl Chain {
                     tracing::debug!(?peer, "Sync response processed");
                 }
                 NetworkEvent::PeerConnected(peer) => {
-                    tracing::info!(%peer, "Peer connected");
+                    self.peer_connected();
+                    tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected");
                 }
                 NetworkEvent::PeerDisconnected(peer) => {
-                    tracing::info!(%peer, "Peer disconnected");
+                    self.peer_disconnected();
+                    tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer disconnected");
                 }
             }
         }
@@ -532,9 +537,24 @@ impl Chain {
         None
     }
 
-    /// Get peer count from P2P network info.
+    /// Get validator count.
     pub fn get_validator_count(&self) -> usize {
         self.inner.lock().unwrap().validator_set.active.len()
+    }
+
+    /// Get P2P connected peer count.
+    pub fn get_p2p_peer_count(&self) -> usize {
+        self.p2p_peer_count.load(Ordering::Relaxed)
+    }
+
+    /// Increment P2P peer count.
+    pub fn peer_connected(&self) {
+        self.p2p_peer_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement P2P peer count.
+    pub fn peer_disconnected(&self) {
+        self.p2p_peer_count.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Get current epoch.

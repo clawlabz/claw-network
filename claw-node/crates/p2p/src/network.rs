@@ -281,11 +281,23 @@ impl P2pNetwork {
                             "Max peer connections reached, not tracking new peer"
                         );
                     } else {
+                        tracing::info!(%peer_id, "Peer connected");
+                        self.swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .add_explicit_peer(&peer_id);
                         self.peers.insert(peer_id);
+                        let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
                     }
                 }
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
+                    tracing::info!(%peer_id, "Peer disconnected");
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .remove_explicit_peer(&peer_id);
                     self.peers.remove(&peer_id);
+                    let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
                 }
                 _ => {}
             }

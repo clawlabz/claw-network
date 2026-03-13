@@ -215,7 +215,7 @@ async fn handle_metrics(State(chain): State<Chain>) -> impl IntoResponse {
     // Update gauges from current chain state before gathering
     metrics::BLOCK_HEIGHT.set(chain.get_block_number() as f64);
     metrics::MEMPOOL_SIZE.set(chain.get_mempool_size() as f64);
-    metrics::PEERS_CONNECTED.set(chain.get_validator_count() as f64);
+    metrics::PEERS_CONNECTED.set(chain.get_p2p_peer_count() as f64);
 
     let body = metrics::gather();
     (
@@ -235,7 +235,7 @@ async fn handle_health(State(chain): State<Chain>) -> Json<Value> {
     let uptime_secs = now.saturating_sub(start);
 
     let height = chain.get_block_number();
-    let peer_count = chain.get_validator_count();
+    let peer_count = chain.get_p2p_peer_count();
     let mempool_size = chain.get_mempool_size();
     let last_block_ts = chain.get_last_block_timestamp();
     let epoch = chain.get_epoch();
