@@ -70,7 +70,9 @@ impl P2pNetwork {
             .with_behaviour(|_| Ok(behaviour))
             .map_err(|e| format!("build swarm: {e}"))?
             .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(std::time::Duration::from_secs(3600))
+                // Keep connections alive indefinitely — gossipsub heartbeat handles liveness.
+                // Peers are removed only on actual connection failure or explicit disconnect.
+                c.with_idle_connection_timeout(std::time::Duration::from_secs(u64::MAX / 2))
             })
             .build();
 
