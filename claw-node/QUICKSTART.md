@@ -177,6 +177,157 @@ claude mcp add clawnetwork -- npx @clawlabz/clawnetwork-mcp
 
 Then use Claude Code to interact with ClawNetwork via natural language.
 
+## Run as a Service (Production)
+
+The node should run as a background service so it persists after SSH disconnect and auto-restarts on failure.
+
+### Linux (systemd) — Recommended
+
+```bash
+# Create service file
+sudo tee /etc/systemd/system/claw-node.service > /dev/null << 'EOF'
+[Unit]
+Description=ClawNetwork Node
+Documentation=https://github.com/clawlabz/claw-network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/claw-node start --network testnet
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Logging (stdout captured by journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claw-node
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable --now claw-node
+
+# View logs
+journalctl -u claw-node -f
+
+# Common commands
+sudo systemctl status claw-node    # Check status
+sudo systemctl restart claw-node   # Restart
+sudo systemctl stop claw-node      # Stop
+```
+
+### Linux (nohup) — Quick & Simple
+
+```bash
+nohup claw-node start --network testnet > ~/claw-node.log 2>&1 &
+
+# View logs
+tail -f ~/claw-node.log
+
+# Stop
+pkill claw-node
+```
+
+### macOS (launchd)
+
+```bash
+cat > ~/Library/LaunchAgents/com.clawlabz.claw-node.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.clawlabz.claw-node</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/claw-node</string>
+        <string>start</string>
+        <string>--network</string>
+        <string>testnet</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/claw-node.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/claw-node.log</string>
+</dict>
+</plist>
+EOF
+
+launchctl load ~/Library/LaunchAgents/com.clawlabz.claw-node.plist
+
+# View logs
+tail -f /tmp/claw-node.log
+
+# Stop
+launchctl unload ~/Library/LaunchAgents/com.clawlabz.claw-node.plist
+```
+
+### Windows (Task Scheduler)
+
+```powershell
+# Register as a scheduled task that starts on boot
+$action = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.clawnetwork\bin\claw-node.exe" -Argument "start --network testnet"
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -RestartInterval (New-TimeSpan -Seconds 10) -RestartCount 999
+Register-ScheduledTask -TaskName "ClawNode" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
+
+# Start now
+Start-ScheduledTask -TaskName "ClawNode"
+
+# Check status
+Get-ScheduledTask -TaskName "ClawNode" | Select State
+
+# Stop
+Stop-ScheduledTask -TaskName "ClawNode"
+
+# Remove
+Unregister-ScheduledTask -TaskName "ClawNode" -Confirm:$false
+```
+
+### Docker (all platforms)
+
+```bash
+docker run -d \
+  --name claw-node \
+  --restart unless-stopped \
+  -p 9710:9710 \
+  -p 9711:9711 \
+  -v claw-data:/data \
+  ghcr.io/clawlabz/claw-node:latest \
+  start --data-dir /data --network testnet
+
+# View logs
+docker logs -f claw-node
+
+# Stop / Start
+docker stop claw-node
+docker start claw-node
+```
+
+## Monitoring
+
+```bash
+# Health check (returns JSON with status, height, peer count)
+curl http://localhost:9710/health
+
+# Prometheus metrics (for Grafana dashboards)
+curl http://localhost:9710/metrics
+
+# Check block height
+curl -s -H "Content-Type: application/json" http://localhost:9710 \
+  -d '{"jsonrpc":"2.0","method":"clw_blockNumber","params":[],"id":1}'
+```
+
 ## Troubleshooting
 
 ### Linux: `GLIBC_X.XX not found`
