@@ -36,9 +36,7 @@ impl Network {
             Network::Testnet => NetworkConfig {
                 chain_id: "claw-testnet-1",
                 bootstrap_peers: vec![
-                    // Will be populated when testnet nodes are deployed
-                    // "/ip4/<TESTNET_BOOT_1>/tcp/9711",
-                    // "/ip4/<TESTNET_BOOT_2>/tcp/9711",
+                    "/ip4/39.102.144.231/tcp/9711",  // boot-1 Beijing (Alibaba Cloud)
                 ],
                 is_local: false,
                 faucet_enabled: true,
