@@ -1,0 +1,28 @@
+{
+  "name": "@clawlabz/clawnetwork-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing ClawNetwork blockchain operations as tools for Claude Code",
+  "type": "module",
+  "bin": {
+    "clawnetwork-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "node --loader ts-node/esm src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@clawlabz/clawnetwork-sdk": "^0.1.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT"
+}

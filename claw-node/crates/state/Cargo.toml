@@ -1,0 +1,20 @@
+[package]
+name = "claw-state"
+description = "World state machine for ClawNetwork"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-types.workspace = true
+claw-crypto.workspace = true
+borsh.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+claw-storage.workspace = true
+hex.workspace = true
+tempfile = "3"

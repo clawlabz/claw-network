@@ -1,0 +1,38 @@
+[package]
+name = "claw-node"
+description = "ClawNetwork AI Agent Blockchain Node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["blockchain", "ai", "agent", "node"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "claw-node"
+path = "src/main.rs"
+
+[dependencies]
+claw-types.workspace = true
+claw-crypto.workspace = true
+claw-state.workspace = true
+claw-storage.workspace = true
+claw-p2p.workspace = true
+claw-consensus.workspace = true
+libp2p.workspace = true
+borsh.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+prometheus.workspace = true
+toml.workspace = true
+dirs-next = "2"
+futures = "0.3"

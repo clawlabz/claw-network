@@ -1,0 +1,35 @@
+[Unit]
+Description=ClawNetwork Node
+Documentation=https://github.com/clawlabz/claw-network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claw
+Group=claw
+ExecStart=/usr/local/bin/claw-node start --network testnet
+WorkingDirectory=/home/claw
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Data directory
+Environment=HOME=/home/claw
+
+# Logging (stdout captured by journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claw-node
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/claw/.clawnetwork
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,58 @@
+# 3-node local testnet for ClawNetwork
+# Usage: docker compose up --build
+
+services:
+  node1:
+    build: .
+    container_name: claw-node-1
+    command: ["start", "--data-dir", "/data", "--rpc-port", "9710", "--p2p-port", "9711"]
+    ports:
+      - "9710:9710"
+      - "9711:9711"
+    volumes:
+      - node1-data:/data
+
+  node2:
+    build: .
+    container_name: claw-node-2
+    command:
+      - start
+      - --data-dir
+      - /data
+      - --rpc-port
+      - "9710"
+      - --p2p-port
+      - "9711"
+      - --bootstrap
+      - /dns4/node1/tcp/9711
+    ports:
+      - "9720:9710"
+    volumes:
+      - node2-data:/data
+    depends_on:
+      - node1
+
+  node3:
+    build: .
+    container_name: claw-node-3
+    command:
+      - start
+      - --data-dir
+      - /data
+      - --rpc-port
+      - "9710"
+      - --p2p-port
+      - "9711"
+      - --bootstrap
+      - /dns4/node1/tcp/9711
+    ports:
+      - "9730:9710"
+    volumes:
+      - node3-data:/data
+    depends_on:
+      - node1
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

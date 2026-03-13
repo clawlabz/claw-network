@@ -1,0 +1,18 @@
+[package]
+name = "claw-crypto"
+description = "Cryptographic primitives for ClawNetwork"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-types.workspace = true
+ed25519-dalek.workspace = true
+blake3.workspace = true
+rand.workspace = true
+borsh.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

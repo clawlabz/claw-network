@@ -1,0 +1,18 @@
+[package]
+name = "claw-p2p"
+description = "P2P networking layer for ClawNetwork"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-types.workspace = true
+libp2p.workspace = true
+borsh.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures = "0.3"
+async-trait = "0.1"

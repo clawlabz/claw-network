@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/types",
+    "crates/crypto",
+    "crates/state",
+    "crates/storage",
+    "crates/consensus",
+    "crates/p2p",
+    "crates/rpc",
+    "crates/node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/clawlabz/claw-network"
+
+[workspace.dependencies]
+# Internal crates
+claw-types = { path = "crates/types" }
+claw-crypto = { path = "crates/crypto" }
+claw-state = { path = "crates/state" }
+claw-storage = { path = "crates/storage" }
+claw-consensus = { path = "crates/consensus" }
+claw-p2p = { path = "crates/p2p" }
+claw-rpc = { path = "crates/rpc" }
+
+# Serialization
+borsh = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+blake3 = "1"
+rand = "0.8"
+
+# Storage (pure Rust, no C++ dependency)
+redb = "2"
+
+# Networking
+libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "gossipsub", "mdns", "request-response", "autonat", "relay", "tokio", "macros"] }
+tokio = { version = "1", features = ["full"] }
+
+# HTTP/RPC
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Config
+toml = "0.8"
+
+# Utils
+hex = "0.4"
+thiserror = "2"
+anyhow = "1"
+
+# Metrics
+prometheus = "0.13"
+
+# Testing
+proptest = "1"

@@ -1,0 +1,74 @@
+{
+  "chain_id": "claw-mainnet-1",
+  "timestamp": 1741737600,
+  "comment": "ClawNetwork Mainnet Genesis — 2025-03-12 00:00:00 UTC",
+  "total_supply": "1000000000000000000",
+  "allocations": [
+    {
+      "label": "Node Incentives Pool",
+      "address": "0100000000000000000000000000000000000000000000000000000000000000",
+      "amount": "400000000000000000",
+      "percentage": 40,
+      "vesting": "linear-4y"
+    },
+    {
+      "label": "Ecosystem Fund",
+      "address": "0200000000000000000000000000000000000000000000000000000000000000",
+      "amount": "250000000000000000",
+      "percentage": 25,
+      "vesting": "none"
+    },
+    {
+      "label": "Team",
+      "address": "0300000000000000000000000000000000000000000000000000000000000000",
+      "amount": "150000000000000000",
+      "percentage": 15,
+      "vesting": "cliff-1y-linear-3y"
+    },
+    {
+      "label": "Early Contributors",
+      "address": "0400000000000000000000000000000000000000000000000000000000000000",
+      "amount": "100000000000000000",
+      "percentage": 10,
+      "vesting": "cliff-6m-linear-2y"
+    },
+    {
+      "label": "Liquidity Reserve",
+      "address": "0500000000000000000000000000000000000000000000000000000000000000",
+      "amount": "100000000000000000",
+      "percentage": 10,
+      "vesting": "none"
+    }
+  ],
+  "initial_validators": [
+    {
+      "label": "Bootstrap Node 1 (US-East)",
+      "address": "0100000000000000000000000000000000000000000000000000000000000000",
+      "stake": "100000000000000"
+    },
+    {
+      "label": "Bootstrap Node 2 (EU-West)",
+      "address": "0200000000000000000000000000000000000000000000000000000000000000",
+      "stake": "100000000000000"
+    },
+    {
+      "label": "Bootstrap Node 3 (AP-Southeast)",
+      "address": "0300000000000000000000000000000000000000000000000000000000000000",
+      "stake": "100000000000000"
+    }
+  ],
+  "consensus": {
+    "block_time_secs": 3,
+    "epoch_length": 100,
+    "max_validators": 21,
+    "min_stake": "10000000000000",
+    "weight_config": {
+      "stake_bps": 4000,
+      "score_bps": 6000
+    }
+  },
+  "gas": {
+    "base_fee": "1000000",
+    "comment": "0.001 CLW per tx (with 9 decimals = 1_000_000 base units)"
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "claw-consensus"
+description = "PoS + Agent Score consensus engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-types.workspace = true
+claw-crypto.workspace = true
+claw-state.workspace = true
+borsh.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true

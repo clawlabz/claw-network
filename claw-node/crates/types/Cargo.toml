@@ -1,0 +1,15 @@
+[package]
+name = "claw-types"
+description = "Core data types for ClawNetwork blockchain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+borsh.workspace = true
+serde.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

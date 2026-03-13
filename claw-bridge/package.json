@@ -1,0 +1,28 @@
+{
+  "name": "@clawlabz/clawnetwork-bridge",
+  "version": "0.1.0",
+  "description": "CP↔CLW bridge service for ClawNetwork — connects Supabase CP system with on-chain CLW",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clawlabz/clawnetwork-sdk": "^0.1.0",
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "license": "MIT"
+}

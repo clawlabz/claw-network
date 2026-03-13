@@ -1,0 +1,16 @@
+[package]
+name = "claw-storage"
+description = "Persistent storage layer for ClawNetwork"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-types.workspace = true
+redb.workspace = true
+borsh.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

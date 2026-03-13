@@ -1,0 +1,20 @@
+[package]
+name = "claw-rpc"
+description = "JSON-RPC server for ClawNetwork"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-types.workspace = true
+claw-state.workspace = true
+claw-storage.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hex.workspace = true
