@@ -112,6 +112,10 @@ chmod +x "$INSTALL_DIR/claw-node"
 
 # Verify binary works
 if ! "$INSTALL_DIR/claw-node" --version &>/dev/null; then
+  # Check if it's a glibc issue
+  if ldd "$INSTALL_DIR/claw-node" 2>&1 | grep -q "not found"; then
+    err "Missing shared libraries. Try the musl (static) build or use Docker instead."
+  fi
   err "Binary verification failed. Your system may need additional libraries."
 fi
 
@@ -135,6 +139,11 @@ elif [ -f "$HOME/.bashrc" ]; then
 fi
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  # Also check /usr/local/bin (some distros like Alibaba Linux don't include it)
+  if [[ "$INSTALL_DIR" != "/usr/local/bin" ]] && [[ ":$PATH:" != *":/usr/local/bin:"* ]]; then
+    export PATH="/usr/local/bin:$PATH"
+  fi
+
   if [ -n "$SHELL_RC" ]; then
     echo "" >> "$SHELL_RC"
     echo "# ClawNetwork" >> "$SHELL_RC"

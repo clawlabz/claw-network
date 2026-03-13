@@ -176,3 +176,49 @@ claude mcp add clawnetwork -- npx @clawlabz/clawnetwork-mcp
 ```
 
 Then use Claude Code to interact with ClawNetwork via natural language.
+
+## Troubleshooting
+
+### Linux: `GLIBC_X.XX not found`
+
+The default Linux binary is statically linked (musl) since v0.1.1 and should work on any distro. If you're using an older release:
+
+```bash
+# Check your glibc version
+ldd --version
+
+# Solution: upgrade to v0.1.1+ or use Docker
+docker run -d -p 9710:9710 -p 9711:9711 ghcr.io/clawlabz/claw-node:latest
+```
+
+### Linux: `claw-node: command not found` after install
+
+Some distros (Alibaba Linux, Amazon Linux) don't include `/usr/local/bin` in root's PATH:
+
+```bash
+export PATH=$PATH:/usr/local/bin
+echo 'export PATH=$PATH:/usr/local/bin' >> ~/.bashrc
+```
+
+### Alibaba Linux / Amazon Linux: Docker install fails
+
+The official Docker install script (`get.docker.com`) doesn't support these distros. Use:
+
+```bash
+# Alibaba Linux / CentOS-compatible
+yum install -y yum-utils
+yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+yum install -y docker-ce docker-ce-cli containerd.io
+systemctl start docker && systemctl enable docker
+```
+
+Or skip Docker and use the static binary directly (recommended).
+
+### Windows: Architecture detection error
+
+If the PowerShell installer reports wrong architecture, download manually:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/clawlabz/claw-network/releases/latest/download/claw-node-windows-x86_64.zip" -OutFile "$env:TEMP\claw-node.zip"
+Expand-Archive -Path "$env:TEMP\claw-node.zip" -DestinationPath "$env:USERPROFILE\.clawnetwork\bin" -Force
+```
