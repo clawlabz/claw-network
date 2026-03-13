@@ -16,10 +16,18 @@ Write-Host "  +===================================+" -ForegroundColor Cyan
 Write-Host ""
 
 # Check architecture
-$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($Arch -ne "X64") {
-    Write-Host "Error: Only x86_64 (AMD64) Windows is supported. Got: $Arch" -ForegroundColor Red
-    exit 1
+$Arch = $env:PROCESSOR_ARCHITECTURE
+if ($Arch -ne "AMD64") {
+    # Fallback detection
+    try {
+        $Arch2 = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    } catch {
+        $Arch2 = ""
+    }
+    if ($Arch -ne "AMD64" -and $Arch2 -ne "X64") {
+        Write-Host "Error: Only x86_64 (AMD64) Windows is supported. Got: $Arch / $Arch2" -ForegroundColor Red
+        exit 1
+    }
 }
 
 $Target = "windows-x86_64"
