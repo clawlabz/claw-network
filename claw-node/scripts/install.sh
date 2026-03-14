@@ -6,6 +6,10 @@ set -euo pipefail
 
 REPO="clawlabz/claw-network"
 VERSION="${CLAW_VERSION:-latest}"
+# Ensure version has v prefix (e.g. 0.1.5 -> v0.1.5)
+if [[ "$VERSION" != "latest" && "$VERSION" != v* ]]; then
+  VERSION="v${VERSION}"
+fi
 INSTALL_DIR="${CLAW_INSTALL_DIR:-$HOME/.clawnetwork/bin}"
 DATA_DIR="${CLAW_DATA_DIR:-$HOME/.clawnetwork}"
 
@@ -60,7 +64,7 @@ info "Data dir:    $DATA_DIR"
 echo ""
 
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/claw-node-${TARGET}.tar.gz"
-CHECKSUM_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS"
+CHECKSUM_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.txt"
 
 info "Downloading claw-node for ${TARGET}..."
 mkdir -p "$INSTALL_DIR"
