@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use claw_consensus::{elect_proposer, ValidatorSet, MIN_STAKE};
 use claw_crypto::ed25519_dalek::SigningKey;
-use claw_p2p::{NetworkEvent, P2pNetwork, SyncRequest, SyncResponse};
+use claw_p2p::{NetworkEvent, P2pCommand, P2pNetwork, SyncRequest, SyncResponse};
 use claw_state::WorldState;
 use claw_storage::ChainStore;
 use claw_types::block::Block;
@@ -368,19 +368,20 @@ impl Chain {
                                 }
                             }
                         }
-                        NetworkEvent::SyncRequest { peer, request, .. } => {
+                        NetworkEvent::SyncRequest { peer, request, channel, .. } => {
                             let response = self.handle_sync_request(&request);
-                            // Note: In a full implementation, we'd send the response back
-                            // via the channel. For now we log it.
-                            tracing::debug!(?peer, "Sync request handled");
-                            let _ = response;
+                            tracing::debug!(?peer, "Sync request handled, sending response");
+                            p2p.send_sync_response(channel, response);
                         }
                         NetworkEvent::SyncResponse { peer, response } => {
-                            self.handle_sync_response(&response);
-                            tracing::debug!(?peer, "Sync response processed");
+                            if let Some(follow_up) = self.handle_sync_response(&response) {
+                                tracing::debug!(?peer, "Sending follow-up sync request");
+                                p2p.send_sync_request(&peer, follow_up);
+                            }
                         }
                         NetworkEvent::PeerConnected(peer) => {
-                            tracing::info!(%peer, "Peer connected");
+                            tracing::info!(%peer, "Peer connected — requesting chain status");
+                            p2p.send_sync_request(&peer, SyncRequest::GetStatus);
                         }
                         NetworkEvent::PeerDisconnected(peer) => {
                             tracing::info!(%peer, "Peer disconnected");
@@ -402,7 +403,12 @@ impl Chain {
     }
 
     /// Process P2P network events (runs in a separate task).
-    pub async fn run_p2p_events(&self, mut event_rx: mpsc::UnboundedReceiver<NetworkEvent>) {
+    /// The `command_tx` channel sends commands back to the P2P network task.
+    pub async fn run_p2p_events(
+        &self,
+        mut event_rx: mpsc::UnboundedReceiver<NetworkEvent>,
+        command_tx: mpsc::UnboundedSender<P2pCommand>,
+    ) {
         while let Some(event) = event_rx.recv().await {
             match event {
                 NetworkEvent::NewTx(tx) => {
@@ -423,18 +429,30 @@ impl Chain {
                         }
                     }
                 }
-                NetworkEvent::SyncRequest { peer, request, .. } => {
+                NetworkEvent::SyncRequest { peer, request, channel, .. } => {
                     let response = self.handle_sync_request(&request);
-                    tracing::debug!(?peer, "Sync request handled");
-                    let _ = response;
+                    tracing::debug!(?peer, "Sync request handled, sending response");
+                    let _ = command_tx.send(P2pCommand::SendSyncResponse {
+                        channel,
+                        response,
+                    });
                 }
                 NetworkEvent::SyncResponse { peer, response } => {
-                    self.handle_sync_response(&response);
-                    tracing::debug!(?peer, "Sync response processed");
+                    if let Some(follow_up) = self.handle_sync_response(&response) {
+                        tracing::debug!(?peer, "Sending follow-up sync request");
+                        let _ = command_tx.send(P2pCommand::SendSyncRequest {
+                            peer,
+                            request: follow_up,
+                        });
+                    }
                 }
                 NetworkEvent::PeerConnected(peer) => {
                     self.peer_connected();
-                    tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected");
+                    tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected — requesting chain status");
+                    let _ = command_tx.send(P2pCommand::SendSyncRequest {
+                        peer,
+                        request: SyncRequest::GetStatus,
+                    });
                 }
                 NetworkEvent::PeerDisconnected(peer) => {
                     self.peer_disconnected();
@@ -468,9 +486,16 @@ impl Chain {
     }
 
     /// Handle a sync response from a peer.
-    fn handle_sync_response(&self, response: &SyncResponse) {
+    /// Returns an optional follow-up SyncRequest if more blocks are needed.
+    fn handle_sync_response(&self, response: &SyncResponse) -> Option<SyncRequest> {
         match response {
             SyncResponse::Blocks(blocks) => {
+                if blocks.is_empty() {
+                    tracing::debug!("Received empty blocks response — sync complete or peer has no more blocks");
+                    return None;
+                }
+                let batch_count = blocks.len();
+                let mut applied = 0;
                 for block in blocks {
                     if let Err(e) = self.apply_remote_block(block) {
                         tracing::debug!(
@@ -480,17 +505,41 @@ impl Chain {
                         );
                         break;
                     }
+                    applied += 1;
+                }
+                tracing::info!(applied, batch_count, "Applied synced blocks");
+                // If we applied the full batch, request the next batch
+                if applied == batch_count {
+                    let our_height = self.get_block_number();
+                    Some(SyncRequest::GetBlocks {
+                        from_height: our_height + 1,
+                        count: 100,
+                    })
+                } else {
+                    None
                 }
             }
             SyncResponse::Status { height } => {
                 let our_height = self.get_block_number();
                 if *height > our_height {
+                    let count = std::cmp::min((*height - our_height) as u32, 100);
                     tracing::info!(
                         our_height,
                         peer_height = height,
-                        "Peer is ahead — need sync"
+                        requesting_blocks = count,
+                        "Peer is ahead — requesting missing blocks"
                     );
-                    // TODO: trigger sync request for missing blocks
+                    Some(SyncRequest::GetBlocks {
+                        from_height: our_height + 1,
+                        count,
+                    })
+                } else {
+                    tracing::debug!(
+                        our_height,
+                        peer_height = height,
+                        "Peer is at same height or behind — no sync needed"
+                    );
+                    None
                 }
             }
         }

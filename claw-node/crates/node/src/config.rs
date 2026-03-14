@@ -2,12 +2,26 @@
 //!
 //! Supports loading from `config.toml` in the data directory.
 //! CLI arguments take precedence over config file values.
+//!
+//! Private key encryption: PBKDF2-HMAC-SHA256 + AES-256-GCM.
+//! Set `CLAW_KEY_PASSWORD` env var to enable encryption.
 
-use anyhow::{Context, Result};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use anyhow::{bail, Context, Result};
 use claw_crypto::keys::generate_keypair;
+use pbkdf2::pbkdf2_hmac;
+use rand::Rng;
 use serde::Deserialize;
+use sha2::Sha256;
 use std::fs;
 use std::path::Path;
+
+/// PBKDF2 iteration count.
+const PBKDF2_ITERATIONS: u32 = 100_000;
+
+/// Environment variable for key encryption password.
+const PASSWORD_ENV: &str = "CLAW_KEY_PASSWORD";
 
 /// Runtime node config loaded from key.json.
 pub struct NodeConfig {
@@ -107,6 +121,125 @@ format = "text"
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Key encryption / decryption
+// ---------------------------------------------------------------------------
+
+/// Derive a 32-byte AES key from a password and salt using PBKDF2-HMAC-SHA256.
+fn derive_aes_key(password: &str, salt: &[u8; 32]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, PBKDF2_ITERATIONS, &mut key);
+    key
+}
+
+/// Encrypt a 32-byte secret key with AES-256-GCM.
+///
+/// Returns `(ciphertext_with_tag, salt, nonce)`.
+fn encrypt_key(
+    secret_key: &[u8; 32],
+    password: &str,
+) -> Result<(Vec<u8>, [u8; 32], [u8; 12])> {
+    let mut rng = rand::thread_rng();
+
+    let mut salt = [0u8; 32];
+    rng.fill(&mut salt);
+
+    let mut nonce_bytes = [0u8; 12];
+    rng.fill(&mut nonce_bytes);
+
+    let aes_key = derive_aes_key(password, &salt);
+    let cipher = Aes256Gcm::new_from_slice(&aes_key)
+        .map_err(|e| anyhow::anyhow!("create AES cipher: {e}"))?;
+
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, secret_key.as_ref())
+        .map_err(|e| anyhow::anyhow!("AES-GCM encrypt: {e}"))?;
+
+    Ok((ciphertext, salt, nonce_bytes))
+}
+
+/// Decrypt a secret key encrypted with AES-256-GCM.
+fn decrypt_key(
+    ciphertext: &[u8],
+    password: &str,
+    salt: &[u8; 32],
+    nonce: &[u8; 12],
+) -> Result<[u8; 32]> {
+    let aes_key = derive_aes_key(password, salt);
+    let cipher = Aes256Gcm::new_from_slice(&aes_key)
+        .map_err(|e| anyhow::anyhow!("create AES cipher: {e}"))?;
+
+    let nonce = Nonce::from_slice(nonce);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| anyhow::anyhow!("decryption failed — wrong password or corrupted key file"))?;
+
+    if plaintext.len() != 32 {
+        bail!(
+            "decrypted key has unexpected length {} (expected 32)",
+            plaintext.len()
+        );
+    }
+
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&plaintext);
+    Ok(key)
+}
+
+/// Read the `CLAW_KEY_PASSWORD` env var, returning `None` if unset or empty.
+fn read_password_env() -> Option<String> {
+    std::env::var(PASSWORD_ENV).ok().filter(|p| !p.is_empty())
+}
+
+/// Build the encrypted key JSON representation.
+fn build_encrypted_key_json(
+    address: &[u8; 32],
+    ciphertext: &[u8],
+    salt: &[u8; 32],
+    nonce: &[u8; 12],
+    chain_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "address": hex::encode(address),
+        "encrypted": true,
+        "salt": hex::encode(salt),
+        "nonce": hex::encode(nonce),
+        "ciphertext": hex::encode(ciphertext),
+        "chain_id": chain_id,
+    })
+}
+
+/// Build the plaintext key JSON representation.
+fn build_plaintext_key_json(
+    address: &[u8; 32],
+    secret_key: &[u8; 32],
+    chain_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "address": hex::encode(address),
+        "secret_key": hex::encode(secret_key),
+        "chain_id": chain_id,
+    })
+}
+
+/// Write key JSON to file with restricted permissions.
+fn write_key_file(key_path: &Path, json: &serde_json::Value) -> Result<()> {
+    fs::write(key_path, serde_json::to_string_pretty(json)?).context("write key file")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(key_path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /// Initialize a new node: create data dir, generate keypair, write config.
 pub fn init_node(data_dir: &Path, chain_id: &str) -> Result<()> {
     fs::create_dir_all(data_dir).context("create data dir")?;
@@ -123,22 +256,25 @@ pub fn init_node(data_dir: &Path, chain_id: &str) -> Result<()> {
 
     let (sk, vk) = generate_keypair();
     let addr = vk.to_bytes();
+    let sk_bytes = sk.to_bytes();
 
-    let key_data = serde_json::json!({
-        "address": hex::encode(addr),
-        "secret_key": hex::encode(sk.to_bytes()),
-        "chain_id": chain_id,
-    });
+    let password = read_password_env();
 
-    fs::write(&key_path, serde_json::to_string_pretty(&key_data)?)
-        .context("write key file")?;
+    let key_data = match password {
+        Some(ref pw) => {
+            let (ciphertext, salt, nonce) = encrypt_key(&sk_bytes, pw)?;
+            tracing::info!("Private key encrypted with PBKDF2 + AES-256-GCM");
+            build_encrypted_key_json(&addr, &ciphertext, &salt, &nonce, chain_id)
+        }
+        None => {
+            tracing::warn!(
+                "Private key stored without encryption. Set CLAW_KEY_PASSWORD to enable encryption."
+            );
+            build_plaintext_key_json(&addr, &sk_bytes, chain_id)
+        }
+    };
 
-    // Restrict permissions (Unix only)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
-    }
+    write_key_file(&key_path, &key_data)?;
 
     // Write default config.toml
     write_default_config(data_dir, chain_id)?;
@@ -150,25 +286,119 @@ pub fn init_node(data_dir: &Path, chain_id: &str) -> Result<()> {
 }
 
 /// Load node config from data dir.
+///
+/// Handles both plaintext and encrypted key.json formats.
 pub fn load_config(data_dir: &Path) -> Result<NodeConfig> {
     let key_path = data_dir.join("key.json");
     let content = fs::read_to_string(&key_path).context("read key file")?;
     let json: serde_json::Value = serde_json::from_str(&content)?;
 
     let addr_hex = json["address"].as_str().context("missing address")?;
-    let sk_hex = json["secret_key"].as_str().context("missing secret_key")?;
-
     let addr_bytes = hex::decode(addr_hex)?;
-    let sk_bytes = hex::decode(sk_hex)?;
-
     let mut address = [0u8; 32];
+    if addr_bytes.len() != 32 {
+        bail!("address has unexpected length {} (expected 32)", addr_bytes.len());
+    }
     address.copy_from_slice(&addr_bytes);
 
-    let mut signing_key_bytes = [0u8; 32];
-    signing_key_bytes.copy_from_slice(&sk_bytes);
+    let encrypted = json["encrypted"].as_bool().unwrap_or(false);
+
+    let signing_key_bytes = if encrypted {
+        let password = read_password_env()
+            .context("key is encrypted but CLAW_KEY_PASSWORD env var is not set")?;
+
+        let salt_hex = json["salt"].as_str().context("missing salt in encrypted key")?;
+        let nonce_hex = json["nonce"].as_str().context("missing nonce in encrypted key")?;
+        let ct_hex = json["ciphertext"]
+            .as_str()
+            .context("missing ciphertext in encrypted key")?;
+
+        let salt_vec = hex::decode(salt_hex).context("decode salt")?;
+        let nonce_vec = hex::decode(nonce_hex).context("decode nonce")?;
+        let ciphertext = hex::decode(ct_hex).context("decode ciphertext")?;
+
+        if salt_vec.len() != 32 {
+            bail!("salt has unexpected length {} (expected 32)", salt_vec.len());
+        }
+        if nonce_vec.len() != 12 {
+            bail!("nonce has unexpected length {} (expected 12)", nonce_vec.len());
+        }
+
+        let mut salt = [0u8; 32];
+        salt.copy_from_slice(&salt_vec);
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&nonce_vec);
+
+        decrypt_key(&ciphertext, &password, &salt, &nonce)?
+    } else {
+        tracing::warn!(
+            "Private key stored without encryption. Set CLAW_KEY_PASSWORD to enable encryption."
+        );
+        let sk_hex = json["secret_key"].as_str().context("missing secret_key")?;
+        let sk_bytes = hex::decode(sk_hex)?;
+        if sk_bytes.len() != 32 {
+            bail!(
+                "secret_key has unexpected length {} (expected 32)",
+                sk_bytes.len()
+            );
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&sk_bytes);
+        key
+    };
 
     Ok(NodeConfig {
         address,
         signing_key_bytes,
     })
+}
+
+/// Encrypt an existing plaintext key.json in-place.
+///
+/// Reads the current key, encrypts it with the password from `CLAW_KEY_PASSWORD`,
+/// and writes the encrypted format back.
+pub fn encrypt_existing_key(data_dir: &Path) -> Result<()> {
+    let key_path = data_dir.join("key.json");
+    let content = fs::read_to_string(&key_path).context("read key file")?;
+    let json: serde_json::Value = serde_json::from_str(&content)?;
+
+    if json["encrypted"].as_bool().unwrap_or(false) {
+        bail!("key.json is already encrypted");
+    }
+
+    let password =
+        read_password_env().context("CLAW_KEY_PASSWORD env var must be set to encrypt the key")?;
+
+    let addr_hex = json["address"].as_str().context("missing address")?;
+    let sk_hex = json["secret_key"].as_str().context("missing secret_key")?;
+    let chain_id = json["chain_id"]
+        .as_str()
+        .unwrap_or("claw-devnet");
+
+    let addr_bytes = hex::decode(addr_hex)?;
+    let sk_bytes = hex::decode(sk_hex)?;
+
+    if addr_bytes.len() != 32 {
+        bail!("address has unexpected length {} (expected 32)", addr_bytes.len());
+    }
+    if sk_bytes.len() != 32 {
+        bail!("secret_key has unexpected length {} (expected 32)", sk_bytes.len());
+    }
+
+    let mut address = [0u8; 32];
+    address.copy_from_slice(&addr_bytes);
+    let mut secret_key = [0u8; 32];
+    secret_key.copy_from_slice(&sk_bytes);
+
+    let (ciphertext, salt, nonce) = encrypt_key(&secret_key, &password)?;
+
+    let encrypted_json =
+        build_encrypted_key_json(&address, &ciphertext, &salt, &nonce, chain_id);
+
+    write_key_file(&key_path, &encrypted_json)?;
+
+    println!("Key encrypted successfully.");
+    println!("Address: {}", hex::encode(address));
+
+    Ok(())
 }

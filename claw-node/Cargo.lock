@@ -509,7 +509,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claw-consensus"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "borsh",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "claw-crypto"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "borsh",
@@ -541,8 +541,9 @@ dependencies = [
 
 [[package]]
 name = "claw-node"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "axum",
  "borsh",
@@ -557,9 +558,12 @@ dependencies = [
  "futures",
  "hex",
  "libp2p",
+ "pbkdf2",
  "prometheus",
+ "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "toml",
  "tower",
@@ -570,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "claw-p2p"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "borsh",
@@ -586,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "claw-rpc"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "axum",
  "claw-state",
@@ -604,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "claw-state"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "borsh",
@@ -620,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "claw-storage"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "borsh",
  "claw-types",
@@ -632,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "claw-types"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "blake3",
  "borsh",
@@ -2428,10 +2432,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+ "hmac",
+ "password-hash",
+ "sha2",
+]
 
 [[package]]
 name = "pem"

@@ -21,11 +21,12 @@ pub enum NetworkEvent {
     NewTx(claw_types::transaction::Transaction),
     /// Received a new block from the network.
     NewBlock(claw_types::block::Block),
-    /// A sync request from a peer.
+    /// A sync request from a peer (includes response channel for replying).
     SyncRequest {
         peer: PeerId,
         request_id: request_response::InboundRequestId,
         request: SyncRequest,
+        channel: request_response::ResponseChannel<Vec<u8>>,
     },
     /// A sync response from a peer.
     SyncResponse {
@@ -38,10 +39,23 @@ pub enum NetworkEvent {
     PeerDisconnected(PeerId),
 }
 
+/// Commands that the chain engine can send back to the P2P network.
+#[derive(Debug)]
+pub enum P2pCommand {
+    /// Send a sync request to a specific peer.
+    SendSyncRequest { peer: PeerId, request: SyncRequest },
+    /// Send a sync response via the provided channel.
+    SendSyncResponse {
+        channel: request_response::ResponseChannel<Vec<u8>>,
+        response: SyncResponse,
+    },
+}
+
 /// P2P Network handle for interacting with the swarm.
 pub struct P2pNetwork {
     swarm: Swarm<ClawBehaviour>,
     event_tx: mpsc::UnboundedSender<NetworkEvent>,
+    command_rx: mpsc::UnboundedReceiver<P2pCommand>,
     peers: HashSet<PeerId>,
     tx_topic: gossipsub::IdentTopic,
     block_topic: gossipsub::IdentTopic,
@@ -49,10 +63,11 @@ pub struct P2pNetwork {
 
 impl P2pNetwork {
     /// Create a new P2P network.
+    /// Returns (network, event_receiver, command_sender).
     pub fn new(
         p2p_port: u16,
         bootstrap_addrs: Vec<Multiaddr>,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>), Box<dyn std::error::Error>> {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>, mpsc::UnboundedSender<P2pCommand>), Box<dyn std::error::Error>> {
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = local_key.public().to_peer_id();
 
@@ -98,16 +113,19 @@ impl P2pNetwork {
         }
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
 
         Ok((
             Self {
                 swarm,
                 event_tx,
+                command_rx,
                 peers: HashSet::new(),
                 tx_topic,
                 block_topic,
             },
             event_rx,
+            command_tx,
         ))
     }
 
@@ -186,10 +204,23 @@ impl P2pNetwork {
         self.peers.len()
     }
 
-    /// Run the network event loop. This drives the swarm and emits events.
+    /// Run the network event loop. This drives the swarm, emits events,
+    /// and processes commands from the chain engine.
     pub async fn run(&mut self) {
         loop {
-            match self.swarm.select_next_some().await {
+            tokio::select! {
+                Some(cmd) = self.command_rx.recv() => {
+                    match cmd {
+                        P2pCommand::SendSyncRequest { peer, request } => {
+                            self.send_sync_request(&peer, request);
+                        }
+                        P2pCommand::SendSyncResponse { channel, response } => {
+                            self.send_sync_response(channel, response);
+                        }
+                    }
+                }
+                event = self.swarm.select_next_some() => {
+            match event {
                 SwarmEvent::Behaviour(ClawBehaviourEvent::Gossipsub(
                     gossipsub::Event::Message {
                         message, ..
@@ -228,11 +259,9 @@ impl P2pNetwork {
                                 peer,
                                 request_id,
                                 request: req,
+                                channel,
                             });
                         }
-                        // Note: channel must be used to respond — handled by chain engine
-                        // For now we drop it; integration in M3.3 will wire this up
-                        drop(channel);
                     }
                     request_response::Message::Response { response, .. } => {
                         if let Ok(resp) = SyncResponse::try_from_slice(&response) {
@@ -316,6 +345,8 @@ impl P2pNetwork {
                 }
                 _ => {}
             }
+                } // end match event
+            } // end tokio::select!
         }
     }
 }

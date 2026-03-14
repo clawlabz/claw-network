@@ -71,6 +71,8 @@ enum Commands {
         #[command(subcommand)]
         action: KeyAction,
     },
+    /// Encrypt an existing plaintext key.json (requires CLAW_KEY_PASSWORD env var)
+    EncryptKey,
 }
 
 #[derive(Subcommand)]
@@ -219,7 +221,7 @@ async fn main() -> Result<()> {
                 }
 
                 match claw_p2p::P2pNetwork::new(resolved_p2p_port, bootstrap_addrs) {
-                    Ok((mut p2p, event_rx)) => {
+                    Ok((mut p2p, event_rx, command_tx)) => {
                         tracing::info!(port = resolved_p2p_port, peers = all_bootstrap.len(), "P2P network started");
 
                         let p2p_handle = tokio::spawn(async move {
@@ -230,7 +232,7 @@ async fn main() -> Result<()> {
 
                         let chain_clone = chain.clone();
                         let event_handle = tokio::spawn(async move {
-                            chain_clone.run_p2p_events(event_rx).await;
+                            chain_clone.run_p2p_events(event_rx, command_tx).await;
                         });
 
                         chain.run_block_loop().await;
@@ -259,6 +261,9 @@ async fn main() -> Result<()> {
                 println!("Address: {}", hex::encode(cfg.address));
             }
         },
+        Commands::EncryptKey => {
+            config::encrypt_existing_key(&data_dir)?;
+        }
     }
 
     Ok(())
