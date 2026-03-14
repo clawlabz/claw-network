@@ -6,7 +6,12 @@ use serde::{Deserialize, Serialize};
 use crate::transaction::Transaction;
 
 /// A block in the ClawNetwork chain.
-#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+///
+/// Note: Custom `BorshDeserialize` is implemented to handle backward compatibility
+/// with blocks stored before the `signatures` field was added. If the reader has
+/// remaining bytes after the `hash` field, they are parsed as signatures; otherwise
+/// signatures default to an empty vec.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, Serialize, Deserialize)]
 pub struct Block {
     /// Block height (0 = genesis).
     pub height: u64,
@@ -26,6 +31,41 @@ pub struct Block {
     /// Signatures are over the block hash and are appended after hash computation.
     #[serde(default, with = "serde_signatures")]
     pub signatures: Vec<([u8; 32], [u8; 64])>,
+}
+
+impl BorshDeserialize for Block {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        // Read all remaining bytes so we can detect old vs new format
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+        let mut cursor = std::io::Cursor::new(&buf);
+
+        let height = u64::deserialize_reader(&mut cursor)?;
+        let prev_hash = <[u8; 32]>::deserialize_reader(&mut cursor)?;
+        let timestamp = u64::deserialize_reader(&mut cursor)?;
+        let validator = <[u8; 32]>::deserialize_reader(&mut cursor)?;
+        let transactions = Vec::<Transaction>::deserialize_reader(&mut cursor)?;
+        let state_root = <[u8; 32]>::deserialize_reader(&mut cursor)?;
+        let hash = <[u8; 32]>::deserialize_reader(&mut cursor)?;
+
+        // Try to read signatures; if no bytes remain, default to empty vec
+        let signatures = if (cursor.position() as usize) < buf.len() {
+            Vec::<([u8; 32], [u8; 64])>::deserialize_reader(&mut cursor).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Block {
+            height,
+            prev_hash,
+            timestamp,
+            validator,
+            transactions,
+            state_root,
+            hash,
+            signatures,
+        })
+    }
 }
 
 impl Block {

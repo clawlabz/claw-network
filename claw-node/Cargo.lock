@@ -509,7 +509,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "claw-consensus"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blake3",
  "borsh",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "claw-crypto"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blake3",
  "borsh",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "claw-node"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "claw-p2p"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "async-trait",
  "borsh",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "claw-rpc"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "axum",
  "claw-state",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "claw-state"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blake3",
  "borsh",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "claw-storage"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "borsh",
  "claw-types",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "claw-types"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blake3",
  "borsh",
