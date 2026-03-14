@@ -12,6 +12,10 @@ use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::{Any, CorsLayer};
 
+use claw_types::transaction::{
+    TxType, TokenTransferPayload, TokenMintTransferPayload, ReputationAttestPayload,
+};
+
 use crate::chain::Chain;
 use crate::metrics;
 
@@ -134,6 +138,32 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
+        "clw_getTransactionByHash" => {
+            let hash = parse_address(&req.params, 0);
+            match hash {
+                Ok(h) => match chain.get_tx_by_hash(&h) {
+                    Some((tx, block_height, timestamp)) => {
+                        let tx_hash = tx.hash();
+                        let type_name = tx_type_name(tx.tx_type);
+                        let (to, amount) = parse_tx_recipient(&tx);
+                        Ok(serde_json::json!({
+                            "hash": hex::encode(tx_hash),
+                            "txType": tx.tx_type as u8,
+                            "typeName": type_name,
+                            "from": hex::encode(tx.from),
+                            "to": to.map(|addr| hex::encode(addr)),
+                            "amount": amount.map(|a| a.to_string()),
+                            "nonce": tx.nonce,
+                            "blockHeight": block_height,
+                            "timestamp": timestamp,
+                            "fee": "1000000",
+                        }))
+                    }
+                    None => Ok(Value::Null),
+                },
+                Err(e) => Err(e),
+            }
+        }
         "clw_sendTransaction" => {
             let hex_str = req.params.get(0).and_then(|v| v.as_str());
             match hex_str {
@@ -171,6 +201,36 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
+        "clw_getTransactionsByAddress" => {
+            let addr = parse_address(&req.params, 0);
+            let limit = req.params.get(1)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50)
+                .min(200) as usize;
+            let offset = req.params.get(2)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            match addr {
+                Ok(a) => {
+                    let txs = chain.get_transactions_by_address(&a, limit, offset);
+                    let results: Vec<serde_json::Value> = txs.into_iter().map(|(height, _tx_idx, tx, timestamp)| {
+                        let (to, amount) = extract_to_and_amount(&tx);
+                        serde_json::json!({
+                            "hash": hex::encode(tx.hash()),
+                            "txType": tx.tx_type,
+                            "from": hex::encode(tx.from),
+                            "to": to,
+                            "amount": amount,
+                            "blockHeight": height,
+                            "timestamp": timestamp,
+                            "nonce": tx.nonce,
+                        })
+                    }).collect();
+                    Ok(serde_json::json!(results))
+                }
+                Err(e) => Err(e),
+            }
+        }
         "clw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())
@@ -178,10 +238,10 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 let addr = parse_address(&req.params, 0);
                 match addr {
                     Ok(a) => match chain.faucet_drip(&a) {
-                        Ok(new_bal) => Ok(serde_json::json!({
+                        Ok(tx_hash) => Ok(serde_json::json!({
                             "address": hex::encode(a),
                             "amount": "10000000000",
-                            "newBalance": new_bal.to_string(),
+                            "txHash": hex::encode(tx_hash),
                         })),
                         Err(e) => Err(e),
                     },
@@ -208,6 +268,84 @@ fn parse_address(params: &Value, index: usize) -> Result<[u8; 32], String> {
         .try_into()
         .map_err(|_| "expected 32 bytes".to_string())?;
     Ok(arr)
+}
+
+/// Extract the `to` address and `amount` from a transaction payload based on tx_type.
+/// Returns (Option<hex_string>, Option<amount_string>).
+fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Option<String>) {
+    match tx.tx_type {
+        TxType::TokenTransfer => {
+            match borsh::from_slice::<TokenTransferPayload>(&tx.payload) {
+                Ok(p) => (Some(hex::encode(p.to)), Some(p.amount.to_string())),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::TokenMintTransfer => {
+            match borsh::from_slice::<TokenMintTransferPayload>(&tx.payload) {
+                Ok(p) => (Some(hex::encode(p.to)), Some(p.amount.to_string())),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::ReputationAttest => {
+            match borsh::from_slice::<ReputationAttestPayload>(&tx.payload) {
+                Ok(p) => (Some(hex::encode(p.to)), None),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister => (None, None),
+    }
+}
+
+/// Return the human-readable name for a transaction type.
+fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
+    match tx_type {
+        claw_types::TxType::AgentRegister => "AgentRegister",
+        claw_types::TxType::TokenTransfer => "TokenTransfer",
+        claw_types::TxType::TokenCreate => "TokenCreate",
+        claw_types::TxType::TokenMintTransfer => "TokenMintTransfer",
+        claw_types::TxType::ReputationAttest => "ReputationAttest",
+        claw_types::TxType::ServiceRegister => "ServiceRegister",
+    }
+}
+
+/// Extract the recipient address and amount from a transaction payload,
+/// based on the transaction type. Returns `(None, None)` for types that
+/// have no recipient (AgentRegister, TokenCreate, ServiceRegister).
+fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option<u128>) {
+    match tx.tx_type {
+        claw_types::TxType::TokenTransfer => {
+            // payload = [to: 32 bytes][amount: 16 bytes u128 LE]
+            if tx.payload.len() >= 48 {
+                let to: [u8; 32] = tx.payload[..32].try_into().unwrap();
+                let amount = u128::from_le_bytes(tx.payload[32..48].try_into().unwrap());
+                (Some(to), Some(amount))
+            } else {
+                (None, None)
+            }
+        }
+        claw_types::TxType::TokenMintTransfer => {
+            // payload = [tokenId: 32 bytes][to: 32 bytes][amount: 16 bytes u128 LE]
+            if tx.payload.len() >= 80 {
+                let to: [u8; 32] = tx.payload[32..64].try_into().unwrap();
+                let amount = u128::from_le_bytes(tx.payload[64..80].try_into().unwrap());
+                (Some(to), Some(amount))
+            } else {
+                (None, None)
+            }
+        }
+        claw_types::TxType::ReputationAttest => {
+            // payload starts with [to: 32 bytes]
+            if tx.payload.len() >= 32 {
+                let to: [u8; 32] = tx.payload[..32].try_into().unwrap();
+                (Some(to), None)
+            } else {
+                (None, None)
+            }
+        }
+        claw_types::TxType::AgentRegister
+        | claw_types::TxType::TokenCreate
+        | claw_types::TxType::ServiceRegister => (None, None),
+    }
 }
 
 /// GET /metrics — Prometheus text exposition format.

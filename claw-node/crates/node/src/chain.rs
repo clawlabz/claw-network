@@ -523,6 +523,21 @@ impl Chain {
         self.inner.lock().unwrap().state.tokens.get(token_id).cloned()
     }
 
+    /// Get transactions involving a given address (as sender or recipient).
+    /// Returns Vec of (block_height, tx_index, Transaction, block_timestamp).
+    pub fn get_transactions_by_address(
+        &self,
+        address: &[u8; 32],
+        limit: usize,
+        offset: usize,
+    ) -> Vec<(u64, u32, Transaction, u64)> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .store
+            .get_transactions_by_address(address, limit, offset)
+            .unwrap_or_default()
+    }
+
     pub fn get_tx_receipt(&self, tx_hash: &[u8; 32]) -> Option<(u64, usize)> {
         let inner = self.inner.lock().unwrap();
         if let Ok(Some(height)) = inner.store.get_tx_block_height(tx_hash) {
@@ -530,6 +545,21 @@ impl Chain {
                 for (i, tx) in block.transactions.iter().enumerate() {
                     if tx.hash() == *tx_hash {
                         return Some((height, i));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Look up a transaction by hash and return it along with block metadata.
+    pub fn get_tx_by_hash(&self, tx_hash: &[u8; 32]) -> Option<(Transaction, u64, u64)> {
+        let inner = self.inner.lock().unwrap();
+        if let Ok(Some(height)) = inner.store.get_tx_block_height(tx_hash) {
+            if let Ok(Some(block)) = inner.store.get_block(height) {
+                for tx in &block.transactions {
+                    if tx.hash() == *tx_hash {
+                        return Some((tx.clone(), height, block.timestamp));
                     }
                 }
             }
@@ -572,19 +602,54 @@ impl Chain {
         self.inner.lock().unwrap().latest_block.timestamp
     }
 
-    /// Testnet faucet: give 10 CLW to an address from the node's balance.
-    pub fn faucet_drip(&self, to: &[u8; 32]) -> Result<u128, String> {
-        let mut inner = self.inner.lock().unwrap();
+    /// Testnet faucet: build a real TokenTransfer transaction from the node's
+    /// validator keypair to the given address and submit it to the mempool.
+    /// Returns the tx hash on success.
+    pub fn faucet_drip(&self, to: &[u8; 32]) -> Result<[u8; 32], String> {
+        use claw_types::transaction::{TokenTransferPayload, TxType};
+
         let drip: u128 = 10_000_000_000; // 10 CLW (9 decimals)
+
+        let mut inner = self.inner.lock().unwrap();
+
+        // Pre-check: does the node have enough balance?
         let node_addr = inner.validator_address;
         let node_bal = inner.state.get_balance(&node_addr);
         if node_bal < drip {
             return Err("faucet dry".into());
         }
-        // Deduct from node, credit to recipient
-        *inner.state.balances.entry(node_addr).or_insert(0) -= drip;
-        *inner.state.balances.entry(*to).or_insert(0) += drip;
-        let new_bal = inner.state.get_balance(to);
-        Ok(new_bal)
+
+        // Build the payload
+        let payload = TokenTransferPayload {
+            to: *to,
+            amount: drip,
+        };
+        let payload_bytes = borsh::to_vec(&payload)
+            .map_err(|e| format!("serialize payload: {e}"))?;
+
+        // Nonce = current nonce + 1
+        let nonce = inner.state.get_nonce(&node_addr) + 1;
+
+        // Build an unsigned transaction
+        let mut tx = Transaction {
+            tx_type: TxType::TokenTransfer,
+            from: node_addr,
+            nonce,
+            payload: payload_bytes,
+            signature: [0u8; 64],
+        };
+
+        // Sign it with the node's keypair
+        claw_crypto::signer::sign_transaction(&mut tx, &inner.signing_key);
+
+        // Submit to mempool (skip the lock — we already hold it)
+        claw_crypto::signer::verify_transaction(&tx)
+            .map_err(|e| format!("invalid signature: {e}"))?;
+
+        let tx_hash = tx.hash();
+        inner.mempool.push(tx);
+        metrics::MEMPOOL_SIZE.set(inner.mempool.len() as f64);
+
+        Ok(tx_hash)
     }
 }

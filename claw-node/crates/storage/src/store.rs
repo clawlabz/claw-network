@@ -2,7 +2,8 @@
 
 use borsh::BorshDeserialize;
 use claw_types::Block;
-use redb::{Database, TableDefinition};
+use claw_types::transaction::{TxType, TokenTransferPayload, TokenMintTransferPayload, ReputationAttestPayload};
+use redb::{Database, ReadableTable, TableDefinition};
 use std::path::Path;
 use thiserror::Error;
 
@@ -10,6 +11,8 @@ use thiserror::Error;
 const BLOCKS: TableDefinition<u64, &[u8]> = TableDefinition::new("blocks");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const TX_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("tx_index");
+/// Maps address (32 bytes hex) → borsh-encoded Vec<(block_height, tx_index_in_block)>.
+const ADDRESS_TX_INDEX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("address_tx_index");
 
 const META_LATEST_HEIGHT: &str = "latest_height";
 const META_STATE_SNAPSHOT: &str = "state_snapshot";
@@ -76,13 +79,14 @@ impl ChainStore {
             let _ = write_txn.open_table(BLOCKS)?;
             let _ = write_txn.open_table(META)?;
             let _ = write_txn.open_table(TX_INDEX)?;
+            let _ = write_txn.open_table(ADDRESS_TX_INDEX)?;
         }
         write_txn.commit()?;
 
         Ok(Self { db })
     }
 
-    /// Store a block and update latest height + tx index.
+    /// Store a block and update latest height + tx index + address tx index.
     pub fn put_block(&self, block: &Block) -> Result<(), StoreError> {
         let block_bytes =
             borsh::to_vec(block).map_err(|e| StoreError::Serialize(e.to_string()))?;
@@ -92,11 +96,25 @@ impl ChainStore {
             let mut blocks = write_txn.open_table(BLOCKS)?;
             blocks.insert(block.height, block_bytes.as_slice())?;
 
-            // Update tx index
+            // Update tx index + address tx index
             let mut tx_index = write_txn.open_table(TX_INDEX)?;
-            for tx in &block.transactions {
+            let mut addr_tx_index = write_txn.open_table(ADDRESS_TX_INDEX)?;
+
+            for (tx_idx, tx) in block.transactions.iter().enumerate() {
                 let tx_hash = tx.hash();
                 tx_index.insert(tx_hash.as_slice(), block.height)?;
+
+                let entry = (block.height, tx_idx as u32);
+
+                // Index the sender (from)
+                Self::append_address_entry(&mut addr_tx_index, &tx.from, entry)?;
+
+                // Index the recipient (to) if one exists in the payload
+                if let Some(to_addr) = Self::extract_to_address(tx.tx_type, &tx.payload) {
+                    if to_addr != tx.from {
+                        Self::append_address_entry(&mut addr_tx_index, &to_addr, entry)?;
+                    }
+                }
             }
 
             // Update latest height
@@ -106,6 +124,46 @@ impl ChainStore {
         write_txn.commit()?;
 
         Ok(())
+    }
+
+    /// Append a (block_height, tx_index) entry to the address tx index.
+    fn append_address_entry(
+        table: &mut redb::Table<&[u8], &[u8]>,
+        address: &[u8; 32],
+        entry: (u64, u32),
+    ) -> Result<(), StoreError> {
+        let mut entries: Vec<(u64, u32)> = match table.get(address.as_slice())? {
+            Some(data) => {
+                borsh::from_slice::<Vec<(u64, u32)>>(data.value()).unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        entries.push(entry);
+        let encoded = borsh::to_vec(&entries).map_err(|e| StoreError::Serialize(e.to_string()))?;
+        table.insert(address.as_slice(), encoded.as_slice())?;
+        Ok(())
+    }
+
+    /// Extract the `to` address from a transaction payload based on tx_type.
+    fn extract_to_address(tx_type: TxType, payload: &[u8]) -> Option<[u8; 32]> {
+        match tx_type {
+            TxType::TokenTransfer => {
+                borsh::from_slice::<TokenTransferPayload>(payload)
+                    .ok()
+                    .map(|p| p.to)
+            }
+            TxType::TokenMintTransfer => {
+                borsh::from_slice::<TokenMintTransferPayload>(payload)
+                    .ok()
+                    .map(|p| p.to)
+            }
+            TxType::ReputationAttest => {
+                borsh::from_slice::<ReputationAttestPayload>(payload)
+                    .ok()
+                    .map(|p| p.to)
+            }
+            TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister => None,
+        }
     }
 
     /// Get a block by height.
@@ -146,6 +204,49 @@ impl ChainStore {
             Some(data) => Ok(Some(data.value())),
             None => Ok(None),
         }
+    }
+
+    /// Get transactions for an address, sorted by block height descending (newest first).
+    /// Returns a Vec of (block_height, tx_index, Transaction, block_timestamp).
+    pub fn get_transactions_by_address(
+        &self,
+        address: &[u8; 32],
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<(u64, u32, claw_types::Transaction, u64)>, StoreError> {
+        let read_txn = self.db.begin_read()?;
+        let addr_table = read_txn.open_table(ADDRESS_TX_INDEX)?;
+
+        let entries: Vec<(u64, u32)> = match addr_table.get(address.as_slice())? {
+            Some(data) => borsh::from_slice(data.value()).unwrap_or_default(),
+            None => return Ok(Vec::new()),
+        };
+
+        // Sort by block_height descending, then tx_index descending
+        let mut sorted = entries;
+        sorted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+
+        // Apply pagination
+        let paginated: Vec<(u64, u32)> = sorted
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+
+        let blocks_table = read_txn.open_table(BLOCKS)?;
+        let mut results = Vec::with_capacity(paginated.len());
+
+        for (height, tx_idx) in paginated {
+            if let Some(block_data) = blocks_table.get(height)? {
+                if let Ok(block) = Block::try_from_slice(block_data.value()) {
+                    if let Some(tx) = block.transactions.get(tx_idx as usize) {
+                        results.push((height, tx_idx, tx.clone(), block.timestamp));
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Store a state snapshot (borsh-serialized WorldState).
