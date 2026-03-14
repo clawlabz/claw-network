@@ -167,6 +167,7 @@ fn storage_block_persistence() {
         transactions: vec![],
         state_root: genesis_state.state_root(),
         hash: [0u8; 32],
+        signatures: Vec::new(),
     };
     genesis.hash = genesis.compute_hash();
     store.put_block(&genesis).unwrap();
@@ -187,6 +188,7 @@ fn storage_block_persistence() {
         transactions: vec![tx],
         state_root: [99u8; 32],
         hash: [0u8; 32],
+        signatures: Vec::new(),
     };
     block1.hash = block1.compute_hash();
     store.put_block(&block1).unwrap();

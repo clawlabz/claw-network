@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use claw_consensus::{elect_proposer, ValidatorSet, MIN_STAKE};
-use claw_crypto::ed25519_dalek::SigningKey;
-use claw_p2p::{NetworkEvent, P2pCommand, P2pNetwork, SyncRequest, SyncResponse};
+use claw_consensus::{elect_proposer, quorum, ValidatorSet, MIN_STAKE};
+use claw_crypto::ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
+use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, P2pNetwork, SyncRequest, SyncResponse};
 use claw_state::WorldState;
 use claw_storage::ChainStore;
 use claw_types::block::Block;
@@ -31,11 +31,12 @@ struct ChainInner {
     state: WorldState,
     store: ChainStore,
     mempool: Vec<Transaction>,
-    #[allow(dead_code)]
     signing_key: SigningKey,
     validator_address: [u8; 32],
     latest_block: Block,
     validator_set: ValidatorSet,
+    /// Pending votes for the latest block, keyed by voter address.
+    pending_votes: std::collections::HashMap<[u8; 32], [u8; 64]>,
 }
 
 impl Chain {
@@ -90,6 +91,7 @@ impl Chain {
                 validator_address,
                 latest_block,
                 validator_set,
+                pending_votes: std::collections::HashMap::new(),
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -134,6 +136,67 @@ impl Chain {
             Some(addr) => addr == inner.validator_address,
             None => false,
         }
+    }
+
+    /// Sign a block with the given secret key and append the signature.
+    fn sign_block(block: &mut Block, secret_key: &SigningKey) {
+        let sig = secret_key.sign(&block.hash);
+        let address = secret_key.verifying_key().to_bytes();
+        block.signatures.push((address, sig.to_bytes()));
+    }
+
+    /// Create a vote for a block if we are an active validator.
+    /// Returns Some(BlockVote) if we should broadcast our vote.
+    fn create_vote_for_block(inner: &ChainInner, block: &Block) -> Option<BlockVote> {
+        if !inner.validator_set.is_active(&inner.validator_address) {
+            return None;
+        }
+        let sig = inner.signing_key.sign(&block.hash);
+        Some(BlockVote {
+            block_hash: block.hash,
+            height: block.height,
+            voter: inner.validator_address,
+            signature: sig.to_bytes(),
+        })
+    }
+
+    /// Apply an incoming vote to the latest block.
+    /// Returns true if the vote was valid and accepted.
+    fn apply_vote(inner: &mut ChainInner, vote: &BlockVote) -> bool {
+        // Only accept votes for the latest block
+        if vote.height != inner.latest_block.height || vote.block_hash != inner.latest_block.hash {
+            return false;
+        }
+        // Check voter is an active validator
+        if !inner.validator_set.is_active(&vote.voter) {
+            return false;
+        }
+        // Skip if we already have this voter's signature
+        if inner.pending_votes.contains_key(&vote.voter)
+            || inner.latest_block.signatures.iter().any(|(a, _)| *a == vote.voter)
+        {
+            return false;
+        }
+        // Verify signature
+        if let Ok(vk) = VerifyingKey::from_bytes(&vote.voter) {
+            let sig = Signature::from_bytes(&vote.signature);
+            if vk.verify_strict(&vote.block_hash, &sig).is_ok() {
+                inner.pending_votes.insert(vote.voter, vote.signature);
+                inner.latest_block.signatures.push((vote.voter, vote.signature));
+                // Re-persist the block with updated signatures
+                if let Err(e) = inner.store.put_block(&inner.latest_block) {
+                    tracing::error!(error = %e, "Failed to update block with new signature");
+                }
+                tracing::info!(
+                    height = vote.height,
+                    voter = %hex::encode(vote.voter),
+                    total_sigs = inner.latest_block.signatures.len(),
+                    "Accepted BFT vote"
+                );
+                return true;
+            }
+        }
+        false
     }
 
     /// Produce a block from pending mempool transactions.
@@ -190,8 +253,15 @@ impl Chain {
             transactions: included_txs,
             state_root,
             hash: [0u8; 32],
+            signatures: Vec::new(),
         };
         block.hash = block.compute_hash();
+
+        // Sign the block with our validator key for BFT finality
+        Self::sign_block(&mut block, &inner.signing_key);
+
+        // Clear pending votes for the new block
+        inner.pending_votes.clear();
 
         // Persist
         if let Err(e) = inner.store.put_block(&block) {
@@ -259,6 +329,38 @@ impl Chain {
         // Verify block hash
         if !block.verify_hash() {
             return Err("invalid block hash".into());
+        }
+
+        // Verify BFT signatures for finality
+        {
+            let active = &inner.validator_set.active;
+            let mut valid_signers = std::collections::HashSet::new();
+            for (addr, sig_bytes) in &block.signatures {
+                // Check signer is an active validator
+                if active.iter().any(|v| v.address == *addr) {
+                    // Verify Ed25519 signature over block hash
+                    if let Ok(vk) = VerifyingKey::from_bytes(addr) {
+                        let sig = Signature::from_bytes(sig_bytes);
+                        if vk.verify_strict(&block.hash, &sig).is_ok() {
+                            valid_signers.insert(*addr);
+                        }
+                    }
+                }
+            }
+
+            // Relax quorum requirement for small validator sets (1-2 validators)
+            let required = if active.len() <= 2 {
+                1
+            } else {
+                quorum(active.len())
+            };
+            if valid_signers.len() < required {
+                return Err(format!(
+                    "Insufficient signatures: {} of {} required",
+                    valid_signers.len(),
+                    required
+                ));
+            }
         }
 
         // Verify proposer authorization
@@ -362,11 +464,24 @@ impl Chain {
                         }
                         NetworkEvent::NewBlock(block) => {
                             match self.apply_remote_block(&block) {
-                                Ok(()) => {}
+                                Ok(()) => {
+                                    // If we are a validator, sign and broadcast our vote
+                                    let maybe_vote = {
+                                        let inner = self.inner.lock().unwrap();
+                                        Self::create_vote_for_block(&inner, &block)
+                                    };
+                                    if let Some(vote) = maybe_vote {
+                                        p2p.broadcast_vote(&vote);
+                                    }
+                                }
                                 Err(e) => {
                                     tracing::debug!(error = %e, "Rejected block from network");
                                 }
                             }
+                        }
+                        NetworkEvent::Vote(vote) => {
+                            let mut inner = self.inner.lock().unwrap();
+                            Self::apply_vote(&mut inner, &vote);
                         }
                         NetworkEvent::SyncRequest { peer, request, channel, .. } => {
                             let response = self.handle_sync_request(&request);
@@ -423,11 +538,24 @@ impl Chain {
                 }
                 NetworkEvent::NewBlock(block) => {
                     match self.apply_remote_block(&block) {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            // If we are a validator, sign and broadcast our vote
+                            let maybe_vote = {
+                                let inner = self.inner.lock().unwrap();
+                                Self::create_vote_for_block(&inner, &block)
+                            };
+                            if let Some(vote) = maybe_vote {
+                                let _ = command_tx.send(P2pCommand::BroadcastVote(vote));
+                            }
+                        }
                         Err(e) => {
                             tracing::debug!(error = %e, "Rejected block from network");
                         }
                     }
+                }
+                NetworkEvent::Vote(vote) => {
+                    let mut inner = self.inner.lock().unwrap();
+                    Self::apply_vote(&mut inner, &vote);
                 }
                 NetworkEvent::SyncRequest { peer, request, channel, .. } => {
                     let response = self.handle_sync_request(&request);
@@ -482,6 +610,26 @@ impl Chain {
             SyncRequest::GetStatus => SyncResponse::Status {
                 height: inner.latest_block.height,
             },
+            SyncRequest::GetStateSnapshot => {
+                match inner.store.get_state_snapshot() {
+                    Ok(Some(state_data)) => {
+                        tracing::debug!(
+                            height = inner.latest_block.height,
+                            state_data_size = state_data.len(),
+                            "Serving state snapshot to peer"
+                        );
+                        SyncResponse::StateSnapshot {
+                            height: inner.latest_block.height,
+                            state_root: inner.latest_block.state_root,
+                            state_data,
+                        }
+                    }
+                    _ => {
+                        tracing::warn!("State snapshot requested but not available");
+                        SyncResponse::Status { height: inner.latest_block.height }
+                    }
+                }
+            }
         }
     }
 
@@ -540,6 +688,50 @@ impl Chain {
                         "Peer is at same height or behind — no sync needed"
                     );
                     None
+                }
+            }
+            SyncResponse::StateSnapshot { height, state_root, state_data } => {
+                tracing::info!(
+                    snapshot_height = height,
+                    state_data_size = state_data.len(),
+                    "Received state snapshot from peer"
+                );
+
+                // Verify the state_root matches the hash of state_data
+                use sha2::{Digest, Sha256};
+                let computed: [u8; 32] = Sha256::digest(state_data).into();
+                if computed != *state_root {
+                    tracing::error!("State snapshot verification failed: state_root mismatch");
+                    return None;
+                }
+
+                // Apply the snapshot: write state to storage and update chain
+                let mut inner = self.inner.lock().unwrap();
+                if let Err(e) = inner.store.put_state_snapshot(state_data) {
+                    tracing::error!(error = %e, "Failed to write state snapshot to storage");
+                    return None;
+                }
+
+                match borsh::from_slice::<claw_state::WorldState>(state_data) {
+                    Ok(state) => {
+                        inner.state = state;
+                        tracing::info!(height, "Fast sync: state snapshot applied successfully");
+
+                        // Now request blocks after the snapshot height
+                        let our_height = inner.latest_block.height;
+                        if *height > our_height {
+                            Some(SyncRequest::GetBlocks {
+                                from_height: our_height + 1,
+                                count: 100,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to deserialize state snapshot");
+                        None
+                    }
                 }
             }
         }

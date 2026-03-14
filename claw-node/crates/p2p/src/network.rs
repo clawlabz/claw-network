@@ -21,6 +21,8 @@ pub enum NetworkEvent {
     NewTx(claw_types::transaction::Transaction),
     /// Received a new block from the network.
     NewBlock(claw_types::block::Block),
+    /// Received a BFT vote from a validator.
+    Vote(BlockVote),
     /// A sync request from a peer (includes response channel for replying).
     SyncRequest {
         peer: PeerId,
@@ -49,6 +51,8 @@ pub enum P2pCommand {
         channel: request_response::ResponseChannel<Vec<u8>>,
         response: SyncResponse,
     },
+    /// Broadcast a BFT vote to the network.
+    BroadcastVote(BlockVote),
 }
 
 /// P2P Network handle for interacting with the swarm.
@@ -59,6 +63,7 @@ pub struct P2pNetwork {
     peers: HashSet<PeerId>,
     tx_topic: gossipsub::IdentTopic,
     block_topic: gossipsub::IdentTopic,
+    vote_topic: gossipsub::IdentTopic,
 }
 
 impl P2pNetwork {
@@ -94,8 +99,10 @@ impl P2pNetwork {
         // Subscribe to gossip topics
         let tx_topic = gossipsub::IdentTopic::new(TOPIC_TX);
         let block_topic = gossipsub::IdentTopic::new(TOPIC_BLOCK);
+        let vote_topic = gossipsub::IdentTopic::new(TOPIC_VOTE);
         swarm.behaviour_mut().gossipsub.subscribe(&tx_topic)?;
         swarm.behaviour_mut().gossipsub.subscribe(&block_topic)?;
+        swarm.behaviour_mut().gossipsub.subscribe(&vote_topic)?;
 
         // Listen
         let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
@@ -123,6 +130,7 @@ impl P2pNetwork {
                 peers: HashSet::new(),
                 tx_topic,
                 block_topic,
+                vote_topic,
             },
             event_rx,
             command_tx,
@@ -173,6 +181,28 @@ impl P2pNetwork {
         }
     }
 
+    /// Broadcast a BFT vote to the network.
+    pub fn broadcast_vote(&mut self, vote: &BlockVote) {
+        let msg = GossipMessage::Vote(vote.clone());
+        let bytes = borsh::to_vec(&msg).expect("serialize gossip msg");
+        if bytes.len() > protocol::MAX_P2P_MESSAGE_SIZE {
+            tracing::warn!(
+                size = bytes.len(),
+                max = protocol::MAX_P2P_MESSAGE_SIZE,
+                "Dropping outbound vote: exceeds max message size"
+            );
+            return;
+        }
+        if let Err(e) = self
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(self.vote_topic.clone(), bytes)
+        {
+            tracing::debug!(error=%e, "Failed to publish vote (no peers yet)");
+        }
+    }
+
     /// Send a sync request to a specific peer.
     pub fn send_sync_request(&mut self, peer: &PeerId, request: SyncRequest) {
         let bytes = borsh::to_vec(&request).expect("serialize sync request");
@@ -217,6 +247,9 @@ impl P2pNetwork {
                         P2pCommand::SendSyncResponse { channel, response } => {
                             self.send_sync_response(channel, response);
                         }
+                        P2pCommand::BroadcastVote(vote) => {
+                            self.broadcast_vote(&vote);
+                        }
                     }
                 }
                 event = self.swarm.select_next_some() => {
@@ -244,6 +277,9 @@ impl P2pNetwork {
                             }
                             GossipMessage::NewBlock(block) => {
                                 let _ = self.event_tx.send(NetworkEvent::NewBlock(block));
+                            }
+                            GossipMessage::Vote(vote) => {
+                                let _ = self.event_tx.send(NetworkEvent::Vote(vote));
                             }
                         }
                     }

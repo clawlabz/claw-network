@@ -44,6 +44,7 @@ pub fn create_genesis_block(state: &WorldState) -> Block {
         transactions: vec![],
         state_root,
         hash: [0u8; 32],
+        signatures: Vec::new(),
     };
     block.hash = block.compute_hash();
     block

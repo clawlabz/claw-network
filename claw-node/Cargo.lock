@@ -640,6 +640,7 @@ version = "0.1.7"
 dependencies = [
  "blake3",
  "borsh",
+ "hex",
  "proptest",
  "serde",
  "thiserror 2.0.18",

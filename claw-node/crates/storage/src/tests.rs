@@ -25,6 +25,7 @@ mod tests {
             }],
             state_root: [4u8; 32],
             hash: [5u8; 32],
+            signatures: Vec::new(),
         }
     }
 

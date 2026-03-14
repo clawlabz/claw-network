@@ -6,6 +6,7 @@ mod genesis;
 pub(crate) mod metrics;
 mod network;
 mod rpc_server;
+mod sync;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -63,6 +64,9 @@ enum Commands {
         /// Force single-node mode (no P2P, overrides network preset)
         #[arg(long)]
         single: bool,
+        /// Sync mode: full (all blocks), fast (state snapshot + recent), light (prune old blocks)
+        #[arg(long, default_value = "full")]
+        sync_mode: String,
     },
     /// Show node status
     Status,
@@ -154,7 +158,9 @@ async fn main() -> Result<()> {
             p2p_port,
             bootstrap,
             single,
+            sync_mode,
         } => {
+            let sync_mode = sync::SyncMode::parse(&sync_mode);
             // Resolve network: CLI > config.toml > default devnet
             let resolved_network = network.unwrap_or_else(|| {
                 file_cfg
@@ -186,10 +192,27 @@ async fn main() -> Result<()> {
                 network = net_cfg.chain_id,
                 rpc_port = resolved_rpc_port,
                 p2p_port = resolved_p2p_port,
+                sync_mode = %sync_mode,
                 "Starting claw-node"
             );
 
             let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes)?;
+
+            // Fast sync: log intent (actual snapshot request happens on first peer connection)
+            if sync_mode == sync::SyncMode::Fast {
+                sync::log_fast_sync_intent();
+            }
+
+            // Light mode: spawn periodic pruning task
+            let _prune_handle = if sync_mode == sync::SyncMode::Light {
+                let prune_chain = chain.clone();
+                let prune_dir = data_dir.clone();
+                Some(tokio::spawn(async move {
+                    sync::run_light_pruning_loop(prune_chain, &prune_dir).await;
+                }))
+            } else {
+                None
+            };
 
             // Start RPC server
             let rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled).await?;

@@ -22,6 +22,10 @@ pub struct Block {
     pub state_root: [u8; 32],
     /// Hash of this block (blake3 of header fields, excluding this field).
     pub hash: [u8; 32],
+    /// Validator signatures for BFT finality (address, signature pairs).
+    /// Signatures are over the block hash and are appended after hash computation.
+    #[serde(default, with = "serde_signatures")]
+    pub signatures: Vec<([u8; 32], [u8; 64])>,
 }
 
 impl Block {
@@ -43,5 +47,57 @@ impl Block {
     /// Verify that the stored hash matches the computed hash.
     pub fn verify_hash(&self) -> bool {
         self.hash == self.compute_hash()
+    }
+}
+
+/// Serde helper for `Vec<([u8; 32], [u8; 64])>` since serde does not natively
+/// support `[u8; 64]` arrays. Serializes each pair as hex strings.
+mod serde_signatures {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct SigPair {
+        address: String,
+        signature: String,
+    }
+
+    pub fn serialize<S>(
+        sigs: &Vec<([u8; 32], [u8; 64])>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let pairs: Vec<SigPair> = sigs
+            .iter()
+            .map(|(addr, sig)| SigPair {
+                address: hex::encode(addr),
+                signature: hex::encode(sig),
+            })
+            .collect();
+        pairs.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Vec<([u8; 32], [u8; 64])>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let pairs: Vec<SigPair> = Vec::deserialize(deserializer)?;
+        pairs
+            .into_iter()
+            .map(|p| {
+                let addr_bytes: [u8; 32] = hex::decode(&p.address)
+                    .map_err(serde::de::Error::custom)?
+                    .try_into()
+                    .map_err(|_| serde::de::Error::custom("address must be 32 bytes"))?;
+                let sig_bytes: [u8; 64] = hex::decode(&p.signature)
+                    .map_err(serde::de::Error::custom)?
+                    .try_into()
+                    .map_err(|_| serde::de::Error::custom("signature must be 64 bytes"))?;
+                Ok((addr_bytes, sig_bytes))
+            })
+            .collect()
     }
 }

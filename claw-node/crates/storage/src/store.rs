@@ -270,4 +270,50 @@ impl ChainStore {
             None => Ok(None),
         }
     }
+
+    /// Prune (delete) all blocks with height in [1, below_height).
+    /// Genesis block (height 0) is always preserved.
+    /// Returns the number of blocks removed.
+    pub fn prune_blocks_below(&self, below_height: u64) -> u64 {
+        if below_height <= 1 {
+            return 0;
+        }
+        let write_txn = match self.db.begin_write() {
+            Ok(txn) => txn,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to begin write txn for pruning");
+                return 0;
+            }
+        };
+        let mut count = 0u64;
+        {
+            let mut table = match write_txn.open_table(BLOCKS) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to open blocks table for pruning");
+                    return 0;
+                }
+            };
+            // Collect keys to remove: range [1, below_height)
+            let keys_to_remove: Vec<u64> = match table.range(1..below_height) {
+                Ok(iter) => iter
+                    .filter_map(|entry| entry.ok().map(|(k, _)| k.value()))
+                    .collect(),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to iterate blocks for pruning");
+                    return 0;
+                }
+            };
+            for key in keys_to_remove {
+                if table.remove(key).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+        if let Err(e) = write_txn.commit() {
+            tracing::error!(error = %e, "Failed to commit pruning transaction");
+            return 0;
+        }
+        count
+    }
 }
