@@ -66,4 +66,7 @@ pub enum StateError {
 
     #[error("memo too long: {len} bytes (max {max})")]
     MemoTooLong { len: usize, max: usize },
+
+    #[error("attestation limit reached: maximum {max} attestations per attester-target pair")]
+    AttestationLimitReached { max: usize },
 }

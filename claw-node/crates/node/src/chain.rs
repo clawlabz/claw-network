@@ -17,6 +17,9 @@ use tokio::sync::mpsc;
 use crate::genesis;
 use crate::metrics;
 
+/// Maximum number of transactions allowed in the mempool.
+const MAX_MEMPOOL_SIZE: usize = 10_000;
+
 /// Shared chain state.
 #[derive(Clone)]
 pub struct Chain {
@@ -95,6 +98,11 @@ impl Chain {
     /// Submit a transaction to the mempool.
     pub fn submit_tx(&self, tx: Transaction) -> Result<[u8; 32], String> {
         let mut inner = self.inner.lock().unwrap();
+
+        // Reject if mempool is full
+        if inner.mempool.len() >= MAX_MEMPOOL_SIZE {
+            return Err("mempool full: try again later".into());
+        }
 
         // Basic pre-validation (signature + nonce) without applying
         claw_crypto::signer::verify_transaction(&tx)
@@ -190,11 +198,15 @@ impl Chain {
             tracing::error!(error = %e, "Failed to store block");
             return None;
         }
-        if let Err(e) = inner
-            .store
-            .put_state_snapshot(&borsh::to_vec(&inner.state).unwrap())
-        {
-            tracing::error!(error = %e, "Failed to store state snapshot");
+        match borsh::to_vec(&inner.state) {
+            Ok(state_bytes) => {
+                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
+                    tracing::error!(error = %e, "Failed to store state snapshot");
+                }
+            }
+            Err(e) => {
+                tracing::error!("State serialization failed: {e}");
+            }
         }
 
         // Check epoch boundary for validator set rotation
@@ -249,6 +261,22 @@ impl Chain {
             return Err("invalid block hash".into());
         }
 
+        // Verify proposer authorization
+        let expected_proposer = elect_proposer(
+            &inner.validator_set.active,
+            &block.prev_hash,
+            block.height,
+        );
+        if let Some(expected) = expected_proposer {
+            if block.validator != expected {
+                return Err(format!(
+                    "Block proposer mismatch: expected {}, got {}",
+                    hex::encode(expected),
+                    hex::encode(block.validator)
+                ));
+            }
+        }
+
         // Apply all transactions
         let mut state_clone = inner.state.clone();
         state_clone.block_height = block.height;
@@ -269,11 +297,15 @@ impl Chain {
         if let Err(e) = inner.store.put_block(block) {
             return Err(format!("store block: {e}"));
         }
-        if let Err(e) = inner
-            .store
-            .put_state_snapshot(&borsh::to_vec(&inner.state).unwrap())
-        {
-            tracing::error!(error = %e, "Failed to store state snapshot");
+        match borsh::to_vec(&inner.state) {
+            Ok(state_bytes) => {
+                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
+                    tracing::error!(error = %e, "Failed to store state snapshot");
+                }
+            }
+            Err(e) => {
+                tracing::error!("State serialization failed: {e}");
+            }
         }
 
         // Epoch rotation check
@@ -584,7 +616,10 @@ impl Chain {
 
     /// Decrement P2P peer count.
     pub fn peer_disconnected(&self) {
-        self.p2p_peer_count.fetch_sub(1, Ordering::Relaxed);
+        // Use fetch_update to prevent underflow
+        let _ = self.p2p_peer_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current > 0 { Some(current - 1) } else { None }
+        });
     }
 
     /// Get current epoch.

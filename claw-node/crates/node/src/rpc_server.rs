@@ -9,8 +9,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tower_http::cors::{Any, CorsLayer};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use claw_types::transaction::{
     TxType, TokenTransferPayload, TokenMintTransferPayload, ReputationAttestPayload,
@@ -70,6 +73,15 @@ impl RpcResponse {
 /// Whether the faucet RPC is enabled (testnet/devnet only).
 static FAUCET_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
+/// Per-address faucet cooldown tracking.
+const FAUCET_COOLDOWN_SECS: u64 = 3600;
+static FAUCET_LAST_DRIP: std::sync::OnceLock<Mutex<HashMap<[u8; 32], Instant>>> =
+    std::sync::OnceLock::new();
+
+fn faucet_cooldown_map() -> &'static Mutex<HashMap<[u8; 32], Instant>> {
+    FAUCET_LAST_DRIP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> Json<RpcResponse> {
     if req.jsonrpc != "2.0" {
         return Json(RpcResponse::err(req.id, -32600, "Invalid JSON-RPC version".into()));
@@ -87,7 +99,10 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
             match chain.get_block(height) {
                 Some(block) => {
                     // Serialize block with tx hashes included
-                    let mut block_json = serde_json::to_value(&block).unwrap();
+                    let mut block_json = match serde_json::to_value(&block) {
+                        Ok(v) => v,
+                        Err(e) => return Json(RpcResponse::err(req.id, -32603, format!("Serialization error: {e}"))),
+                    };
                     if let Some(txs) = block_json.get_mut("transactions").and_then(|v| v.as_array_mut()) {
                         for (i, tx_json) in txs.iter_mut().enumerate() {
                             if let Some(tx) = block.transactions.get(i) {
@@ -122,7 +137,8 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => match chain.get_agent(&a) {
-                    Some(agent) => Ok(serde_json::to_value(agent).unwrap()),
+                    Some(agent) => serde_json::to_value(agent)
+                        .map_err(|e| format!("Serialization error: {e}")),
                     None => Ok(Value::Null),
                 },
                 Err(e) => Err(e),
@@ -131,13 +147,15 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
         "clw_getReputation" => {
             let addr = parse_address(&req.params, 0);
             match addr {
-                Ok(a) => Ok(serde_json::to_value(chain.get_reputation(&a)).unwrap()),
+                Ok(a) => serde_json::to_value(chain.get_reputation(&a))
+                    .map_err(|e| format!("Serialization error: {e}")),
                 Err(e) => Err(e),
             }
         }
         "clw_getServices" => {
             let stype = req.params.get(0).and_then(|v| v.as_str());
-            Ok(serde_json::to_value(chain.get_services(stype)).unwrap())
+            serde_json::to_value(chain.get_services(stype))
+                .map_err(|e| format!("Serialization error: {e}"))
         }
         "clw_getTransactionReceipt" => {
             let hash = parse_address(&req.params, 0);
@@ -209,7 +227,8 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
             let token = parse_address(&req.params, 0);
             match token {
                 Ok(t) => match chain.get_token_info(&t) {
-                    Some(info) => Ok(serde_json::to_value(info).unwrap()),
+                    Some(info) => serde_json::to_value(info)
+                        .map_err(|e| format!("Serialization error: {e}")),
                     None => Ok(Value::Null),
                 },
                 Err(e) => Err(e),
@@ -251,14 +270,31 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
             } else {
                 let addr = parse_address(&req.params, 0);
                 match addr {
-                    Ok(a) => match chain.faucet_drip(&a) {
-                        Ok(tx_hash) => Ok(serde_json::json!({
-                            "address": hex::encode(a),
-                            "amount": "10000000000",
-                            "txHash": hex::encode(tx_hash),
-                        })),
-                        Err(e) => Err(e),
-                    },
+                    Ok(a) => {
+                        // Check per-address cooldown
+                        let mut map = faucet_cooldown_map().lock().unwrap();
+                        if let Some(last) = map.get(&a) {
+                            if last.elapsed().as_secs() < FAUCET_COOLDOWN_SECS {
+                                let remaining = FAUCET_COOLDOWN_SECS - last.elapsed().as_secs();
+                                return Json(RpcResponse::err(
+                                    req.id,
+                                    -32000,
+                                    format!("faucet cooldown: try again in {remaining}s"),
+                                ));
+                            }
+                        }
+                        match chain.faucet_drip(&a) {
+                            Ok(tx_hash) => {
+                                map.insert(a, Instant::now());
+                                Ok(serde_json::json!({
+                                    "address": hex::encode(a),
+                                    "amount": "10000000000",
+                                    "txHash": hex::encode(tx_hash),
+                                }))
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -430,15 +466,28 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool) -> anyhow::Res
     // Set initial height
     metrics::BLOCK_HEIGHT.set(chain.get_block_number() as f64);
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers(Any);
+    let cors = {
+        let allow_origin = match std::env::var("CLAW_RPC_CORS_ORIGINS") {
+            Ok(val) if !val.is_empty() => {
+                let origins: Vec<axum::http::HeaderValue> = val
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                AllowOrigin::list(origins)
+            }
+            _ => AllowOrigin::any(),
+        };
+        CorsLayer::new()
+            .allow_origin(allow_origin)
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers(Any)
+    };
 
     let app = Router::new()
         .route("/", post(handle_rpc))
         .route("/metrics", get(handle_metrics))
         .route("/health", get(handle_health))
+        .layer(ConcurrencyLimitLayer::new(100)) // max 100 concurrent requests
         .layer(cors)
         .with_state(chain);
 

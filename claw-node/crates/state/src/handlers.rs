@@ -237,6 +237,17 @@ pub fn handle_reputation_attest(
         });
     }
 
+    // Limit attestations per attester-target pair
+    const MAX_ATTESTATIONS_PER_PAIR: usize = 50;
+    let existing_count = state.reputation.iter()
+        .filter(|r| r.from == tx.from && r.to == payload.to)
+        .count();
+    if existing_count >= MAX_ATTESTATIONS_PER_PAIR {
+        return Err(StateError::AttestationLimitReached {
+            max: MAX_ATTESTATIONS_PER_PAIR,
+        });
+    }
+
     state.reputation.push(ReputationAttestation {
         from: tx.from,
         to: payload.to,
