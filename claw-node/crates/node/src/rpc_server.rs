@@ -85,7 +85,21 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             match chain.get_block(height) {
-                Some(block) => Ok(serde_json::to_value(block).unwrap()),
+                Some(block) => {
+                    // Serialize block with tx hashes included
+                    let mut block_json = serde_json::to_value(&block).unwrap();
+                    if let Some(txs) = block_json.get_mut("transactions").and_then(|v| v.as_array_mut()) {
+                        for (i, tx_json) in txs.iter_mut().enumerate() {
+                            if let Some(tx) = block.transactions.get(i) {
+                                let hash = tx.hash();
+                                tx_json.as_object_mut().map(|obj| {
+                                    obj.insert("hash".to_string(), serde_json::json!(hash));
+                                });
+                            }
+                        }
+                    }
+                    Ok(block_json)
+                }
                 None => Ok(Value::Null),
             }
         }
