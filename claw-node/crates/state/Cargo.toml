@@ -8,8 +8,10 @@ license.workspace = true
 [dependencies]
 claw-types.workspace = true
 claw-crypto.workspace = true
+claw-vm.workspace = true
 borsh.workspace = true
 blake3.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

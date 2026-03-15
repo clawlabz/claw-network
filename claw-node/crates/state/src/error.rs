@@ -69,4 +69,19 @@ pub enum StateError {
 
     #[error("attestation limit reached: maximum {max} attestations per attester-target pair")]
     AttestationLimitReached { max: usize },
+
+    #[error("contract not found: {0}")]
+    ContractNotFound(String),
+
+    #[error("contract execution failed: {0}")]
+    ContractExecutionFailed(String),
+
+    #[error("contract code too large: {size} bytes (max {max})")]
+    ContractCodeTooLarge { size: usize, max: usize },
+
+    #[error("invalid contract method: {0}")]
+    InvalidContractMethod(String),
+
+    #[error("contract already exists at address")]
+    ContractAlreadyExists,
 }

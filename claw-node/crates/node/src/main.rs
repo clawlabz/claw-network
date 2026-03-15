@@ -77,6 +77,14 @@ enum Commands {
     },
     /// Encrypt an existing plaintext key.json (requires CLAW_KEY_PASSWORD env var)
     EncryptKey,
+    /// Smart contract queries (reads from a running node via RPC)
+    Contract {
+        #[command(subcommand)]
+        action: ContractAction,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -85,6 +93,37 @@ enum KeyAction {
     Generate,
     /// Show current address
     Show,
+}
+
+#[derive(Subcommand)]
+enum ContractAction {
+    /// Get contract metadata by address
+    Info {
+        /// Contract address (hex, 64 chars)
+        address: String,
+    },
+    /// Get a storage value from a contract
+    Storage {
+        /// Contract address (hex, 64 chars)
+        address: String,
+        /// Storage key (hex)
+        key: String,
+    },
+    /// Get contract Wasm bytecode
+    Code {
+        /// Contract address (hex, 64 chars)
+        address: String,
+    },
+    /// Execute a read-only contract view call
+    Call {
+        /// Contract address (hex, 64 chars)
+        address: String,
+        /// Method name to call
+        method: String,
+        /// Arguments as hex-encoded bytes (optional)
+        #[arg(default_value = "")]
+        args: String,
+    },
 }
 
 fn expand_path(path: &str) -> PathBuf {
@@ -287,7 +326,81 @@ async fn main() -> Result<()> {
         Commands::EncryptKey => {
             config::encrypt_existing_key(&data_dir)?;
         }
+        Commands::Contract { action, rpc } => {
+            handle_contract_cli(action, &rpc).await?;
+        }
     }
 
+    Ok(())
+}
+
+/// Send a JSON-RPC request and return the result value.
+async fn rpc_call(url: &str, method: &str, params: Vec<serde_json::Value>) -> Result<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    });
+    let resp = client
+        .post(url)
+        .json(&body)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    if let Some(err) = resp.get("error") {
+        anyhow::bail!("RPC error: {}", err);
+    }
+    Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()> {
+    match action {
+        ContractAction::Info { address } => {
+            let result = rpc_call(rpc_url, "clw_getContractInfo", vec![address.into()]).await?;
+            if result.is_null() {
+                println!("Contract not found");
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        ContractAction::Storage { address, key } => {
+            let result = rpc_call(rpc_url, "clw_getContractStorage", vec![address.into(), key.into()]).await?;
+            if result.is_null() {
+                println!("Storage key not found");
+            } else {
+                println!("{}", result.as_str().unwrap_or(&result.to_string()));
+            }
+        }
+        ContractAction::Code { address } => {
+            let result = rpc_call(rpc_url, "clw_getContractCode", vec![address.into()]).await?;
+            if result.is_null() {
+                println!("Contract not found");
+            } else {
+                let size = result.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                println!("Code size: {} bytes", size);
+                if let Some(code) = result.get("code").and_then(|v| v.as_str()) {
+                    // Truncate display for large bytecode
+                    if code.len() > 128 {
+                        println!("Code (first 64 bytes): {}...", &code[..128]);
+                    } else {
+                        println!("Code: {}", code);
+                    }
+                }
+            }
+        }
+        ContractAction::Call { address, method, args } => {
+            let args_param = if args.is_empty() { "" } else { &args };
+            let result = rpc_call(
+                rpc_url,
+                "clw_callContractView",
+                vec![address.into(), method.into(), args_param.into()],
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
     Ok(())
 }

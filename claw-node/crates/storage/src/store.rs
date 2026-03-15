@@ -2,7 +2,7 @@
 
 use borsh::BorshDeserialize;
 use claw_types::Block;
-use claw_types::transaction::{TxType, TokenTransferPayload, TokenMintTransferPayload, ReputationAttestPayload};
+use claw_types::transaction::{TxType, TokenTransferPayload, TokenMintTransferPayload, ReputationAttestPayload, ContractCallPayload};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::path::Path;
 use thiserror::Error;
@@ -161,6 +161,12 @@ impl ChainStore {
                 borsh::from_slice::<ReputationAttestPayload>(payload)
                     .ok()
                     .map(|p| p.to)
+            }
+            TxType::ContractDeploy => None,
+            TxType::ContractCall => {
+                borsh::from_slice::<ContractCallPayload>(payload)
+                    .ok()
+                    .map(|p| p.contract)
             }
             TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister => None,
         }
