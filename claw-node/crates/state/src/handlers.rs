@@ -311,3 +311,193 @@ pub fn handle_service_register(
 
     Ok(())
 }
+
+/// ContractDeploy: deploy a new smart contract.
+pub fn handle_contract_deploy(
+    state: &mut WorldState,
+    tx: &Transaction,
+) -> Result<(), StateError> {
+    let payload = ContractDeployPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Validate code size
+    if payload.code.len() > claw_vm::MAX_CONTRACT_CODE_SIZE {
+        return Err(StateError::ContractCodeTooLarge {
+            size: payload.code.len(),
+            max: claw_vm::MAX_CONTRACT_CODE_SIZE,
+        });
+    }
+
+    // Derive contract address from deployer + nonce
+    let nonce = state.nonces.get(&tx.from).copied().unwrap_or(0);
+    let contract_address = claw_vm::VmEngine::derive_contract_address(&tx.from, nonce);
+
+    // Check not already deployed
+    if state.contracts.contains_key(&contract_address) {
+        return Err(StateError::ContractAlreadyExists);
+    }
+
+    // Validate the Wasm module
+    let engine = claw_vm::VmEngine::new();
+    engine
+        .validate(&payload.code)
+        .map_err(|e| StateError::ContractExecutionFailed(e.to_string()))?;
+
+    // Store contract metadata and code
+    let code_hash = *blake3::hash(&payload.code).as_bytes();
+    let instance = claw_vm::ContractInstance {
+        address: contract_address,
+        code_hash,
+        creator: tx.from,
+        deployed_at: state.block_height,
+    };
+
+    state.contracts.insert(contract_address, instance);
+    state
+        .contract_code
+        .insert(contract_address, payload.code.clone());
+
+    // If init_method is specified, call the constructor
+    if !payload.init_method.is_empty() {
+        let ctx = claw_vm::ExecutionContext {
+            caller: tx.from,
+            contract_address,
+            block_height: state.block_height,
+            block_timestamp: 0,
+            value: 0,
+            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+        };
+
+        // Empty storage for a freshly deployed contract
+        let storage = std::collections::BTreeMap::new();
+
+        let result = engine
+            .execute(
+                &payload.code,
+                &payload.init_method,
+                &payload.init_args,
+                ctx,
+                storage,
+                state,
+            )
+            .map_err(|e| StateError::ContractExecutionFailed(e.to_string()))?;
+
+        // Apply storage changes
+        for (key, value) in result.storage_changes {
+            match value {
+                Some(v) => {
+                    state.contract_storage.insert((contract_address, key), v);
+                }
+                None => {
+                    state.contract_storage.remove(&(contract_address, key));
+                }
+            }
+        }
+
+        // Apply token transfers from constructor
+        for (to, amount) in result.transfers {
+            let contract_bal = state.balances.get(&contract_address).copied().unwrap_or(0);
+            if contract_bal >= amount {
+                *state.balances.entry(contract_address).or_insert(0) -= amount;
+                *state.balances.entry(to).or_insert(0) += amount;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// ContractCall: call a method on a deployed smart contract.
+pub fn handle_contract_call(
+    state: &mut WorldState,
+    tx: &Transaction,
+) -> Result<(), StateError> {
+    let payload = ContractCallPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Check contract exists
+    if !state.contracts.contains_key(&payload.contract) {
+        return Err(StateError::ContractNotFound(hex::encode(payload.contract)));
+    }
+
+    // Validate method name
+    if payload.method.is_empty() || payload.method.len() > 128 {
+        return Err(StateError::InvalidContractMethod(payload.method.clone()));
+    }
+
+    // Transfer value to contract if specified
+    if payload.value > 0 {
+        let caller_bal = state.balances.get(&tx.from).copied().unwrap_or(0);
+        if caller_bal < payload.value {
+            return Err(StateError::InsufficientBalance {
+                need: payload.value,
+                have: caller_bal,
+            });
+        }
+        *state.balances.entry(tx.from).or_insert(0) -= payload.value;
+        *state.balances.entry(payload.contract).or_insert(0) += payload.value;
+    }
+
+    // Get contract code (clone to avoid borrow conflict)
+    let code = state
+        .contract_code
+        .get(&payload.contract)
+        .ok_or_else(|| StateError::ContractNotFound(hex::encode(payload.contract)))?
+        .clone();
+
+    // Build storage snapshot for this contract
+    let storage: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = state
+        .contract_storage
+        .iter()
+        .filter(|((addr, _), _)| addr == &payload.contract)
+        .map(|((_, key), value)| (key.clone(), value.clone()))
+        .collect();
+
+    let ctx = claw_vm::ExecutionContext {
+        caller: tx.from,
+        contract_address: payload.contract,
+        block_height: state.block_height,
+        block_timestamp: 0,
+        value: payload.value,
+        fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+    };
+
+    let engine = claw_vm::VmEngine::new();
+    let result = engine
+        .execute(&code, &payload.method, &payload.args, ctx, storage, state)
+        .map_err(|e| {
+            // Refund value on execution failure
+            if payload.value > 0 {
+                *state.balances.entry(payload.contract).or_insert(0) -= payload.value;
+                *state.balances.entry(tx.from).or_insert(0) += payload.value;
+            }
+            StateError::ContractExecutionFailed(e.to_string())
+        })?;
+
+    // Apply storage changes
+    for (key, value) in result.storage_changes {
+        match value {
+            Some(v) => {
+                state
+                    .contract_storage
+                    .insert((payload.contract, key), v);
+            }
+            None => {
+                state
+                    .contract_storage
+                    .remove(&(payload.contract, key));
+            }
+        }
+    }
+
+    // Apply token transfers from contract
+    for (to, amount) in result.transfers {
+        let contract_bal = state.balances.get(&payload.contract).copied().unwrap_or(0);
+        if contract_bal >= amount {
+            *state.balances.entry(payload.contract).or_insert(0) -= amount;
+            *state.balances.entry(to).or_insert(0) += amount;
+        }
+    }
+
+    Ok(())
+}

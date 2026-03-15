@@ -9,6 +9,7 @@ members = [
     "crates/p2p",
     "crates/rpc",
     "crates/node",
+    "crates/vm",
 ]
 
 [workspace.package]
@@ -26,6 +27,10 @@ claw-storage = { path = "crates/storage" }
 claw-consensus = { path = "crates/consensus" }
 claw-p2p = { path = "crates/p2p" }
 claw-rpc = { path = "crates/rpc" }
+claw-vm = { path = "crates/vm" }
+
+# Wasm VM
+wasmer = { version = "4", default-features = false, features = ["singlepass"] }
 
 # Serialization
 borsh = { version = "1", features = ["derive"] }
@@ -49,6 +54,7 @@ tokio = { version = "1", features = ["full"] }
 
 # HTTP/RPC
 axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", features = ["json"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
 

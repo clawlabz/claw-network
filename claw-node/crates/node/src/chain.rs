@@ -878,6 +878,78 @@ impl Chain {
         self.inner.lock().unwrap().latest_block.timestamp
     }
 
+    /// Get contract instance metadata by address.
+    pub fn get_contract_info(&self, addr: &[u8; 32]) -> Option<claw_vm::ContractInstance> {
+        self.inner.lock().unwrap().state.contracts.get(addr).cloned()
+    }
+
+    /// Get contract storage value at a specific key.
+    pub fn get_contract_storage_value(&self, addr: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .state
+            .contract_storage
+            .get(&(*addr, key.to_vec()))
+            .cloned()
+    }
+
+    /// Get contract Wasm bytecode by address.
+    pub fn get_contract_code(&self, addr: &[u8; 32]) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().state.contract_code.get(addr).cloned()
+    }
+
+    /// Execute a read-only contract view call (no state mutation).
+    pub fn call_contract_view(
+        &self,
+        addr: &[u8; 32],
+        method: &str,
+        args: &[u8],
+    ) -> Result<claw_vm::ExecutionResult, String> {
+        let inner = self.inner.lock().unwrap();
+
+        let code = inner
+            .state
+            .contract_code
+            .get(addr)
+            .cloned()
+            .ok_or_else(|| "Contract not found".to_string())?;
+
+        // Build storage snapshot for this contract
+        let storage: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = inner
+            .state
+            .contract_storage
+            .iter()
+            .filter(|((a, _), _)| a == addr)
+            .map(|((_, k), v)| (k.clone(), v.clone()))
+            .collect();
+
+        let block_height = inner.state.block_height;
+        let block_timestamp = inner.latest_block.timestamp;
+
+        // Create a snapshot implementing ChainState for the VM
+        let snapshot = ChainStateSnapshot {
+            balances: inner.state.balances.clone(),
+            agents: inner.state.agents.clone(),
+            contract_storage: inner.state.contract_storage.clone(),
+        };
+
+        drop(inner); // Release lock before VM execution
+
+        let ctx = claw_vm::ExecutionContext {
+            caller: [0u8; 32],
+            contract_address: *addr,
+            block_height,
+            block_timestamp,
+            value: 0,
+            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+        };
+
+        let engine = claw_vm::VmEngine::new();
+        engine
+            .execute(&code, method, args, ctx, storage, &snapshot)
+            .map_err(|e| e.to_string())
+    }
+
     /// Testnet faucet: build a real TokenTransfer transaction from the node's
     /// validator keypair to the given address and submit it to the mempool.
     /// Returns the tx hash on success.
@@ -927,5 +999,37 @@ impl Chain {
         metrics::MEMPOOL_SIZE.set(inner.mempool.len() as f64);
 
         Ok(tx_hash)
+    }
+}
+
+/// Read-only snapshot of chain state for VM view calls.
+///
+/// Implements `claw_vm::ChainState` so the VM can query balances and
+/// agent info without holding the chain lock during execution.
+struct ChainStateSnapshot {
+    balances: std::collections::BTreeMap<[u8; 32], u128>,
+    agents: std::collections::BTreeMap<[u8; 32], claw_types::state::AgentIdentity>,
+    contract_storage: std::collections::BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
+}
+
+impl claw_vm::ChainState for ChainStateSnapshot {
+    fn get_balance(&self, address: &[u8; 32]) -> u128 {
+        self.balances.get(address).copied().unwrap_or(0)
+    }
+
+    fn get_agent_score(&self, _address: &[u8; 32]) -> u64 {
+        // Agent score is derived from reputation attestations, not stored on AgentIdentity.
+        // For view calls this returns 0; full scoring uses the reputation subsystem.
+        0
+    }
+
+    fn get_agent_registered(&self, address: &[u8; 32]) -> bool {
+        self.agents.contains_key(address)
+    }
+
+    fn get_contract_storage(&self, contract: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
+        self.contract_storage
+            .get(&(*contract, key.to_vec()))
+            .cloned()
     }
 }

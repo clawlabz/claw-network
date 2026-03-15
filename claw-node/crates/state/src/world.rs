@@ -38,7 +38,12 @@ pub const MAX_MEMO_LEN: usize = 256;
 pub const MAX_CATEGORY_LEN: usize = 64;
 
 /// The complete world state of ClawNetwork.
-#[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize)]
+///
+/// Note: Custom `BorshDeserialize` is implemented to handle backward compatibility
+/// with state stored before the contract fields were added. If the reader has
+/// remaining bytes after `block_height`, they are parsed as contract data; otherwise
+/// the contract fields default to empty.
+#[derive(Debug, Clone, Default, BorshSerialize)]
 pub struct WorldState {
     /// Native CLW balances.
     pub balances: BTreeMap<[u8; 32], u128>,
@@ -56,6 +61,67 @@ pub struct WorldState {
     pub services: BTreeMap<([u8; 32], String), ServiceEntry>,
     /// Current block height (set by the engine before applying txs).
     pub block_height: u64,
+    /// Deployed smart contracts.
+    pub contracts: BTreeMap<[u8; 32], claw_vm::ContractInstance>,
+    /// Contract storage: (contract_address, key) → value.
+    pub contract_storage: BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
+    /// Contract Wasm bytecode: contract_address → code.
+    pub contract_code: BTreeMap<[u8; 32], Vec<u8>>,
+}
+
+impl BorshDeserialize for WorldState {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+        let mut cursor = std::io::Cursor::new(&buf);
+
+        let balances = BTreeMap::<[u8; 32], u128>::deserialize_reader(&mut cursor)?;
+        let token_balances =
+            BTreeMap::<([u8; 32], [u8; 32]), u128>::deserialize_reader(&mut cursor)?;
+        let nonces = BTreeMap::<[u8; 32], u64>::deserialize_reader(&mut cursor)?;
+        let agents = BTreeMap::<[u8; 32], AgentIdentity>::deserialize_reader(&mut cursor)?;
+        let tokens = BTreeMap::<[u8; 32], TokenDef>::deserialize_reader(&mut cursor)?;
+        let reputation = Vec::<ReputationAttestation>::deserialize_reader(&mut cursor)?;
+        let services =
+            BTreeMap::<([u8; 32], String), ServiceEntry>::deserialize_reader(&mut cursor)?;
+        let block_height = u64::deserialize_reader(&mut cursor)?;
+
+        // New fields — default to empty if no more bytes remain (backward compat)
+        let has_more = (cursor.position() as usize) < buf.len();
+        let contracts = if has_more {
+            BTreeMap::<[u8; 32], claw_vm::ContractInstance>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let has_more = (cursor.position() as usize) < buf.len();
+        let contract_storage = if has_more {
+            BTreeMap::<([u8; 32], Vec<u8>), Vec<u8>>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let has_more = (cursor.position() as usize) < buf.len();
+        let contract_code = if has_more {
+            BTreeMap::<[u8; 32], Vec<u8>>::deserialize_reader(&mut cursor).unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
+        Ok(WorldState {
+            balances,
+            token_balances,
+            nonces,
+            agents,
+            tokens,
+            reputation,
+            services,
+            block_height,
+            contracts,
+            contract_storage,
+            contract_code,
+        })
+    }
 }
 
 impl WorldState {
@@ -101,6 +167,8 @@ impl WorldState {
             TxType::TokenMintTransfer => handlers::handle_token_mint_transfer(self, tx),
             TxType::ReputationAttest => handlers::handle_reputation_attest(self, tx),
             TxType::ServiceRegister => handlers::handle_service_register(self, tx),
+            TxType::ContractDeploy => handlers::handle_contract_deploy(self, tx),
+            TxType::ContractCall => handlers::handle_contract_call(self, tx),
         };
 
         if result.is_ok() {
@@ -185,6 +253,27 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
+        // Contracts
+        for (addr, instance) in &self.contracts {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"contract:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&instance.code_hash);
+            entry.extend_from_slice(&instance.creator);
+            entry.extend_from_slice(&instance.deployed_at.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Contract storage
+        for ((addr, key), value) in &self.contract_storage {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"cstore:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(key);
+            entry.extend_from_slice(value);
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
         leaves.sort();
         merkle_root(&leaves)
     }
@@ -205,5 +294,30 @@ impl WorldState {
     /// Get nonce for an address.
     pub fn get_nonce(&self, addr: &[u8; 32]) -> u64 {
         self.nonces.get(addr).copied().unwrap_or(0)
+    }
+}
+
+impl claw_vm::ChainState for WorldState {
+    fn get_balance(&self, address: &[u8; 32]) -> u128 {
+        self.balances.get(address).copied().unwrap_or(0)
+    }
+
+    fn get_agent_score(&self, address: &[u8; 32]) -> u64 {
+        self.reputation
+            .iter()
+            .filter(|r| r.to == *address)
+            .map(|r| r.score as u64)
+            .sum::<u64>()
+            .min(100)
+    }
+
+    fn get_agent_registered(&self, address: &[u8; 32]) -> bool {
+        self.agents.contains_key(address)
+    }
+
+    fn get_contract_storage(&self, contract: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
+        self.contract_storage
+            .get(&(*contract, key.to_vec()))
+            .cloned()
     }
 }

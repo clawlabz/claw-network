@@ -31,7 +31,7 @@ mod serde_sig {
     }
 }
 
-/// The 6 native transaction types supported by ClawNetwork.
+/// The native transaction types supported by ClawNetwork.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 #[borsh(use_discriminant = true)]
 #[repr(u8)]
@@ -42,6 +42,8 @@ pub enum TxType {
     TokenMintTransfer = 3,
     ReputationAttest = 4,
     ServiceRegister = 5,
+    ContractDeploy = 6,
+    ContractCall = 7,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -106,6 +108,30 @@ pub struct ServiceRegisterPayload {
     pub price_amount: u128,
     pub endpoint: String,
     pub active: bool,
+}
+
+/// Payload for deploying a new smart contract.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ContractDeployPayload {
+    /// Wasm bytecode of the contract.
+    pub code: Vec<u8>,
+    /// Optional constructor method name (empty string = no constructor).
+    pub init_method: String,
+    /// Optional constructor arguments (borsh-encoded).
+    pub init_args: Vec<u8>,
+}
+
+/// Payload for calling a deployed smart contract.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ContractCallPayload {
+    /// Address of the deployed contract.
+    pub contract: [u8; 32],
+    /// Method name to invoke.
+    pub method: String,
+    /// Method arguments (borsh-encoded).
+    pub args: Vec<u8>,
+    /// Native CLW value to send with the call.
+    pub value: u128,
 }
 
 impl Transaction {

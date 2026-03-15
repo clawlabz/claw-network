@@ -264,6 +264,63 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
+        "clw_getContractInfo" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => match chain.get_contract_info(&a) {
+                    Some(instance) => Ok(serde_json::json!({
+                        "address": hex::encode(instance.address),
+                        "codeHash": hex::encode(instance.code_hash),
+                        "creator": hex::encode(instance.creator),
+                        "deployedAt": instance.deployed_at,
+                    })),
+                    None => Ok(Value::Null),
+                },
+                Err(e) => Err(e),
+            }
+        }
+        "clw_getContractStorage" => {
+            let addr = parse_address(&req.params, 0);
+            let key_hex = req.params.get(1).and_then(|v| v.as_str()).unwrap_or("");
+            let key_bytes = hex::decode(key_hex).map_err(|e| format!("invalid key hex: {e}"));
+            match (addr, key_bytes) {
+                (Ok(a), Ok(k)) => match chain.get_contract_storage_value(&a, &k) {
+                    Some(value) => Ok(serde_json::json!(hex::encode(value))),
+                    None => Ok(Value::Null),
+                },
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
+        "clw_getContractCode" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => match chain.get_contract_code(&a) {
+                    Some(code) => Ok(serde_json::json!({
+                        "code": hex::encode(&code),
+                        "size": code.len(),
+                    })),
+                    None => Ok(Value::Null),
+                },
+                Err(e) => Err(e),
+            }
+        }
+        "clw_callContractView" => {
+            let addr = parse_address(&req.params, 0);
+            let method = req.params.get(1).and_then(|v| v.as_str()).unwrap_or("");
+            let args_hex = req.params.get(2).and_then(|v| v.as_str()).unwrap_or("");
+            let args = hex::decode(args_hex).map_err(|e| format!("invalid args hex: {e}"));
+            match (addr, args) {
+                (Ok(a), Ok(arg_bytes)) => match chain.call_contract_view(&a, method, &arg_bytes) {
+                    Ok(result) => Ok(serde_json::json!({
+                        "returnData": hex::encode(&result.return_data),
+                        "fuelConsumed": result.fuel_consumed,
+                        "logs": result.logs,
+                    })),
+                    Err(e) => Err(e),
+                },
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        }
         "clw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())
@@ -342,7 +399,14 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
                 Err(_) => (None, None),
             }
         }
-        TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister => (None, None),
+        TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister
+        | TxType::ContractDeploy => (None, None),
+        TxType::ContractCall => {
+            match borsh::from_slice::<claw_types::transaction::ContractCallPayload>(&tx.payload) {
+                Ok(p) => (Some(hex::encode(p.contract)), Some(p.value.to_string())),
+                Err(_) => (None, None),
+            }
+        }
     }
 }
 
@@ -355,6 +419,8 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::TokenMintTransfer => "TokenMintTransfer",
         claw_types::TxType::ReputationAttest => "ReputationAttest",
         claw_types::TxType::ServiceRegister => "ServiceRegister",
+        claw_types::TxType::ContractDeploy => "ContractDeploy",
+        claw_types::TxType::ContractCall => "ContractCall",
     }
 }
 
@@ -394,7 +460,17 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         }
         claw_types::TxType::AgentRegister
         | claw_types::TxType::TokenCreate
-        | claw_types::TxType::ServiceRegister => (None, None),
+        | claw_types::TxType::ServiceRegister
+        | claw_types::TxType::ContractDeploy => (None, None),
+        claw_types::TxType::ContractCall => {
+            // payload starts with [contract: 32 bytes]
+            if tx.payload.len() >= 32 {
+                let contract: [u8; 32] = tx.payload[..32].try_into().unwrap();
+                (Some(contract), None)
+            } else {
+                (None, None)
+            }
+        }
     }
 }
 
