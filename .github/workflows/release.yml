@@ -18,12 +18,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 — musl static (native build with musl-tools)
+          # Linux x86_64 — musl static via cargo-zigbuild (avoids wasmer __rust_probestack linker issue)
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-x86_64
-            use_musl: true
-          # Linux ARM64 — musl static (requires cross)
+            use_zigbuild: true
+          # Linux ARM64 — musl static (cross works fine for aarch64, no probestack on ARM)
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-aarch64
@@ -58,33 +58,41 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('claw-node/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Install musl-tools (Linux x86_64 native)
-        if: matrix.use_musl
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild
+        run: |
+          pip3 install ziglang
+          cargo install cargo-zigbuild
 
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (zigbuild — Linux x86_64 musl static)
+        if: matrix.use_zigbuild
+        working-directory: claw-node
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p claw-node
 
       - name: Build (cross — Linux ARM64 musl)
         if: matrix.use_cross
         working-directory: claw-node
         run: cross build --release --target ${{ matrix.target }} -p claw-node
 
-      - name: Build (native)
-        if: "!matrix.use_cross"
+      - name: Build (native — macOS / Windows)
+        if: "!matrix.use_cross && !matrix.use_zigbuild"
         working-directory: claw-node
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || '' }}
-          # wasmer_vm references __rust_probestack on x86_64 musl; inline probe avoids the missing symbol
-          RUSTFLAGS: ${{ matrix.use_musl && '-C probe-stack=inline' || '' }}
         run: cargo build --release --target ${{ matrix.target }} -p claw-node
 
       - name: Verify binary (Unix, non-cross)
         if: runner.os != 'Windows' && !matrix.use_cross
         run: |
           file claw-node/target/${{ matrix.target }}/release/claw-node
-          claw-node/target/${{ matrix.target }}/release/claw-node --version
+          # Only run --version on native arch (zigbuild produces static binary for same arch)
+          if [ "${{ matrix.use_zigbuild }}" != "true" ]; then
+            claw-node/target/${{ matrix.target }}/release/claw-node --version
+          fi
 
       - name: Verify static linking (cross)
         if: matrix.use_cross
@@ -119,11 +127,7 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        run: |
-          FILES=""
-          [ -f claw-node-*.tar.gz ] && FILES="$FILES claw-node-*.tar.gz"
-          [ -f claw-node-*.zip ] && FILES="$FILES claw-node-*.zip"
-          sha256sum $FILES > SHA256SUMS.txt
+        run: sha256sum claw-node-*.tar.gz claw-node-*.zip > SHA256SUMS.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
