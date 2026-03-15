@@ -15,23 +15,25 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Linux x86_64 — musl static (works on CentOS 7+, Ubuntu 18+, Alibaba/Amazon Linux, Alpine)
+          # Linux x86_64 — musl static (native build, no cross needed since ubuntu-latest is x86_64)
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-x86_64
-            cross: true
-          # Linux ARM64 — musl static
+            use_cross: false
+            use_musl: true
+          # Linux ARM64 — musl static (requires cross)
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-aarch64
-            cross: true
+            use_cross: true
           # macOS Apple Silicon (M1/M2/M3/M4)
           - target: aarch64-apple-darwin
             os: macos-14
             name: macos-aarch64
-          # macOS Intel (must use macos-13 Intel runner — wasmer singlepass can't cross-compile x86_64 on ARM)
+          # macOS Intel (must use macos-13 Intel runner — wasmer singlepass can't cross-compile)
           - target: x86_64-apple-darwin
             os: macos-13
             name: macos-x86_64
@@ -61,33 +63,36 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('claw-node/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
+      - name: Install musl-tools (Linux x86_64 native)
+        if: matrix.use_musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Install cross
-        if: matrix.cross
+        if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build (cross — Linux musl static)
-        if: matrix.cross
+      - name: Build (cross — Linux ARM64 musl)
+        if: matrix.use_cross
         working-directory: claw-node
         run: cross build --release --target ${{ matrix.target }} -p claw-node
 
-      - name: Build (native — macOS/Windows)
-        if: "!matrix.cross"
+      - name: Build (native — Linux musl / macOS / Windows)
+        if: "!matrix.use_cross"
         working-directory: claw-node
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || contains(matrix.target, 'x86_64-apple') && '10.15' || '' }}
         run: cargo build --release --target ${{ matrix.target }} -p claw-node
 
-      - name: Verify binary (Unix)
-        if: runner.os != 'Windows' && !matrix.cross
+      - name: Verify binary (Unix, non-cross)
+        if: runner.os != 'Windows' && !matrix.use_cross
         run: |
           file claw-node/target/${{ matrix.target }}/release/claw-node
           claw-node/target/${{ matrix.target }}/release/claw-node --version
 
-      - name: Verify static linking (Linux musl)
-        if: matrix.cross
+      - name: Verify static linking (cross)
+        if: matrix.use_cross
         run: |
           file claw-node/target/${{ matrix.target }}/release/claw-node
-          # Should show "statically linked"
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
