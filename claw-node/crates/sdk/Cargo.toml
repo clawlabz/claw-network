@@ -1,0 +1,9 @@
+[package]
+name = "claw-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SDK for writing smart contracts on ClawNetwork"
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
