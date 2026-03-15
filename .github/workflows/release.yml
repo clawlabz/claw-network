@@ -71,6 +71,8 @@ jobs:
         working-directory: claw-node
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || '' }}
+          # Force GNU linker on Linux — rust-lld (new default) can't resolve wasmer's __rust_probestack
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C linker=cc' || '' }}
         run: cargo build --release --target ${{ matrix.target }} -p claw-node
 
       - name: Verify binary (Unix, non-cross)
