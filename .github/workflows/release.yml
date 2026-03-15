@@ -18,12 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 — musl static via cargo-zigbuild (avoids wasmer __rust_probestack linker issue)
-          - target: x86_64-unknown-linux-musl
+          # Linux x86_64 — glibc (wasmer singlepass __rust_probestack incompatible with musl)
+          - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             name: linux-x86_64
-            use_zigbuild: true
-          # Linux ARM64 — musl static (cross works fine for aarch64, no probestack on ARM)
+          # Linux ARM64 — musl static (no probestack issue on ARM)
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: linux-aarch64
@@ -58,28 +57,17 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('claw-node/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Install cargo-zigbuild
-        if: matrix.use_zigbuild
-        run: |
-          pip3 install ziglang
-          cargo install cargo-zigbuild
-
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build (zigbuild — Linux x86_64 musl static)
-        if: matrix.use_zigbuild
-        working-directory: claw-node
-        run: cargo zigbuild --release --target ${{ matrix.target }} -p claw-node
-
-      - name: Build (cross — Linux ARM64 musl)
+      - name: Build (cross)
         if: matrix.use_cross
         working-directory: claw-node
         run: cross build --release --target ${{ matrix.target }} -p claw-node
 
-      - name: Build (native — macOS / Windows)
-        if: "!matrix.use_cross && !matrix.use_zigbuild"
+      - name: Build (native)
+        if: "!matrix.use_cross"
         working-directory: claw-node
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ contains(matrix.target, 'aarch64-apple') && '11.0' || '' }}
@@ -89,10 +77,7 @@ jobs:
         if: runner.os != 'Windows' && !matrix.use_cross
         run: |
           file claw-node/target/${{ matrix.target }}/release/claw-node
-          # Only run --version on native arch (zigbuild produces static binary for same arch)
-          if [ "${{ matrix.use_zigbuild }}" != "true" ]; then
-            claw-node/target/${{ matrix.target }}/release/claw-node --version
-          fi
+          claw-node/target/${{ matrix.target }}/release/claw-node --version
 
       - name: Verify static linking (cross)
         if: matrix.use_cross
@@ -136,14 +121,14 @@ jobs:
           body: |
             ## Install
 
-            **Linux** (x86_64, static binary — works on any distro):
+            **Linux** (x86_64, requires glibc 2.31+):
             ```bash
             curl -L https://github.com/clawlabz/claw-network/releases/download/${{ github.ref_name }}/claw-node-linux-x86_64.tar.gz | tar xz
             sudo mv claw-node /usr/local/bin/
             claw-node --version
             ```
 
-            **Linux ARM64**:
+            **Linux ARM64** (static binary — works on any distro):
             ```bash
             curl -L https://github.com/clawlabz/claw-network/releases/download/${{ github.ref_name }}/claw-node-linux-aarch64.tar.gz | tar xz
             sudo mv claw-node /usr/local/bin/
@@ -155,7 +140,7 @@ jobs:
             sudo mv claw-node /usr/local/bin/
             ```
 
-            **Docker**:
+            **Docker** (any platform):
             ```bash
             docker run -d -p 9710:9710 -p 9711:9711 ghcr.io/clawlabz/claw-node:latest
             ```
