@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use claw_types::state::ReputationAttestation;
 
+use crate::slashing::SlashingState;
 use crate::types::*;
 
 /// Manages the validator candidate pool and active validator set.
@@ -78,13 +79,31 @@ impl ValidatorSet {
     /// Recalculate the active validator set based on current stakes and reputation data.
     /// Called at epoch boundaries (every EPOCH_LENGTH blocks).
     pub fn recalculate_active(&mut self, reputation: &[ReputationAttestation]) {
+        self.recalculate_active_with_slashing(reputation, None, 0);
+    }
+
+    /// Recalculate the active validator set, filtering out jailed validators.
+    /// Called at epoch boundaries (every EPOCH_LENGTH blocks).
+    pub fn recalculate_active_with_slashing(
+        &mut self,
+        reputation: &[ReputationAttestation],
+        slashing: Option<&SlashingState>,
+        current_height: u64,
+    ) {
         // Aggregate agent scores from reputation attestations
         let agent_scores = aggregate_agent_scores(reputation);
 
-        // Calculate weights for all candidates
+        // Calculate weights for all candidates, filtering out jailed validators
         let mut weighted: Vec<ActiveValidator> = self
             .candidates
             .values()
+            .filter(|stake_info| {
+                // Exclude jailed validators from the active set
+                match slashing {
+                    Some(s) => !s.is_jailed(&stake_info.address, current_height),
+                    None => true,
+                }
+            })
             .map(|stake_info| {
                 let agent_score = agent_scores
                     .get(&stake_info.address)
@@ -117,6 +136,31 @@ impl ValidatorSet {
         weighted.truncate(MAX_VALIDATORS);
         self.active = weighted;
         self.epoch += 1;
+    }
+
+    /// Slash a validator's stake by the given basis points (e.g., 1000 = 10%).
+    /// If the remaining stake falls below MIN_STAKE, the candidate is removed.
+    /// Returns the amount slashed.
+    pub fn slash(&mut self, address: &[u8; 32], basis_points: u64) -> u128 {
+        let stake = match self.candidates.get(address) {
+            Some(info) => info.amount,
+            None => return 0,
+        };
+
+        let slash_amount = (stake * basis_points as u128) / 10_000;
+        if slash_amount == 0 {
+            return 0;
+        }
+
+        let remaining = stake.saturating_sub(slash_amount);
+
+        if remaining < MIN_STAKE {
+            self.candidates.remove(address);
+        } else if let Some(info) = self.candidates.get_mut(address) {
+            info.amount = remaining;
+        }
+
+        slash_amount
     }
 
     /// Check if a given height is an epoch boundary.

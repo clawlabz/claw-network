@@ -77,6 +77,12 @@ enum Commands {
     },
     /// Encrypt an existing plaintext key.json (requires CLAW_KEY_PASSWORD env var)
     EncryptKey,
+    /// Export the default genesis config for a network as JSON
+    Genesis {
+        /// Network preset to export
+        #[arg(long, default_value = "devnet")]
+        network: Network,
+    },
     /// Smart contract queries (reads from a running node via RPC)
     Contract {
         #[command(subcommand)]
@@ -235,7 +241,19 @@ async fn main() -> Result<()> {
                 "Starting claw-node"
             );
 
-            let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes)?;
+            // Load genesis config: genesis.json in data_dir > built-in default
+            let network_name = match resolved_network {
+                Network::Mainnet => "mainnet",
+                Network::Testnet => "testnet",
+                Network::Devnet => "devnet",
+            };
+            let genesis_cfg = genesis::load_genesis_config(
+                &data_dir,
+                network_name,
+                Some(&cfg.address),
+            )?;
+
+            let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes, &genesis_cfg)?;
 
             // Fast sync: log intent (actual snapshot request happens on first peer connection)
             if sync_mode == sync::SyncMode::Fast {
@@ -325,6 +343,23 @@ async fn main() -> Result<()> {
         },
         Commands::EncryptKey => {
             config::encrypt_existing_key(&data_dir)?;
+        }
+        Commands::Genesis { network } => {
+            let network_name = match network {
+                Network::Mainnet => "mainnet",
+                Network::Testnet => "testnet",
+                Network::Devnet => "devnet",
+            };
+            // Try to load node address for devnet defaults
+            let node_address = config::load_config(&data_dir)
+                .ok()
+                .map(|c| c.address);
+            let config = genesis::default_for_network(
+                network_name,
+                node_address.as_ref(),
+            );
+            let json = genesis::export_json(&config)?;
+            println!("{json}");
         }
         Commands::Contract { action, rpc } => {
             handle_contract_cli(action, &rpc).await?;

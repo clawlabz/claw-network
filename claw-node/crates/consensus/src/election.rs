@@ -50,6 +50,39 @@ pub fn elect_proposer(
     Some(validators.last().unwrap().address)
 }
 
+/// Elect a fallback block proposer when the primary proposer times out.
+///
+/// Returns the next-highest-weight validator that is not the primary proposer.
+/// Uses a deterministic seed derived from the same inputs plus a "fallback" tag.
+pub fn elect_fallback_proposer(
+    validators: &[ActiveValidator],
+    prev_hash: &[u8; 32],
+    height: u64,
+) -> Option<[u8; 32]> {
+    if validators.len() < 2 {
+        // With 0 or 1 validators, no fallback is possible
+        return None;
+    }
+
+    let primary = elect_proposer(validators, prev_hash, height)?;
+
+    // Find the next-highest-weight validator after the primary.
+    // Validators are assumed sorted by weight descending in the active set,
+    // so iterate and pick the first that is not the primary.
+    // If the list isn't sorted, sort a copy.
+    let mut sorted = validators.to_vec();
+    sorted.sort_by(|a, b| {
+        b.weight
+            .cmp(&a.weight)
+            .then_with(|| a.address.cmp(&b.address))
+    });
+
+    sorted
+        .iter()
+        .find(|v| v.address != primary)
+        .map(|v| v.address)
+}
+
 /// Compute the VRF seed from previous block hash and height.
 /// This is a deterministic function that any node can verify.
 pub fn vrf_seed(prev_hash: &[u8; 32], height: u64) -> [u8; 32] {

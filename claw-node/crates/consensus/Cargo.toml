@@ -11,6 +11,7 @@ claw-crypto.workspace = true
 claw-state.workspace = true
 borsh.workspace = true
 blake3.workspace = true
+hex = "0.4"
 ed25519-dalek.workspace = true
 rand.workspace = true
 serde.workspace = true

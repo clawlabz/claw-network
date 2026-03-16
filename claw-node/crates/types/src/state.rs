@@ -72,6 +72,21 @@ pub struct ServiceEntry {
     pub active: bool,
 }
 
+/// An entry in the unbonding queue for a validator withdrawing stake.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct UnbondingEntry {
+    /// Validator address that initiated the unbonding.
+    pub address: [u8; 32],
+    /// Amount of CLW being unbonded.
+    pub amount: u128,
+    /// Block height at which the unbonded stake can be claimed.
+    pub release_height: u64,
+}
+
+/// Unbonding period in blocks: 7 days at 3-second block time.
+/// 7 * 24 * 3600 / 3 = 201,600 blocks.
+pub const UNBONDING_PERIOD_BLOCKS: u64 = 201_600;
+
 /// Native CLW token ID (all zeros, represents the native token).
 pub const NATIVE_TOKEN_ID: [u8; 32] = [0u8; 32];
 

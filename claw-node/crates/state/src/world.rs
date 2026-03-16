@@ -67,6 +67,10 @@ pub struct WorldState {
     pub contract_storage: BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
     /// Contract Wasm bytecode: contract_address → code.
     pub contract_code: BTreeMap<[u8; 32], Vec<u8>>,
+    /// Validator stakes: address → staked amount (in base units, 9 decimals).
+    pub stakes: BTreeMap<[u8; 32], u128>,
+    /// Unbonding queue for stake withdrawals awaiting the unbonding period.
+    pub unbonding_queue: Vec<claw_types::state::UnbondingEntry>,
 }
 
 impl BorshDeserialize for WorldState {
@@ -108,6 +112,21 @@ impl BorshDeserialize for WorldState {
             BTreeMap::new()
         };
 
+        let has_more = (cursor.position() as usize) < buf.len();
+        let stakes = if has_more {
+            BTreeMap::<[u8; 32], u128>::deserialize_reader(&mut cursor).unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
+        let has_more = (cursor.position() as usize) < buf.len();
+        let unbonding_queue = if has_more {
+            Vec::<claw_types::state::UnbondingEntry>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         Ok(WorldState {
             balances,
             token_balances,
@@ -120,13 +139,19 @@ impl BorshDeserialize for WorldState {
             contracts,
             contract_storage,
             contract_code,
+            stakes,
+            unbonding_queue,
         })
     }
 }
 
 impl WorldState {
-    /// Apply a transaction to the state. Returns Ok(()) on success.
-    pub fn apply_tx(&mut self, tx: &Transaction) -> Result<(), StateError> {
+    /// Apply a transaction to the state. Returns the gas fee charged on success.
+    ///
+    /// The fee is deducted from the sender but NOT credited to anyone yet.
+    /// Callers should accumulate fees per block and then call
+    /// [`crate::rewards::distribute_fees`] at block finalization.
+    pub fn apply_tx(&mut self, tx: &Transaction) -> Result<u128, StateError> {
         // 0. Check payload size limit
         if tx.payload.len() > MAX_TX_PAYLOAD_SIZE {
             return Err(StateError::PayloadTooLarge {
@@ -157,7 +182,7 @@ impl WorldState {
             });
         }
         *self.balances.entry(tx.from).or_insert(0) -= GAS_FEE;
-        // Gas is burned — not credited to anyone
+        // Fee is deducted but not credited — caller distributes via rewards::distribute_fees
 
         // 4. Dispatch to handler
         let result = match tx.tx_type {
@@ -169,17 +194,20 @@ impl WorldState {
             TxType::ServiceRegister => handlers::handle_service_register(self, tx),
             TxType::ContractDeploy => handlers::handle_contract_deploy(self, tx),
             TxType::ContractCall => handlers::handle_contract_call(self, tx),
+            TxType::StakeDeposit => handlers::handle_stake_deposit(self, tx),
+            TxType::StakeWithdraw => handlers::handle_stake_withdraw(self, tx),
+            TxType::StakeClaim => handlers::handle_stake_claim(self, tx),
         };
 
         if result.is_ok() {
             // 5. Update nonce on success
             self.nonces.insert(tx.from, tx.nonce);
+            Ok(GAS_FEE)
         } else {
             // Rollback gas on failure (gas is only charged on success)
             *self.balances.entry(tx.from).or_insert(0) += GAS_FEE;
+            result.map(|()| 0)
         }
-
-        result
     }
 
     /// Compute the Merkle state root from all state entries.
@@ -272,6 +300,25 @@ impl WorldState {
             entry.extend_from_slice(key);
             entry.extend_from_slice(value);
             leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Stakes
+        for (addr, amount) in &self.stakes {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"stake:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&amount.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Unbonding queue
+        for entry in &self.unbonding_queue {
+            let mut e = Vec::new();
+            e.extend_from_slice(b"unbond:");
+            e.extend_from_slice(&entry.address);
+            e.extend_from_slice(&entry.amount.to_le_bytes());
+            e.extend_from_slice(&entry.release_height.to_le_bytes());
+            leaves.push(*blake3::hash(&e).as_bytes());
         }
 
         leaves.sort();

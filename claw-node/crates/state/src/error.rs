@@ -84,4 +84,10 @@ pub enum StateError {
 
     #[error("contract already exists at address")]
     ContractAlreadyExists,
+
+    #[error("staking error: {0}")]
+    StakeError(String),
+
+    #[error("no claimable unbonding entries")]
+    NoClaimableUnbonding,
 }

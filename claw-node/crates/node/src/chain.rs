@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use claw_consensus::{elect_proposer, quorum, ValidatorSet, MIN_STAKE};
+use claw_consensus::{elect_proposer, elect_fallback_proposer, quorum, SlashingState, ValidatorSet, BLOCK_TIME_SECS, MIN_STAKE};
 use claw_crypto::ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
 use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, P2pNetwork, SyncRequest, SyncResponse};
 use claw_state::WorldState;
@@ -14,7 +14,7 @@ use claw_types::block::Block;
 use claw_types::transaction::Transaction;
 use tokio::sync::mpsc;
 
-use crate::genesis;
+use crate::genesis::{self, GenesisConfig};
 use crate::metrics;
 
 /// Maximum number of transactions allowed in the mempool.
@@ -35,19 +35,28 @@ struct ChainInner {
     validator_address: [u8; 32],
     latest_block: Block,
     validator_set: ValidatorSet,
+    /// Slashing state: jailed validators, evidence, missed slots.
+    slashing: SlashingState,
     /// Pending votes for the latest block, keyed by voter address.
     pending_votes: std::collections::HashMap<[u8; 32], [u8; 64]>,
 }
 
 impl Chain {
     /// Create a new chain, loading from storage or creating genesis.
-    pub fn new(data_dir: &Path, signing_key_bytes: [u8; 32]) -> anyhow::Result<Self> {
+    ///
+    /// Accepts a `GenesisConfig` that drives the initial state and validator set
+    /// when no existing chain data is found on disk.
+    pub fn new(
+        data_dir: &Path,
+        signing_key_bytes: [u8; 32],
+        genesis_config: &GenesisConfig,
+    ) -> anyhow::Result<Self> {
         let db_path = data_dir.join("chain.redb");
         let store = ChainStore::open(&db_path)?;
         let signing_key = SigningKey::from_bytes(&signing_key_bytes);
         let validator_address = signing_key.verifying_key().to_bytes();
 
-        let (state, latest_block) = match store.get_latest_height()? {
+        let (state, latest_block, validator_stakes) = match store.get_latest_height()? {
             Some(height) => {
                 let state_bytes = store
                     .get_state_snapshot()?
@@ -55,32 +64,40 @@ impl Chain {
                 let state: WorldState = borsh::from_slice(&state_bytes)?;
                 let block = store.get_block(height)?.expect("block must exist");
                 tracing::info!(height, "Loaded chain from storage");
-                (state, block)
+
+                // Rebuild validator stakes from genesis config
+                let stakes = genesis::build_validator_set(genesis_config)?;
+                (state, block, stakes)
             }
             None => {
-                let mut state = genesis::create_genesis_state();
-                // In testnet/single-node mode, give the node's own address some CLW
-                // so it can act as a faucet for testing.
-                let faucet_amount: u128 = 1_000_000_000_000_000; // 1M CLW
-                *state.balances.entry(validator_address).or_insert(0) += faucet_amount;
-                tracing::info!(
-                    address = %hex::encode(validator_address),
-                    amount = faucet_amount,
-                    "Allocated testnet faucet balance to node"
-                );
-                let block = genesis::create_genesis_block(&state);
+                let state = genesis::create_genesis_state(genesis_config)?;
+                let block = genesis::create_genesis_block(&state, genesis_config);
                 store.put_block(&block)?;
                 store.put_state_snapshot(&borsh::to_vec(&state)?)?;
-                tracing::info!("Created genesis block");
-                (state, block)
+                tracing::info!(
+                    chain_id = %genesis_config.chain_id,
+                    allocations = genesis_config.allocations.len(),
+                    validators = genesis_config.validators.len(),
+                    "Created genesis block from config"
+                );
+
+                let stakes = genesis::build_validator_set(genesis_config)?;
+                (state, block, stakes)
             }
         };
 
-        // Initialize validator set — in single-node mode, self is the sole validator.
-        // In multi-node mode, this would be loaded from genesis config.
-        let validator_set = ValidatorSet::with_initial_stakes(vec![
-            (validator_address, MIN_STAKE * 100),
-        ]);
+        // Initialize validator set from genesis config.
+        // If the node's own address is not already in the validator set (devnet),
+        // include it as a fallback so the node can produce blocks.
+        let mut stakes = validator_stakes;
+        if !stakes.iter().any(|(addr, _)| *addr == validator_address) {
+            stakes.push((validator_address, MIN_STAKE * 100));
+            tracing::info!(
+                address = %hex::encode(validator_address),
+                "Node address not in genesis validators, adding as fallback"
+            );
+        }
+        let validator_set = ValidatorSet::with_initial_stakes(stakes);
 
         Ok(Self {
             inner: Arc::new(Mutex::new(ChainInner {
@@ -91,6 +108,7 @@ impl Chain {
                 validator_address,
                 latest_block,
                 validator_set,
+                slashing: SlashingState::new(),
                 pending_votes: std::collections::HashMap::new(),
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
@@ -129,6 +147,31 @@ impl Chain {
     fn is_proposer(inner: &ChainInner) -> bool {
         let next_height = inner.latest_block.height + 1;
         match elect_proposer(
+            &inner.validator_set.active,
+            &inner.latest_block.hash,
+            next_height,
+        ) {
+            Some(addr) => addr == inner.validator_address,
+            None => false,
+        }
+    }
+
+    /// Check if we are the fallback proposer and the primary has timed out.
+    /// Returns true if elapsed time > 2x BLOCK_TIME_SECS and we are the fallback.
+    fn is_fallback_proposer(inner: &ChainInner) -> bool {
+        let next_height = inner.latest_block.height + 1;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let elapsed = now.saturating_sub(inner.latest_block.timestamp);
+
+        // Only activate fallback after 2x block time
+        if elapsed <= BLOCK_TIME_SECS * 2 {
+            return false;
+        }
+
+        match elect_fallback_proposer(
             &inner.validator_set.active,
             &inner.latest_block.hash,
             next_height,
@@ -205,15 +248,36 @@ impl Chain {
             return None;
         }
 
-        // Check if we should produce (consensus election)
-        if !Self::is_proposer(inner) {
+        // Check if we should produce (consensus election — primary or fallback)
+        let is_primary = Self::is_proposer(inner);
+        let is_fallback = !is_primary && Self::is_fallback_proposer(inner);
+
+        if !is_primary && !is_fallback {
             return None;
+        }
+
+        // If we are producing as fallback, record the primary's missed slot
+        if is_fallback {
+            let next_height = inner.latest_block.height + 1;
+            if let Some(primary) = elect_proposer(
+                &inner.validator_set.active,
+                &inner.latest_block.hash,
+                next_height,
+            ) {
+                inner.slashing.record_assigned_slot(&primary);
+                inner.slashing.record_missed_slot(&primary);
+                tracing::warn!(
+                    primary = %hex::encode(primary),
+                    "Primary proposer timed out — producing block as fallback"
+                );
+            }
         }
 
         let new_height = inner.latest_block.height + 1;
         inner.state.block_height = new_height;
 
         let mut included_txs = Vec::new();
+        let mut total_fees: u128 = 0;
         let mut pending = std::mem::take(&mut inner.mempool);
 
         // Sort by (from, nonce) for deterministic ordering
@@ -221,7 +285,8 @@ impl Chain {
 
         for tx in pending {
             match inner.state.apply_tx(&tx) {
-                Ok(()) => {
+                Ok(fee) => {
+                    total_fees += fee;
                     included_txs.push(tx);
                 }
                 Err(e) => {
@@ -237,6 +302,26 @@ impl Chain {
         if included_txs.is_empty() {
             return None;
         }
+
+        // Distribute block rewards to validators
+        let validators: Vec<([u8; 32], u64)> = inner
+            .validator_set
+            .active
+            .iter()
+            .map(|v| (v.address, v.weight))
+            .collect();
+        claw_state::rewards::distribute_block_reward(
+            &mut inner.state,
+            &validators,
+            new_height,
+        );
+
+        // Distribute accumulated transaction fees
+        claw_state::rewards::distribute_fees(
+            &mut inner.state,
+            &inner.validator_address,
+            total_fees,
+        );
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -279,10 +364,26 @@ impl Chain {
             }
         }
 
-        // Check epoch boundary for validator set rotation
+        // Sync validator set candidates from world state stakes
+        Self::sync_validator_stakes(inner);
+
+        // Check epoch boundary for validator set rotation with slashing
         if ValidatorSet::is_epoch_boundary(new_height) {
+            // Process downtime slashing before recalculating active set
+            {
+                let slashing = std::mem::take(&mut inner.slashing);
+                slashing.process_downtime_slashing(&mut inner.validator_set);
+                inner.slashing = slashing;
+            }
+            inner.slashing.unjail_expired(new_height);
             let rep = inner.state.reputation.clone();
-            inner.validator_set.recalculate_active(&rep);
+            let slashing_ref = inner.slashing.clone();
+            inner.validator_set.recalculate_active_with_slashing(
+                &rep,
+                Some(&slashing_ref),
+                new_height,
+            );
+            inner.slashing.reset_epoch_counters();
             tracing::info!(
                 epoch = inner.validator_set.epoch,
                 validators = inner.validator_set.active.len(),
@@ -348,12 +449,8 @@ impl Chain {
                 }
             }
 
-            // Relax quorum requirement for small validator sets (1-2 validators)
-            let required = if active.len() <= 2 {
-                1
-            } else {
-                quorum(active.len())
-            };
+            // Always require proper BFT quorum (> 2/3)
+            let required = quorum(active.len());
             if valid_signers.len() < required {
                 return Err(format!(
                     "Insufficient signatures: {} of {} required",
@@ -363,30 +460,65 @@ impl Chain {
             }
         }
 
-        // Verify proposer authorization
+        // Verify proposer authorization (accept primary or fallback proposer)
         let expected_proposer = elect_proposer(
             &inner.validator_set.active,
             &block.prev_hash,
             block.height,
         );
+        let fallback = elect_fallback_proposer(
+            &inner.validator_set.active,
+            &block.prev_hash,
+            block.height,
+        );
         if let Some(expected) = expected_proposer {
-            if block.validator != expected {
+            let is_primary = block.validator == expected;
+            let is_fallback = fallback.map_or(false, |fb| block.validator == fb);
+            if !is_primary && !is_fallback {
                 return Err(format!(
-                    "Block proposer mismatch: expected {}, got {}",
+                    "Block proposer mismatch: expected {} (or fallback {}), got {}",
                     hex::encode(expected),
+                    fallback.map_or_else(|| "none".to_string(), |fb| hex::encode(fb)),
                     hex::encode(block.validator)
                 ));
+            }
+            // If the fallback produced this block, record a missed slot for the primary
+            if is_fallback && !is_primary {
+                inner.slashing.record_assigned_slot(&expected);
+                inner.slashing.record_missed_slot(&expected);
             }
         }
 
         // Apply all transactions
         let mut state_clone = inner.state.clone();
         state_clone.block_height = block.height;
+        let mut total_fees: u128 = 0;
         for tx in &block.transactions {
-            state_clone
+            let fee = state_clone
                 .apply_tx(tx)
                 .map_err(|e| format!("tx failed: {e}"))?;
+            total_fees += fee;
         }
+
+        // Distribute block rewards to validators
+        let validators: Vec<([u8; 32], u64)> = inner
+            .validator_set
+            .active
+            .iter()
+            .map(|v| (v.address, v.weight))
+            .collect();
+        claw_state::rewards::distribute_block_reward(
+            &mut state_clone,
+            &validators,
+            block.height,
+        );
+
+        // Distribute accumulated transaction fees
+        claw_state::rewards::distribute_fees(
+            &mut state_clone,
+            &block.validator,
+            total_fees,
+        );
 
         // Verify state root
         let computed_root = state_clone.state_root();
@@ -410,10 +542,26 @@ impl Chain {
             }
         }
 
-        // Epoch rotation check
+        // Sync validator set candidates from world state stakes
+        Self::sync_validator_stakes(&mut inner);
+
+        // Epoch rotation check with slashing
         if ValidatorSet::is_epoch_boundary(block.height) {
+            // Process downtime slashing before recalculating active set
+            {
+                let slashing = std::mem::take(&mut inner.slashing);
+                slashing.process_downtime_slashing(&mut inner.validator_set);
+                inner.slashing = slashing;
+            }
+            inner.slashing.unjail_expired(block.height);
             let rep = inner.state.reputation.clone();
-            inner.validator_set.recalculate_active(&rep);
+            let slashing_ref = inner.slashing.clone();
+            inner.validator_set.recalculate_active_with_slashing(
+                &rep,
+                Some(&slashing_ref),
+                block.height,
+            );
+            inner.slashing.reset_epoch_counters();
         }
 
         tracing::info!(
@@ -948,6 +1096,94 @@ impl Chain {
         engine
             .execute(&code, method, args, ctx, storage, &snapshot)
             .map_err(|e| e.to_string())
+    }
+
+    /// Synchronize the ValidatorSet candidates from WorldState stakes.
+    /// Called after block production/application to keep the consensus-layer
+    /// validator set in sync with the state-layer stake map.
+    fn sync_validator_stakes(inner: &mut ChainInner) {
+        let block_height = inner.state.block_height;
+
+        // Collect addresses that are in WorldState stakes but not in ValidatorSet
+        // or whose amounts differ.
+        let state_stakes: Vec<([u8; 32], u128)> = inner
+            .state
+            .stakes
+            .iter()
+            .map(|(addr, amount)| (*addr, *amount))
+            .collect();
+
+        // Build a set of addresses currently staked in world state
+        let staked_addrs: std::collections::HashSet<[u8; 32]> = inner
+            .state
+            .stakes
+            .keys()
+            .copied()
+            .collect();
+
+        // Remove candidates that are no longer in world state stakes
+        let to_remove: Vec<[u8; 32]> = inner
+            .validator_set
+            .candidates
+            .keys()
+            .filter(|addr| !staked_addrs.contains(*addr))
+            .copied()
+            .collect();
+        for addr in to_remove {
+            inner.validator_set.candidates.remove(&addr);
+        }
+
+        // Add or update candidates from world state
+        for (addr, amount) in state_stakes {
+            let entry = inner
+                .validator_set
+                .candidates
+                .entry(addr)
+                .or_insert(claw_consensus::StakeInfo {
+                    address: addr,
+                    amount: 0,
+                    staked_at: block_height,
+                });
+            entry.amount = amount;
+        }
+    }
+
+    // === Staking query methods for RPC ===
+
+    /// Get the current stake amount for an address.
+    pub fn get_stake(&self, addr: &[u8; 32]) -> u128 {
+        self.inner.lock().unwrap().state.stakes.get(addr).copied().unwrap_or(0)
+    }
+
+    /// Get unbonding entries for an address.
+    pub fn get_unbonding(&self, addr: &[u8; 32]) -> Vec<claw_types::state::UnbondingEntry> {
+        self.inner
+            .lock()
+            .unwrap()
+            .state
+            .unbonding_queue
+            .iter()
+            .filter(|e| e.address == *addr)
+            .cloned()
+            .collect()
+    }
+
+    /// Get active validators with their stakes and weights.
+    pub fn get_validators(&self) -> Vec<serde_json::Value> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .validator_set
+            .active
+            .iter()
+            .map(|v| {
+                serde_json::json!({
+                    "address": hex::encode(v.address),
+                    "stake": v.stake.to_string(),
+                    "weight": v.weight,
+                    "agentScore": v.agent_score,
+                })
+            })
+            .collect()
     }
 
     /// Testnet faucet: build a real TokenTransfer transaction from the node's

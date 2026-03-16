@@ -501,3 +501,124 @@ pub fn handle_contract_call(
 
     Ok(())
 }
+
+/// Minimum stake required to become a validator (10,000 CLAW with 9 decimals).
+const MIN_STAKE: u128 = 10_000_000_000_000;
+
+/// StakeDeposit: lock CLAW as validator stake.
+pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    let payload = StakeDepositPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    if payload.amount == 0 {
+        return Err(StateError::ZeroAmount);
+    }
+
+    // Check sender has enough balance
+    let sender_bal = state.balances.get(&tx.from).copied().unwrap_or(0);
+    if sender_bal < payload.amount {
+        return Err(StateError::InsufficientBalance {
+            need: payload.amount,
+            have: sender_bal,
+        });
+    }
+
+    // Compute new total stake
+    let current_stake = state.stakes.get(&tx.from).copied().unwrap_or(0);
+    let new_stake = current_stake
+        .checked_add(payload.amount)
+        .ok_or_else(|| StateError::StakeError("stake overflow".into()))?;
+
+    // First-time stakers must meet the minimum stake
+    if current_stake == 0 && new_stake < MIN_STAKE {
+        return Err(StateError::StakeError(format!(
+            "initial stake {} below minimum {}",
+            new_stake, MIN_STAKE
+        )));
+    }
+
+    // Deduct from balance, add to stake
+    *state.balances.entry(tx.from).or_insert(0) -= payload.amount;
+    state.stakes.insert(tx.from, new_stake);
+
+    Ok(())
+}
+
+/// StakeWithdraw: begin unbonding stake (starts countdown to claim).
+pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    let payload = StakeWithdrawPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    if payload.amount == 0 {
+        return Err(StateError::ZeroAmount);
+    }
+
+    let current_stake = state.stakes.get(&tx.from).copied().unwrap_or(0);
+    if payload.amount > current_stake {
+        return Err(StateError::StakeError(format!(
+            "unstake {} exceeds staked amount {}",
+            payload.amount, current_stake
+        )));
+    }
+
+    let remaining = current_stake - payload.amount;
+
+    // If remaining stake is nonzero but below minimum, reject (must withdraw all)
+    if remaining > 0 && remaining < MIN_STAKE {
+        return Err(StateError::StakeError(format!(
+            "remaining stake {} would be below minimum {}; withdraw all or leave at least {}",
+            remaining, MIN_STAKE, MIN_STAKE
+        )));
+    }
+
+    // Update or remove stake
+    if remaining == 0 {
+        state.stakes.remove(&tx.from);
+    } else {
+        state.stakes.insert(tx.from, remaining);
+    }
+
+    // Create unbonding entry
+    let release_height = state.block_height + UNBONDING_PERIOD_BLOCKS;
+    state.unbonding_queue.push(UnbondingEntry {
+        address: tx.from,
+        amount: payload.amount,
+        release_height,
+    });
+
+    Ok(())
+}
+
+/// StakeClaim: claim all mature unbonding entries, crediting balance.
+pub fn handle_stake_claim(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    // StakeClaimPayload is a unit struct — we still deserialize to validate the payload
+    let _payload = StakeClaimPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    let current_height = state.block_height;
+
+    // Find all claimable entries for this sender
+    let mut total_claimed: u128 = 0;
+    let mut remaining_queue = Vec::new();
+
+    for entry in std::mem::take(&mut state.unbonding_queue) {
+        if entry.address == tx.from && entry.release_height <= current_height {
+            total_claimed = total_claimed
+                .checked_add(entry.amount)
+                .ok_or_else(|| StateError::StakeError("claim overflow".into()))?;
+        } else {
+            remaining_queue.push(entry);
+        }
+    }
+
+    if total_claimed == 0 {
+        return Err(StateError::NoClaimableUnbonding);
+    }
+
+    state.unbonding_queue = remaining_queue;
+
+    // Credit claimed amount back to balance
+    *state.balances.entry(tx.from).or_insert(0) += total_claimed;
+
+    Ok(())
+}

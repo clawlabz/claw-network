@@ -6,6 +6,7 @@
 mod world;
 mod handlers;
 mod error;
+pub mod rewards;
 
 pub use world::WorldState;
 pub use error::StateError;

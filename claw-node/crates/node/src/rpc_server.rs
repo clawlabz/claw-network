@@ -321,6 +321,36 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         }
+        "clw_getStake" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => Ok(serde_json::json!(chain.get_stake(&a).to_string())),
+                Err(e) => Err(e),
+            }
+        }
+        "clw_getUnbonding" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => {
+                    let entries = chain.get_unbonding(&a);
+                    let results: Vec<serde_json::Value> = entries
+                        .into_iter()
+                        .map(|e| {
+                            serde_json::json!({
+                                "address": hex::encode(e.address),
+                                "amount": e.amount.to_string(),
+                                "releaseHeight": e.release_height,
+                            })
+                        })
+                        .collect();
+                    Ok(serde_json::json!(results))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        "clw_getValidators" => {
+            Ok(serde_json::json!(chain.get_validators()))
+        }
         "clw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())
@@ -400,10 +430,22 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
             }
         }
         TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister
-        | TxType::ContractDeploy => (None, None),
+        | TxType::ContractDeploy | TxType::StakeClaim => (None, None),
         TxType::ContractCall => {
             match borsh::from_slice::<claw_types::transaction::ContractCallPayload>(&tx.payload) {
                 Ok(p) => (Some(hex::encode(p.contract)), Some(p.value.to_string())),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::StakeDeposit => {
+            match borsh::from_slice::<claw_types::transaction::StakeDepositPayload>(&tx.payload) {
+                Ok(p) => (None, Some(p.amount.to_string())),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::StakeWithdraw => {
+            match borsh::from_slice::<claw_types::transaction::StakeWithdrawPayload>(&tx.payload) {
+                Ok(p) => (None, Some(p.amount.to_string())),
                 Err(_) => (None, None),
             }
         }
@@ -421,6 +463,9 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::ServiceRegister => "ServiceRegister",
         claw_types::TxType::ContractDeploy => "ContractDeploy",
         claw_types::TxType::ContractCall => "ContractCall",
+        claw_types::TxType::StakeDeposit => "StakeDeposit",
+        claw_types::TxType::StakeWithdraw => "StakeWithdraw",
+        claw_types::TxType::StakeClaim => "StakeClaim",
     }
 }
 
@@ -461,7 +506,10 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         claw_types::TxType::AgentRegister
         | claw_types::TxType::TokenCreate
         | claw_types::TxType::ServiceRegister
-        | claw_types::TxType::ContractDeploy => (None, None),
+        | claw_types::TxType::ContractDeploy
+        | claw_types::TxType::StakeDeposit
+        | claw_types::TxType::StakeWithdraw
+        | claw_types::TxType::StakeClaim => (None, None),
         claw_types::TxType::ContractCall => {
             // payload starts with [contract: 32 bytes]
             if tx.payload.len() >= 32 {

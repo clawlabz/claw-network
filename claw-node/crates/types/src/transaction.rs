@@ -44,6 +44,9 @@ pub enum TxType {
     ServiceRegister = 5,
     ContractDeploy = 6,
     ContractCall = 7,
+    StakeDeposit = 8,
+    StakeWithdraw = 9,
+    StakeClaim = 10,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -133,6 +136,24 @@ pub struct ContractCallPayload {
     /// Native CLW value to send with the call.
     pub value: u128,
 }
+
+/// Payload for depositing stake to become a validator.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct StakeDepositPayload {
+    /// Amount of CLW to stake (in base units, 9 decimals).
+    pub amount: u128,
+}
+
+/// Payload for initiating a stake withdrawal (unbonding).
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct StakeWithdrawPayload {
+    /// Amount of CLW to unbond (in base units, 9 decimals).
+    pub amount: u128,
+}
+
+/// Payload for claiming unbonded stake (no fields needed — claims all mature entries).
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct StakeClaimPayload;
 
 impl Transaction {
     /// Returns the bytes that are signed (everything except the signature field).
