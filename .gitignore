@@ -20,3 +20,6 @@ Thumbs.db
 # Data
 .claw-node/
 *.db
+
+# Internal deployment (contains server IPs, keys, etc.)
+deploy-internal/
