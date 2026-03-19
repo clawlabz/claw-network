@@ -56,7 +56,7 @@ impl Chain {
         let signing_key = SigningKey::from_bytes(&signing_key_bytes);
         let validator_address = signing_key.verifying_key().to_bytes();
 
-        let (state, latest_block, validator_stakes) = match store.get_latest_height()? {
+        let (mut state, latest_block, validator_stakes) = match store.get_latest_height()? {
             Some(height) => {
                 let state_bytes = store
                     .get_state_snapshot()?
@@ -96,6 +96,13 @@ impl Chain {
                 address = %hex::encode(validator_address),
                 "Node address not in genesis validators, adding as fallback"
             );
+        }
+        // Write genesis stakes into WorldState so they survive epoch recalculation.
+        // ValidatorSet.recalculate_active reads from its own candidates (set via
+        // with_initial_stakes), but state.stakes must also be populated for
+        // consistency and for the staking RPC queries.
+        for (addr, amount) in &stakes {
+            state.stakes.entry(*addr).or_insert(*amount);
         }
         let validator_set = ValidatorSet::with_initial_stakes(stakes);
 
