@@ -94,7 +94,7 @@ This creates `~/.clawnetwork/` with your keypair and config. Your node address w
 claw-node start --single
 ```
 
-Single-node chain on `localhost:9710`. Blocks are produced when transactions arrive.
+Single-node chain on `localhost:9710`. Blocks are produced every 3 seconds.
 
 ### Join the testnet
 

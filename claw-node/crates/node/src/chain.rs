@@ -247,9 +247,8 @@ impl Chain {
 
     /// Produce a block from pending mempool transactions.
     fn produce_block(inner: &mut ChainInner) -> Option<Block> {
-        if inner.mempool.is_empty() {
-            return None;
-        }
+        // Produce blocks even when mempool is empty — continuous block production
+        // ensures liveness, epoch progression, uptime tracking, and Agent Score updates.
 
         // Check if we should produce (consensus election — primary or fallback)
         let is_primary = Self::is_proposer(inner);
