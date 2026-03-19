@@ -47,6 +47,7 @@ pub enum TxType {
     StakeDeposit = 8,
     StakeWithdraw = 9,
     StakeClaim = 10,
+    PlatformActivityReport = 11,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -154,6 +155,27 @@ pub struct StakeWithdrawPayload {
 /// Payload for claiming unbonded stake (no fields needed — claims all mature entries).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct StakeClaimPayload;
+
+/// A single activity entry within a PlatformActivityReport.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ActivityEntry {
+    /// Address of the agent whose activity is being reported.
+    pub agent: [u8; 32],
+    /// Number of actions performed in this reporting period.
+    pub action_count: u32,
+    /// Type of action (e.g., "game_played", "task_completed", "query_served").
+    pub action_type: String,
+}
+
+/// Payload for submitting platform activity reports (tx type 11).
+///
+/// Only Platform Agents (staked >= 50,000 CLW) can submit these reports.
+/// Each Platform Agent can submit at most once per epoch (100 blocks).
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct PlatformActivityReportPayload {
+    /// Activity entries for agents on this platform.
+    pub reports: Vec<ActivityEntry>,
+}
 
 impl Transaction {
     /// Returns the bytes that are signed (everything except the signature field).

@@ -71,6 +71,14 @@ pub struct WorldState {
     pub stakes: BTreeMap<[u8; 32], u128>,
     /// Unbonding queue for stake withdrawals awaiting the unbonding period.
     pub unbonding_queue: Vec<claw_types::state::UnbondingEntry>,
+    /// Per-epoch on-chain activity statistics: address → ActivityStats.
+    pub activity_stats: BTreeMap<[u8; 32], claw_types::state::ActivityStats>,
+    /// Validator uptime tracking (sliding window): address → ValidatorUptime.
+    pub validator_uptime: BTreeMap<[u8; 32], claw_types::state::ValidatorUptime>,
+    /// Aggregated platform activity data: address → PlatformActivityAgg.
+    pub platform_activity: BTreeMap<[u8; 32], claw_types::state::PlatformActivityAgg>,
+    /// Tracks which Platform Agents have submitted reports this epoch: (reporter, epoch) → true.
+    pub platform_report_tracker: BTreeMap<([u8; 32], u64), bool>,
 }
 
 impl BorshDeserialize for WorldState {
@@ -127,6 +135,38 @@ impl BorshDeserialize for WorldState {
             Vec::new()
         };
 
+        let has_more = (cursor.position() as usize) < buf.len();
+        let activity_stats = if has_more {
+            BTreeMap::<[u8; 32], claw_types::state::ActivityStats>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
+        let has_more = (cursor.position() as usize) < buf.len();
+        let validator_uptime = if has_more {
+            BTreeMap::<[u8; 32], claw_types::state::ValidatorUptime>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
+        let has_more = (cursor.position() as usize) < buf.len();
+        let platform_activity = if has_more {
+            BTreeMap::<[u8; 32], claw_types::state::PlatformActivityAgg>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
+        let has_more = (cursor.position() as usize) < buf.len();
+        let platform_report_tracker = if has_more {
+            BTreeMap::<([u8; 32], u64), bool>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
         Ok(WorldState {
             balances,
             token_balances,
@@ -141,6 +181,10 @@ impl BorshDeserialize for WorldState {
             contract_code,
             stakes,
             unbonding_queue,
+            activity_stats,
+            validator_uptime,
+            platform_activity,
+            platform_report_tracker,
         })
     }
 }
@@ -197,11 +241,25 @@ impl WorldState {
             TxType::StakeDeposit => handlers::handle_stake_deposit(self, tx),
             TxType::StakeWithdraw => handlers::handle_stake_withdraw(self, tx),
             TxType::StakeClaim => handlers::handle_stake_claim(self, tx),
+            TxType::PlatformActivityReport => handlers::handle_platform_activity_report(self, tx),
         };
 
         if result.is_ok() {
             // 5. Update nonce on success
             self.nonces.insert(tx.from, tx.nonce);
+
+            // 6. Update per-epoch activity stats for the sender
+            let stats = self.activity_stats.entry(tx.from).or_default();
+            stats.tx_count += 1;
+            stats.gas_consumed += GAS_FEE as u64;
+            match tx.tx_type {
+                TxType::ContractDeploy => stats.contract_deploys += 1,
+                TxType::ContractCall => stats.contract_calls += 1,
+                TxType::TokenCreate => stats.tokens_created += 1,
+                TxType::ServiceRegister => stats.services_registered += 1,
+                _ => {}
+            }
+
             Ok(GAS_FEE)
         } else {
             // Rollback gas on failure (gas is only charged on success)
@@ -321,6 +379,33 @@ impl WorldState {
             leaves.push(*blake3::hash(&e).as_bytes());
         }
 
+        // Activity stats
+        for (addr, stats) in &self.activity_stats {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"activity:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&borsh::to_vec(stats).unwrap());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Validator uptime
+        for (addr, uptime) in &self.validator_uptime {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"uptime:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&borsh::to_vec(uptime).unwrap());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Platform activity
+        for (addr, agg) in &self.platform_activity {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"platact:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&borsh::to_vec(agg).unwrap());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
         leaves.sort();
         merkle_root(&leaves)
     }
@@ -350,12 +435,23 @@ impl claw_vm::ChainState for WorldState {
     }
 
     fn get_agent_score(&self, address: &[u8; 32]) -> u64 {
-        self.reputation
-            .iter()
-            .filter(|r| r.to == *address)
-            .map(|r| r.score as u64)
-            .sum::<u64>()
-            .min(100)
+        // Use the new multi-dimensional scoring if activity data exists,
+        // otherwise fall back to legacy reputation sum for backward compat.
+        let has_activity_data = self.activity_stats.contains_key(address)
+            || self.validator_uptime.contains_key(address)
+            || self.platform_activity.contains_key(address);
+
+        if has_activity_data {
+            let scores = crate::score::compute_agent_score(self, address);
+            (scores.total / 100).min(100) // Scale 0-10000 to 0-100 for VM interface
+        } else {
+            self.reputation
+                .iter()
+                .filter(|r| r.to == *address)
+                .map(|r| r.score as u64)
+                .sum::<u64>()
+                .min(100)
+        }
     }
 
     fn get_agent_registered(&self, address: &[u8; 32]) -> bool {

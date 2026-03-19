@@ -1,0 +1,64 @@
+{
+  "name": "@clawlabz/clawpay",
+  "version": "0.1.0",
+  "description": "ClawNetwork payment SDK for AI Agents — chain-native HTTP 402 payments",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./client": {
+      "types": "./dist/esm/client.d.ts",
+      "import": "./dist/esm/client.js",
+      "require": "./dist/cjs/client.js"
+    },
+    "./server": {
+      "types": "./dist/esm/server.d.ts",
+      "import": "./dist/esm/server.js",
+      "require": "./dist/cjs/server.js"
+    }
+  },
+  "bin": {
+    "clawpay": "./dist/esm/cli.js"
+  },
+  "scripts": {
+    "build": "npm run build:esm && npm run build:cjs",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "clawnetwork",
+    "ai-agent",
+    "payment",
+    "blockchain",
+    "http-402",
+    "machine-payments"
+  ],
+  "author": "ClawLabz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/clawlabz/clawpay"
+  }
+}

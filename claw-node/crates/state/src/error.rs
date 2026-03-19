@@ -90,4 +90,16 @@ pub enum StateError {
 
     #[error("no claimable unbonding entries")]
     NoClaimableUnbonding,
+
+    #[error("platform agent stake too low: need {need}, have {have}")]
+    PlatformStakeTooLow { need: u128, have: u128 },
+
+    #[error("platform agent already reported this epoch")]
+    PlatformReportAlreadySubmitted,
+
+    #[error("action_type too long: {len} bytes (max {max})")]
+    ActionTypeTooLong { len: usize, max: usize },
+
+    #[error("too many activity entries: {len} (max {max})")]
+    TooManyActivityEntries { len: usize, max: usize },
 }

@@ -169,7 +169,8 @@ impl ChainStore {
                     .map(|p| p.contract)
             }
             TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister
-            | TxType::StakeDeposit | TxType::StakeWithdraw | TxType::StakeClaim => None,
+            | TxType::StakeDeposit | TxType::StakeWithdraw | TxType::StakeClaim
+            | TxType::PlatformActivityReport => None,
         }
     }
 

@@ -445,4 +445,158 @@ mod tests {
         tx.signature[0] ^= 0xFF; // corrupt signature
         assert_eq!(state.apply_tx(&tx), Err(StateError::InvalidSignature));
     }
+
+    // === PlatformActivityReport ===
+
+    /// Helper: set up a Platform Agent (registered + staked >= 50k CLW).
+    fn setup_platform_agent() -> (WorldState, claw_crypto::ed25519_dalek::SigningKey, [u8; 32],
+                                  claw_crypto::ed25519_dalek::SigningKey, [u8; 32]) {
+        let (sk1, vk1) = generate_keypair();
+        let addr1 = vk1.to_bytes();
+        let (sk2, vk2) = generate_keypair();
+        let addr2 = vk2.to_bytes();
+        let mut state = WorldState::default();
+
+        // Fund both agents generously
+        state.balances.insert(addr1, 100_000_000_000_000); // 100k CLW
+        state.balances.insert(addr2, 100_000_000_000_000);
+
+        // Register both
+        let reg1 = AgentRegisterPayload { name: "platform1".into(), metadata: BTreeMap::new() };
+        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1)).unwrap();
+        let reg2 = AgentRegisterPayload { name: "agent2".into(), metadata: BTreeMap::new() };
+        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2)).unwrap();
+
+        // Stake 50k CLW for addr1 (Platform Agent threshold)
+        let stake = claw_types::transaction::StakeDepositPayload { amount: 50_000_000_000_000 };
+        state.apply_tx(&make_tx(&sk1, 2, TxType::StakeDeposit, &stake)).unwrap();
+
+        (state, sk1, addr1, sk2, addr2)
+    }
+
+    #[test]
+    fn platform_activity_report_success() {
+        let (mut state, sk1, _addr1, _sk2, addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 42,
+                action_type: "game_played".into(),
+            }],
+        };
+        let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
+        state.apply_tx(&tx).unwrap();
+
+        // Check platform activity was recorded
+        let agg = state.platform_activity.get(&addr2).unwrap();
+        assert_eq!(agg.total_actions, 42);
+        assert_eq!(agg.platform_count, 1);
+    }
+
+    #[test]
+    fn platform_activity_report_insufficient_stake() {
+        let (mut state, _sk1, _addr1, sk2, addr2) = setup_platform_agent();
+
+        // addr2 is registered but not staked enough
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 10,
+                action_type: "task_completed".into(),
+            }],
+        };
+        let tx = make_tx(&sk2, 2, TxType::PlatformActivityReport, &payload);
+        assert!(matches!(
+            state.apply_tx(&tx),
+            Err(StateError::PlatformStakeTooLow { .. })
+        ));
+    }
+
+    #[test]
+    fn platform_activity_report_duplicate_epoch() {
+        let (mut state, sk1, _addr1, _sk2, addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 10,
+                action_type: "game_played".into(),
+            }],
+        };
+
+        // First report succeeds
+        state.apply_tx(&make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload)).unwrap();
+
+        // Second report in same epoch fails
+        let tx2 = make_tx(&sk1, 4, TxType::PlatformActivityReport, &payload);
+        assert_eq!(
+            state.apply_tx(&tx2),
+            Err(StateError::PlatformReportAlreadySubmitted)
+        );
+    }
+
+    #[test]
+    fn platform_activity_report_action_type_too_long() {
+        let (mut state, sk1, _addr1, _sk2, addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 1,
+                action_type: "x".repeat(65), // exceeds 64-byte limit
+            }],
+        };
+        let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
+        assert!(matches!(
+            state.apply_tx(&tx),
+            Err(StateError::ActionTypeTooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn platform_activity_report_unregistered_target() {
+        let (mut state, sk1, _addr1, _sk2, _addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: [99u8; 32], // not a registered agent
+                action_count: 5,
+                action_type: "query_served".into(),
+            }],
+        };
+        let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
+        assert_eq!(
+            state.apply_tx(&tx),
+            Err(StateError::AgentNotRegistered)
+        );
+    }
+
+    // === Activity Stats Tracking ===
+
+    #[test]
+    fn activity_stats_updated_on_tx() {
+        let (mut state, sk, addr) = setup();
+
+        // Register agent (should increment tx_count)
+        let reg = AgentRegisterPayload { name: "agent".into(), metadata: BTreeMap::new() };
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+
+        let stats = state.activity_stats.get(&addr).unwrap();
+        assert_eq!(stats.tx_count, 1);
+        assert!(stats.gas_consumed > 0);
+
+        // Token create (should also increment tokens_created)
+        let create = TokenCreatePayload {
+            name: "Test".into(),
+            symbol: "T".into(),
+            decimals: 0,
+            total_supply: 100,
+        };
+        state.apply_tx(&make_tx(&sk, 2, TxType::TokenCreate, &create)).unwrap();
+
+        let stats = state.activity_stats.get(&addr).unwrap();
+        assert_eq!(stats.tx_count, 2);
+        assert_eq!(stats.tokens_created, 1);
+    }
 }

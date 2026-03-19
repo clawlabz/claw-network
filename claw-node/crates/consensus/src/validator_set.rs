@@ -194,8 +194,15 @@ impl ValidatorSet {
 }
 
 /// Aggregate reputation attestations into per-address agent scores.
-/// Score = sum of positive attestation scores, clamped to [0, 10000].
+///
+/// DEPRECATED: This function uses the legacy ReputationAttest-based scoring.
+/// It is kept for backward compatibility during the transition to the new
+/// multi-dimensional Agent Score system (see `claw_state::score`).
+/// New scores are computed on-chain from activity stats, uptime, economics,
+/// and PlatformActivityReport data. ReputationAttest tx are no longer counted.
 fn aggregate_agent_scores(reputation: &[ReputationAttestation]) -> BTreeMap<[u8; 32], u64> {
+    // Legacy scoring: still used as fallback when no activity data exists.
+    // ReputationAttest transactions are accepted but not counted toward new scores.
     let mut scores: BTreeMap<[u8; 32], i64> = BTreeMap::new();
     for att in reputation {
         *scores.entry(att.to).or_insert(0) += att.score as i64;

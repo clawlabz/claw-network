@@ -87,6 +87,53 @@ pub struct UnbondingEntry {
 /// 7 * 24 * 3600 / 3 = 201,600 blocks.
 pub const UNBONDING_PERIOD_BLOCKS: u64 = 201_600;
 
+/// Per-epoch on-chain activity statistics for an address.
+#[derive(Debug, Clone, PartialEq, Eq, Default, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ActivityStats {
+    /// Number of transactions sent by this address in the current epoch.
+    pub tx_count: u32,
+    /// Number of contract deployments.
+    pub contract_deploys: u32,
+    /// Number of contract calls.
+    pub contract_calls: u32,
+    /// Number of tokens created.
+    pub tokens_created: u32,
+    /// Number of services registered.
+    pub services_registered: u32,
+    /// Total gas consumed (in base units).
+    pub gas_consumed: u64,
+}
+
+/// Validator uptime tracking within a sliding window.
+#[derive(Debug, Clone, PartialEq, Eq, Default, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ValidatorUptime {
+    /// Number of blocks this validator signed within the window.
+    pub signed_blocks: u64,
+    /// Number of blocks this validator was expected to sign within the window.
+    pub expected_blocks: u64,
+    /// Number of blocks this validator produced within the window.
+    pub produced_blocks: u64,
+}
+
+/// Aggregated platform activity report data per agent, per epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Default, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct PlatformActivityAgg {
+    /// Total action count across all platform reports.
+    pub total_actions: u64,
+    /// Number of distinct platforms that reported for this agent.
+    pub platform_count: u32,
+}
+
+/// Maximum action_type length in bytes for PlatformActivityReport.
+pub const MAX_ACTION_TYPE_LEN: usize = 64;
+
+/// Minimum stake required for a Platform Agent to submit activity reports.
+/// 50,000 CLW with 9 decimals.
+pub const PLATFORM_AGENT_MIN_STAKE: u128 = 50_000_000_000_000;
+
+/// Maximum number of activity entries per report.
+pub const MAX_ACTIVITY_ENTRIES: usize = 100;
+
 /// Native CLW token ID (all zeros, represents the native token).
 pub const NATIVE_TOKEN_ID: [u8; 32] = [0u8; 32];
 

@@ -226,6 +226,9 @@ impl Chain {
             if vk.verify_strict(&vote.block_hash, &sig).is_ok() {
                 inner.pending_votes.insert(vote.voter, vote.signature);
                 inner.latest_block.signatures.push((vote.voter, vote.signature));
+                // Update validator uptime: this validator signed a block
+                let uptime = inner.state.validator_uptime.entry(vote.voter).or_default();
+                uptime.signed_blocks += 1;
                 // Re-persist the block with updated signatures
                 if let Err(e) = inner.store.put_block(&inner.latest_block) {
                     tracing::error!(error = %e, "Failed to update block with new signature");
@@ -322,6 +325,28 @@ impl Chain {
             &inner.validator_address,
             total_fees,
         );
+
+        // Update validator uptime tracking (B3):
+        // - The block proposer gets a produced_blocks increment
+        // - All active validators get expected_blocks incremented
+        // - The block proposer also gets signed_blocks (they sign their own block)
+        {
+            let proposer = inner.validator_address;
+            let uptime = inner.state.validator_uptime.entry(proposer).or_default();
+            uptime.produced_blocks += 1;
+            uptime.signed_blocks += 1;
+            uptime.expected_blocks += 1;
+
+            // All other active validators get expected_blocks incremented
+            let other_validators: Vec<[u8; 32]> = inner.validator_set.active.iter()
+                .filter(|v| v.address != proposer)
+                .map(|v| v.address)
+                .collect();
+            for addr in other_validators {
+                let u = inner.state.validator_uptime.entry(addr).or_default();
+                u.expected_blocks += 1;
+            }
+        }
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -519,6 +544,33 @@ impl Chain {
             &block.validator,
             total_fees,
         );
+
+        // Update validator uptime tracking for remote blocks (B3)
+        {
+            let proposer = block.validator;
+            let uptime = state_clone.validator_uptime.entry(proposer).or_default();
+            uptime.produced_blocks += 1;
+            uptime.signed_blocks += 1;
+            uptime.expected_blocks += 1;
+
+            // All other active validators get expected_blocks incremented
+            let other_validators: Vec<[u8; 32]> = inner.validator_set.active.iter()
+                .filter(|v| v.address != proposer)
+                .map(|v| v.address)
+                .collect();
+            for addr in other_validators {
+                let u = state_clone.validator_uptime.entry(addr).or_default();
+                u.expected_blocks += 1;
+            }
+
+            // Signers on this block get signed_blocks incremented
+            for (signer, _) in &block.signatures {
+                if *signer != proposer {
+                    let u = state_clone.validator_uptime.entry(*signer).or_default();
+                    u.signed_blocks += 1;
+                }
+            }
+        }
 
         // Verify state root
         let computed_root = state_clone.state_root();
@@ -1166,6 +1218,12 @@ impl Chain {
             .filter(|e| e.address == *addr)
             .cloned()
             .collect()
+    }
+
+    /// Get the multi-dimensional Agent Score for an address.
+    pub fn get_agent_score(&self, addr: &[u8; 32]) -> claw_state::AgentScoreDetail {
+        let inner = self.inner.lock().unwrap();
+        claw_state::compute_agent_score(&inner.state, addr)
     }
 
     /// Get active validators with their stakes and weights.

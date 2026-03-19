@@ -193,6 +193,10 @@ pub fn handle_token_mint_transfer(
 }
 
 /// ReputationAttest: record a reputation attestation.
+///
+/// DEPRECATED: This transaction type is kept for backward compatibility but
+/// attestations submitted via this method are no longer counted toward
+/// Agent Score calculations. Use PlatformActivityReport (tx type 11) instead.
 pub fn handle_reputation_attest(
     state: &mut WorldState,
     tx: &Transaction,
@@ -498,6 +502,74 @@ pub fn handle_contract_call(
             *state.balances.entry(to).or_insert(0) += amount;
         }
     }
+
+    Ok(())
+}
+
+/// Maximum action_type length for platform reports.
+const MAX_ACTION_TYPE_LEN: usize = claw_types::state::MAX_ACTION_TYPE_LEN;
+
+/// PlatformActivityReport: submit on-chain activity data from a platform.
+///
+/// Only Platform Agents (registered agents with >= 50,000 CLW staked) can submit.
+/// Each Platform Agent can submit at most once per epoch (100 blocks).
+pub fn handle_platform_activity_report(
+    state: &mut WorldState,
+    tx: &Transaction,
+) -> Result<(), StateError> {
+    let payload = PlatformActivityReportPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Submitter must be a registered agent
+    if !state.agents.contains_key(&tx.from) {
+        return Err(StateError::AgentNotRegistered);
+    }
+
+    // Submitter must have >= 50,000 CLW staked (Platform Agent threshold)
+    let stake = state.stakes.get(&tx.from).copied().unwrap_or(0);
+    if stake < claw_types::state::PLATFORM_AGENT_MIN_STAKE {
+        return Err(StateError::PlatformStakeTooLow {
+            need: claw_types::state::PLATFORM_AGENT_MIN_STAKE,
+            have: stake,
+        });
+    }
+
+    // Limit entries per report
+    if payload.reports.len() > claw_types::state::MAX_ACTIVITY_ENTRIES {
+        return Err(StateError::TooManyActivityEntries {
+            len: payload.reports.len(),
+            max: claw_types::state::MAX_ACTIVITY_ENTRIES,
+        });
+    }
+
+    // Each Platform Agent can submit once per epoch
+    let current_epoch = state.block_height / 100; // EPOCH_LENGTH = 100
+    if state.platform_report_tracker.contains_key(&(tx.from, current_epoch)) {
+        return Err(StateError::PlatformReportAlreadySubmitted);
+    }
+
+    // Validate each entry
+    for entry in &payload.reports {
+        if entry.action_type.len() > MAX_ACTION_TYPE_LEN {
+            return Err(StateError::ActionTypeTooLong {
+                len: entry.action_type.len(),
+                max: MAX_ACTION_TYPE_LEN,
+            });
+        }
+        if !state.agents.contains_key(&entry.agent) {
+            return Err(StateError::AgentNotRegistered);
+        }
+    }
+
+    // Apply: aggregate platform activity for each reported agent
+    for entry in &payload.reports {
+        let agg = state.platform_activity.entry(entry.agent).or_default();
+        agg.total_actions += entry.action_count as u64;
+        agg.platform_count += 1;
+    }
+
+    // Mark this reporter as having submitted for this epoch
+    state.platform_report_tracker.insert((tx.from, current_epoch), true);
 
     Ok(())
 }
