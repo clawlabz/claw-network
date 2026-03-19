@@ -301,11 +301,7 @@ impl Chain {
             }
         }
 
-        if included_txs.is_empty() {
-            return None;
-        }
-
-        // Distribute block rewards to validators
+        // Distribute block rewards to validators (even for empty blocks)
         let validators: Vec<([u8; 32], u64)> = inner
             .validator_set
             .active
