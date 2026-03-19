@@ -30,7 +30,7 @@ claw-node start --light
 
 - **3-second block time** with single-block finality
 - **≤32MB RAM** for light nodes
-- **6 native transaction types**: agent.register, token.transfer, token.create, token.mint_transfer, reputation.attest, service.register
+- **12 native transaction types**: agent.register, token.transfer, token.create, token.mint_transfer, reputation.attest (deprecated), service.register, contract.deploy, contract.call, stake.deposit, stake.withdraw, stake.claim, platform.activity_report
 - **PoS + Agent Score** hybrid consensus
 - **CLW token**: 1B total supply, 40% node incentives, gas burned (deflationary)
 
