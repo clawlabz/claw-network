@@ -401,10 +401,14 @@ pub fn handle_contract_deploy(
         // Apply token transfers from constructor
         for (to, amount) in result.transfers {
             let contract_bal = state.balances.get(&contract_address).copied().unwrap_or(0);
-            if contract_bal >= amount {
-                *state.balances.entry(contract_address).or_insert(0) -= amount;
-                *state.balances.entry(to).or_insert(0) += amount;
+            if contract_bal < amount {
+                return Err(StateError::ContractTransferInsufficientBalance {
+                    need: amount,
+                    have: contract_bal,
+                });
             }
+            *state.balances.entry(contract_address).or_insert(0) -= amount;
+            *state.balances.entry(to).or_insert(0) += amount;
         }
     }
 
@@ -497,10 +501,19 @@ pub fn handle_contract_call(
     // Apply token transfers from contract
     for (to, amount) in result.transfers {
         let contract_bal = state.balances.get(&payload.contract).copied().unwrap_or(0);
-        if contract_bal >= amount {
-            *state.balances.entry(payload.contract).or_insert(0) -= amount;
-            *state.balances.entry(to).or_insert(0) += amount;
+        if contract_bal < amount {
+            // Refund value sent to contract before returning error
+            if payload.value > 0 {
+                *state.balances.entry(payload.contract).or_insert(0) -= payload.value;
+                *state.balances.entry(tx.from).or_insert(0) += payload.value;
+            }
+            return Err(StateError::ContractTransferInsufficientBalance {
+                need: amount,
+                have: contract_bal,
+            });
         }
+        *state.balances.entry(payload.contract).or_insert(0) -= amount;
+        *state.balances.entry(to).or_insert(0) += amount;
     }
 
     Ok(())
@@ -546,6 +559,18 @@ pub fn handle_platform_activity_report(
     let current_epoch = state.block_height / 100; // EPOCH_LENGTH = 100
     if state.platform_report_tracker.contains_key(&(tx.from, current_epoch)) {
         return Err(StateError::PlatformReportAlreadySubmitted);
+    }
+
+    // Check for duplicate agents in the report
+    {
+        let mut seen_agents = std::collections::BTreeSet::new();
+        for entry in &payload.reports {
+            if !seen_agents.insert(entry.agent) {
+                return Err(StateError::DuplicateAgentInReport(
+                    hex::encode(entry.agent),
+                ));
+            }
+        }
     }
 
     // Validate each entry

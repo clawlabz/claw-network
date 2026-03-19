@@ -1,7 +1,7 @@
 //! Transaction signing and verification.
 
 use claw_types::transaction::Transaction;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,7 +26,7 @@ pub fn verify_transaction(tx: &Transaction) -> Result<(), SignError> {
     let vk = VerifyingKey::from_bytes(&tx.from).map_err(|_| SignError::InvalidSignature)?;
     let sig = Signature::from_bytes(&tx.signature);
     let msg = tx.signable_bytes();
-    vk.verify(&msg, &sig)
+    vk.verify_strict(&msg, &sig)
         .map_err(|_| SignError::InvalidSignature)
 }
 

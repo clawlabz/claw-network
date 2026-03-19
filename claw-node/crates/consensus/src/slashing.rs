@@ -132,6 +132,7 @@ impl SlashingState {
             }
 
             let missed = self.missed_slots.get(validator).copied().unwrap_or(0);
+            debug_assert!(assigned > 0, "assigned slots must be nonzero after guard");
             let missed_percent = (missed * 100) / assigned;
 
             if missed_percent > DOWNTIME_THRESHOLD_PERCENT {

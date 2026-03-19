@@ -305,7 +305,7 @@ impl WorldState {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"agent:");
             entry.extend_from_slice(addr);
-            entry.extend_from_slice(&borsh::to_vec(agent).unwrap());
+            entry.extend_from_slice(&borsh::to_vec(agent).expect("borsh serialization of AgentIdentity should never fail"));
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -314,7 +314,7 @@ impl WorldState {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"token:");
             entry.extend_from_slice(id);
-            entry.extend_from_slice(&borsh::to_vec(token).unwrap());
+            entry.extend_from_slice(&borsh::to_vec(token).expect("borsh serialization of TokenDef should never fail"));
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -324,7 +324,7 @@ impl WorldState {
             entry.extend_from_slice(b"rep_count:");
             entry.extend_from_slice(&(self.reputation.len() as u64).to_le_bytes());
             if let Some(last) = self.reputation.last() {
-                entry.extend_from_slice(&borsh::to_vec(last).unwrap());
+                entry.extend_from_slice(&borsh::to_vec(last).expect("borsh serialization of ReputationAttestation should never fail"));
             }
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
@@ -335,7 +335,7 @@ impl WorldState {
             entry.extend_from_slice(b"svc:");
             entry.extend_from_slice(addr);
             entry.extend_from_slice(stype.as_bytes());
-            entry.extend_from_slice(&borsh::to_vec(svc).unwrap());
+            entry.extend_from_slice(&borsh::to_vec(svc).expect("borsh serialization of ServiceEntry should never fail"));
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -384,7 +384,7 @@ impl WorldState {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"activity:");
             entry.extend_from_slice(addr);
-            entry.extend_from_slice(&borsh::to_vec(stats).unwrap());
+            entry.extend_from_slice(&borsh::to_vec(stats).expect("borsh serialization of ActivityStats should never fail"));
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -393,7 +393,7 @@ impl WorldState {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"uptime:");
             entry.extend_from_slice(addr);
-            entry.extend_from_slice(&borsh::to_vec(uptime).unwrap());
+            entry.extend_from_slice(&borsh::to_vec(uptime).expect("borsh serialization of ValidatorUptime should never fail"));
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -402,7 +402,7 @@ impl WorldState {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"platact:");
             entry.extend_from_slice(addr);
-            entry.extend_from_slice(&borsh::to_vec(agg).unwrap());
+            entry.extend_from_slice(&borsh::to_vec(agg).expect("borsh serialization of PlatformActivityAgg should never fail"));
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 

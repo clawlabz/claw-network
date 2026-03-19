@@ -34,7 +34,7 @@ pub fn elect_proposer(
     }
 
     // Map seed to [0, total_weight)
-    let seed_u64 = u64::from_le_bytes(seed[..8].try_into().unwrap());
+    let seed_u64 = u64::from_le_bytes(seed[..8].try_into().expect("seed slice is always 8 bytes"));
     let pick = seed_u64 % total_weight;
 
     // Walk cumulative weights to find the selected proposer
@@ -47,7 +47,7 @@ pub fn elect_proposer(
     }
 
     // Fallback (shouldn't happen)
-    Some(validators.last().unwrap().address)
+    validators.last().map(|v| v.address)
 }
 
 /// Elect a fallback block proposer when the primary proposer times out.

@@ -117,7 +117,7 @@ impl Chain {
 
     /// Submit a transaction to the mempool.
     pub fn submit_tx(&self, tx: Transaction) -> Result<[u8; 32], String> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
 
         // Reject if mempool is full
         if inner.mempool.len() >= MAX_MEMPOOL_SIZE {
@@ -437,7 +437,7 @@ impl Chain {
 
     /// Apply a block received from the network.
     pub fn apply_remote_block(&self, block: &Block) -> Result<(), String> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
 
         // Validate block connects to our chain
         if block.height != inner.latest_block.height + 1 {
@@ -640,7 +640,7 @@ impl Chain {
                 _ = block_timer.tick() => {
                     // Try to produce a block
                     let maybe_block = {
-                        let mut inner = self.inner.lock().unwrap();
+                        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                         Self::produce_block(&mut inner)
                     };
                     if let Some(block) = maybe_block {
@@ -666,7 +666,7 @@ impl Chain {
                                 Ok(()) => {
                                     // If we are a validator, sign and broadcast our vote
                                     let maybe_vote = {
-                                        let inner = self.inner.lock().unwrap();
+                                        let inner = self.inner.lock().expect("chain state mutex poisoned");
                                         Self::create_vote_for_block(&inner, &block)
                                     };
                                     if let Some(vote) = maybe_vote {
@@ -679,7 +679,7 @@ impl Chain {
                             }
                         }
                         NetworkEvent::Vote(vote) => {
-                            let mut inner = self.inner.lock().unwrap();
+                            let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                             Self::apply_vote(&mut inner, &vote);
                         }
                         NetworkEvent::SyncRequest { peer, request, channel, .. } => {
@@ -711,7 +711,7 @@ impl Chain {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
         loop {
             interval.tick().await;
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().expect("chain state mutex poisoned");
             Self::produce_block(&mut inner);
         }
     }
@@ -740,7 +740,7 @@ impl Chain {
                         Ok(()) => {
                             // If we are a validator, sign and broadcast our vote
                             let maybe_vote = {
-                                let inner = self.inner.lock().unwrap();
+                                let inner = self.inner.lock().expect("chain state mutex poisoned");
                                 Self::create_vote_for_block(&inner, &block)
                             };
                             if let Some(vote) = maybe_vote {
@@ -753,7 +753,7 @@ impl Chain {
                     }
                 }
                 NetworkEvent::Vote(vote) => {
-                    let mut inner = self.inner.lock().unwrap();
+                    let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                     Self::apply_vote(&mut inner, &vote);
                 }
                 NetworkEvent::SyncRequest { peer, request, channel, .. } => {
@@ -791,7 +791,7 @@ impl Chain {
 
     /// Handle a sync request from a peer.
     fn handle_sync_request(&self, request: &SyncRequest) -> SyncResponse {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         match request {
             SyncRequest::GetBlocks { from_height, count } => {
                 let mut blocks = Vec::new();
@@ -905,7 +905,7 @@ impl Chain {
                 }
 
                 // Apply the snapshot: write state to storage and update chain
-                let mut inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                 if let Err(e) = inner.store.put_state_snapshot(state_data) {
                     tracing::error!(error = %e, "Failed to write state snapshot to storage");
                     return None;
@@ -939,11 +939,11 @@ impl Chain {
     // === Query methods for RPC ===
 
     pub fn get_block_number(&self) -> u64 {
-        self.inner.lock().unwrap().latest_block.height
+        self.inner.lock().expect("chain state mutex poisoned").latest_block.height
     }
 
     pub fn get_block(&self, height: u64) -> Option<Block> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         if height == inner.latest_block.height {
             return Some(inner.latest_block.clone());
         }
@@ -951,19 +951,19 @@ impl Chain {
     }
 
     pub fn get_balance(&self, addr: &[u8; 32]) -> u128 {
-        self.inner.lock().unwrap().state.get_balance(addr)
+        self.inner.lock().expect("chain state mutex poisoned").state.get_balance(addr)
     }
 
     pub fn get_token_balance(&self, addr: &[u8; 32], token_id: &[u8; 32]) -> u128 {
-        self.inner.lock().unwrap().state.get_token_balance(addr, token_id)
+        self.inner.lock().expect("chain state mutex poisoned").state.get_token_balance(addr, token_id)
     }
 
     pub fn get_nonce(&self, addr: &[u8; 32]) -> u64 {
-        self.inner.lock().unwrap().state.get_nonce(addr)
+        self.inner.lock().expect("chain state mutex poisoned").state.get_nonce(addr)
     }
 
     pub fn get_agent(&self, addr: &[u8; 32]) -> Option<claw_types::state::AgentIdentity> {
-        self.inner.lock().unwrap().state.agents.get(addr).cloned()
+        self.inner.lock().expect("chain state mutex poisoned").state.agents.get(addr).cloned()
     }
 
     pub fn get_reputation(&self, addr: &[u8; 32]) -> Vec<claw_types::state::ReputationAttestation> {
@@ -979,7 +979,7 @@ impl Chain {
     }
 
     pub fn get_services(&self, service_type: Option<&str>) -> Vec<claw_types::state::ServiceEntry> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         inner
             .state
             .services
@@ -992,7 +992,7 @@ impl Chain {
     }
 
     pub fn get_token_info(&self, token_id: &[u8; 32]) -> Option<claw_types::state::TokenDef> {
-        self.inner.lock().unwrap().state.tokens.get(token_id).cloned()
+        self.inner.lock().expect("chain state mutex poisoned").state.tokens.get(token_id).cloned()
     }
 
     /// Get transactions involving a given address (as sender or recipient).
@@ -1003,7 +1003,7 @@ impl Chain {
         limit: usize,
         offset: usize,
     ) -> Vec<(u64, u32, Transaction, u64)> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         inner
             .store
             .get_transactions_by_address(address, limit, offset)
@@ -1011,7 +1011,7 @@ impl Chain {
     }
 
     pub fn get_tx_receipt(&self, tx_hash: &[u8; 32]) -> Option<(u64, usize)> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         if let Ok(Some(height)) = inner.store.get_tx_block_height(tx_hash) {
             if let Ok(Some(block)) = inner.store.get_block(height) {
                 for (i, tx) in block.transactions.iter().enumerate() {
@@ -1026,7 +1026,7 @@ impl Chain {
 
     /// Look up a transaction by hash and return it along with block metadata.
     pub fn get_tx_by_hash(&self, tx_hash: &[u8; 32]) -> Option<(Transaction, u64, u64)> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         if let Ok(Some(height)) = inner.store.get_tx_block_height(tx_hash) {
             if let Ok(Some(block)) = inner.store.get_block(height) {
                 for tx in &block.transactions {
@@ -1041,7 +1041,7 @@ impl Chain {
 
     /// Get validator count.
     pub fn get_validator_count(&self) -> usize {
-        self.inner.lock().unwrap().validator_set.active.len()
+        self.inner.lock().expect("chain state mutex poisoned").validator_set.active.len()
     }
 
     /// Get P2P connected peer count.
@@ -1064,27 +1064,27 @@ impl Chain {
 
     /// Get current epoch.
     pub fn get_epoch(&self) -> u64 {
-        self.inner.lock().unwrap().validator_set.epoch
+        self.inner.lock().expect("chain state mutex poisoned").validator_set.epoch
     }
 
     /// Get number of pending transactions in mempool.
     pub fn get_mempool_size(&self) -> usize {
-        self.inner.lock().unwrap().mempool.len()
+        self.inner.lock().expect("chain state mutex poisoned").mempool.len()
     }
 
     /// Get timestamp of the latest block.
     pub fn get_last_block_timestamp(&self) -> u64 {
-        self.inner.lock().unwrap().latest_block.timestamp
+        self.inner.lock().expect("chain state mutex poisoned").latest_block.timestamp
     }
 
     /// Get contract instance metadata by address.
     pub fn get_contract_info(&self, addr: &[u8; 32]) -> Option<claw_vm::ContractInstance> {
-        self.inner.lock().unwrap().state.contracts.get(addr).cloned()
+        self.inner.lock().expect("chain state mutex poisoned").state.contracts.get(addr).cloned()
     }
 
     /// Get contract storage value at a specific key.
     pub fn get_contract_storage_value(&self, addr: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         inner
             .state
             .contract_storage
@@ -1094,7 +1094,7 @@ impl Chain {
 
     /// Get contract Wasm bytecode by address.
     pub fn get_contract_code(&self, addr: &[u8; 32]) -> Option<Vec<u8>> {
-        self.inner.lock().unwrap().state.contract_code.get(addr).cloned()
+        self.inner.lock().expect("chain state mutex poisoned").state.contract_code.get(addr).cloned()
     }
 
     /// Execute a read-only contract view call (no state mutation).
@@ -1104,7 +1104,7 @@ impl Chain {
         method: &str,
         args: &[u8],
     ) -> Result<claw_vm::ExecutionResult, String> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
 
         let code = inner
             .state
@@ -1203,7 +1203,7 @@ impl Chain {
 
     /// Get the current stake amount for an address.
     pub fn get_stake(&self, addr: &[u8; 32]) -> u128 {
-        self.inner.lock().unwrap().state.stakes.get(addr).copied().unwrap_or(0)
+        self.inner.lock().expect("chain state mutex poisoned").state.stakes.get(addr).copied().unwrap_or(0)
     }
 
     /// Get unbonding entries for an address.
@@ -1221,13 +1221,13 @@ impl Chain {
 
     /// Get the multi-dimensional Agent Score for an address.
     pub fn get_agent_score(&self, addr: &[u8; 32]) -> claw_state::AgentScoreDetail {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         claw_state::compute_agent_score(&inner.state, addr)
     }
 
     /// Get active validators with their stakes and weights.
     pub fn get_validators(&self) -> Vec<serde_json::Value> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
         inner
             .validator_set
             .active
@@ -1251,7 +1251,7 @@ impl Chain {
 
         let drip: u128 = 10_000_000_000; // 10 CLW (9 decimals)
 
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
 
         // Pre-check: does the node have enough balance?
         let node_addr = inner.validator_address;

@@ -102,4 +102,10 @@ pub enum StateError {
 
     #[error("too many activity entries: {len} (max {max})")]
     TooManyActivityEntries { len: usize, max: usize },
+
+    #[error("duplicate agent in platform activity report: {0}")]
+    DuplicateAgentInReport(String),
+
+    #[error("contract transfer failed: insufficient balance (need {need}, have {have})")]
+    ContractTransferInsufficientBalance { need: u128, have: u128 },
 }

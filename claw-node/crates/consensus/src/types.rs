@@ -18,6 +18,9 @@ pub const BLOCK_TIME_SECS: u64 = 3;
 /// BFT quorum: need > 2/3 of active validators to finalize a block.
 /// For n validators, quorum = floor(2*n/3) + 1.
 pub fn quorum(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
     (2 * n / 3) + 1
 }
 
