@@ -5,12 +5,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::transaction::Transaction;
 
+/// A structured event emitted during block production (rewards, fees, burns).
+/// Modeled after Cosmos/Polkadot event patterns for Explorer queryability.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub enum BlockEvent {
+    /// A reward or fee was distributed to a recipient (or burned).
+    RewardDistributed {
+        /// Recipient address (all zeros for burns).
+        recipient: [u8; 32],
+        /// Amount in base units (9 decimals).
+        amount: u128,
+        /// Type of reward: "block_reward", "proposer_fee", "ecosystem_fee", "fee_burn".
+        reward_type: String,
+    },
+}
+
 /// A block in the ClawNetwork chain.
 ///
 /// Note: Custom `BorshDeserialize` is implemented to handle backward compatibility
-/// with blocks stored before the `signatures` field was added. If the reader has
-/// remaining bytes after the `hash` field, they are parsed as signatures; otherwise
-/// signatures default to an empty vec.
+/// with blocks stored before the `signatures` and `events` fields were added.
+/// Missing trailing fields default to empty vecs.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, Serialize, Deserialize)]
 pub struct Block {
     /// Block height (0 = genesis).
@@ -31,6 +45,10 @@ pub struct Block {
     /// Signatures are over the block hash and are appended after hash computation.
     #[serde(default, with = "serde_signatures")]
     pub signatures: Vec<([u8; 32], [u8; 64])>,
+    /// Events emitted during block production (rewards, fees, burns).
+    /// Not included in block hash computation (appended after consensus).
+    #[serde(default)]
+    pub events: Vec<BlockEvent>,
 }
 
 impl BorshDeserialize for Block {
@@ -55,6 +73,14 @@ impl BorshDeserialize for Block {
             Vec::new()
         };
 
+        // Try to read events; if no bytes remain, default to empty vec
+        // (backward compat with blocks stored before events field was added)
+        let events = if (cursor.position() as usize) < buf.len() {
+            Vec::<BlockEvent>::deserialize_reader(&mut cursor).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         Ok(Block {
             height,
             prev_hash,
@@ -64,6 +90,7 @@ impl BorshDeserialize for Block {
             state_root,
             hash,
             signatures,
+            events,
         })
     }
 }

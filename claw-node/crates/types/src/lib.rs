@@ -7,7 +7,7 @@ pub mod block;
 pub mod transaction;
 pub mod state;
 
-pub use block::Block;
+pub use block::{Block, BlockEvent};
 pub use transaction::{Transaction, TxType};
 
 #[cfg(test)]

@@ -321,6 +321,31 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         }
+        "clw_getBlockRewards" => {
+            let height = req.params.get(0)
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| "missing or invalid height param".to_string());
+            match height {
+                Ok(h) => match chain.get_block(h) {
+                    Some(block) => {
+                        let rewards: Vec<Value> = block.events.iter().filter_map(|e| {
+                            match e {
+                                claw_types::BlockEvent::RewardDistributed { recipient, amount, reward_type } => {
+                                    Some(serde_json::json!({
+                                        "recipient": hex::encode(recipient),
+                                        "amount": amount.to_string(),
+                                        "rewardType": reward_type,
+                                    }))
+                                }
+                            }
+                        }).collect();
+                        Ok(serde_json::json!(rewards))
+                    }
+                    None => Ok(Value::Null),
+                },
+                Err(e) => Err(e),
+            }
+        }
         "clw_getStake" => {
             let addr = parse_address(&req.params, 0);
             match addr {
@@ -413,6 +438,15 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                     Err(e) => Err(e),
                 }
             }
+        }
+        "clw_estimateFee" => {
+            // Gas fee is currently fixed per transaction.
+            // Returns the fee in base units (9 decimals).
+            Ok(serde_json::json!({
+                "fee": claw_types::state::GAS_FEE.to_string(),
+                "unit": "base",
+                "description": "Fixed fee per transaction",
+            }))
         }
         _ => Err(format!("method not found: {}", req.method)),
     };

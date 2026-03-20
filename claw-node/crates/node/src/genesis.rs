@@ -295,6 +295,7 @@ pub fn create_genesis_block(state: &WorldState, config: &GenesisConfig) -> Block
         state_root,
         hash: [0u8; 32],
         signatures: Vec::new(),
+        events: Vec::new(),
     };
     block.hash = block.compute_hash();
     block

@@ -335,18 +335,21 @@ impl Chain {
             .iter()
             .map(|v| (v.address, v.weight))
             .collect();
-        claw_state::rewards::distribute_block_reward(
+        let reward_events = claw_state::rewards::distribute_block_reward(
             &mut inner.state,
             &validators,
             new_height,
         );
 
         // Distribute accumulated transaction fees
-        claw_state::rewards::distribute_fees(
+        let fee_events = claw_state::rewards::distribute_fees(
             &mut inner.state,
             &inner.validator_address,
             total_fees,
         );
+
+        // Collect all block events
+        let block_events = [reward_events, fee_events].concat();
 
         // Update validator uptime tracking (B3):
         // - The block proposer gets a produced_blocks increment
@@ -386,6 +389,7 @@ impl Chain {
             state_root,
             hash: [0u8; 32],
             signatures: Vec::new(),
+            events: block_events,
         };
         block.hash = block.compute_hash();
 
@@ -548,20 +552,21 @@ impl Chain {
         }
 
         // Distribute block rewards to validators
+        // (return values ignored — remote block already carries events)
         let validators: Vec<([u8; 32], u64)> = inner
             .validator_set
             .active
             .iter()
             .map(|v| (v.address, v.weight))
             .collect();
-        claw_state::rewards::distribute_block_reward(
+        let _ = claw_state::rewards::distribute_block_reward(
             &mut state_clone,
             &validators,
             block.height,
         );
 
         // Distribute accumulated transaction fees
-        claw_state::rewards::distribute_fees(
+        let _ = claw_state::rewards::distribute_fees(
             &mut state_clone,
             &block.validator,
             total_fees,

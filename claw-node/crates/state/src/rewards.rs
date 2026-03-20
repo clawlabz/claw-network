@@ -3,6 +3,7 @@
 //! Rewards are funded from the Node Incentive Pool (genesis address index 1)
 //! and follow a decay schedule over 10+ years.
 
+use claw_types::block::BlockEvent;
 use crate::WorldState;
 
 /// Blocks per year assuming 3-second block time: 365.25 * 86400 / 3.
@@ -51,31 +52,35 @@ pub fn reward_per_block(height: u64) -> u128 {
 ///
 /// `validators` contains `(address, weight)` pairs for all active validators.
 /// Each validator receives `reward * weight / total_weight`.
+///
+/// Returns a list of `BlockEvent::RewardDistributed` events for each recipient.
 pub fn distribute_block_reward(
     world: &mut WorldState,
     validators: &[([u8; 32], u64)],
     height: u64,
-) {
+) -> Vec<BlockEvent> {
+    let mut events = Vec::new();
+
     if validators.is_empty() {
-        return;
+        return events;
     }
 
     let pool_addr = genesis_address(NODE_INCENTIVE_POOL_INDEX);
     let pool_balance = world.balances.get(&pool_addr).copied().unwrap_or(0);
     if pool_balance == 0 {
-        return;
+        return events;
     }
 
     let raw_reward = reward_per_block(height);
     // Cap at remaining pool balance
     let reward = raw_reward.min(pool_balance);
     if reward == 0 {
-        return;
+        return events;
     }
 
     let total_weight: u64 = validators.iter().map(|(_, w)| *w).sum();
     if total_weight == 0 {
-        return;
+        return events;
     }
 
     // Deduct full reward from pool first
@@ -97,8 +102,15 @@ pub fn distribute_block_reward(
             let reward_recipient = world.stake_delegations.get(addr).copied().unwrap_or(*addr);
             *world.balances.entry(reward_recipient).or_insert(0) += share;
             distributed += share;
+            events.push(BlockEvent::RewardDistributed {
+                recipient: reward_recipient,
+                amount: share,
+                reward_type: "block_reward".into(),
+            });
         }
     }
+
+    events
 }
 
 /// Distribute transaction fees collected in a block.
@@ -107,29 +119,53 @@ pub fn distribute_block_reward(
 /// - 50% to the block proposer
 /// - 30% burned (not credited to anyone)
 /// - 20% to the ecosystem fund (genesis address index 2)
+///
+/// Returns a list of `BlockEvent::RewardDistributed` events for each distribution.
 pub fn distribute_fees(
     world: &mut WorldState,
     proposer: &[u8; 32],
     total_fees: u128,
-) {
+) -> Vec<BlockEvent> {
+    let mut events = Vec::new();
+
     if total_fees == 0 {
-        return;
+        return events;
     }
 
     let proposer_share = total_fees * 50 / 100;
     let ecosystem_share = total_fees * 20 / 100;
-    // burned = total_fees - proposer_share - ecosystem_share (covers rounding)
+    let burned = total_fees - proposer_share - ecosystem_share;
 
     if proposer_share > 0 {
         // Route proposer fee to owner if delegated, otherwise to proposer
         let reward_recipient = world.stake_delegations.get(proposer).copied().unwrap_or(*proposer);
         *world.balances.entry(reward_recipient).or_insert(0) += proposer_share;
+        events.push(BlockEvent::RewardDistributed {
+            recipient: reward_recipient,
+            amount: proposer_share,
+            reward_type: "proposer_fee".into(),
+        });
     }
 
     if ecosystem_share > 0 {
         let eco_addr = genesis_address(ECOSYSTEM_FUND_INDEX);
         *world.balances.entry(eco_addr).or_insert(0) += ecosystem_share;
+        events.push(BlockEvent::RewardDistributed {
+            recipient: eco_addr,
+            amount: ecosystem_share,
+            reward_type: "ecosystem_fee".into(),
+        });
     }
+
+    if burned > 0 {
+        events.push(BlockEvent::RewardDistributed {
+            recipient: [0u8; 32],
+            amount: burned,
+            reward_type: "fee_burn".into(),
+        });
+    }
+
+    events
 }
 
 #[cfg(test)]

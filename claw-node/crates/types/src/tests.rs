@@ -126,6 +126,7 @@ mod tests {
             state_root: [12u8; 32],
             hash: [13u8; 32],
             signatures: Vec::new(),
+            events: Vec::new(),
         };
         roundtrip(&block);
     }
@@ -208,6 +209,7 @@ mod tests {
             state_root: [2u8; 32],
             hash: [0u8; 32],
             signatures: Vec::new(),
+            events: Vec::new(),
         };
         block.hash = block.compute_hash();
         assert!(block.verify_hash());
