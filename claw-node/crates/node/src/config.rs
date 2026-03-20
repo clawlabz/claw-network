@@ -353,6 +353,53 @@ pub fn load_config(data_dir: &Path) -> Result<NodeConfig> {
     })
 }
 
+/// Import a private key (32-byte Ed25519 seed) and save to key.json.
+///
+/// If `CLAW_KEY_PASSWORD` is set, the key is encrypted.
+/// Returns the derived address.
+pub fn import_key(data_dir: &Path, secret_key: &[u8; 32], chain_id: &str) -> Result<[u8; 32]> {
+    fs::create_dir_all(data_dir).context("create data dir")?;
+
+    let key_path = data_dir.join("key.json");
+    if key_path.exists() {
+        eprintln!("WARNING: Existing key will be overwritten at {}", key_path.display());
+    }
+
+    // Derive public key (address) from the secret key
+    let signing_key = claw_crypto::ed25519_dalek::SigningKey::from_bytes(secret_key);
+    let verifying_key = signing_key.verifying_key();
+    let address = verifying_key.to_bytes();
+
+    let password = read_password_env();
+
+    let key_data = match password {
+        Some(ref pw) => {
+            let (ciphertext, salt, nonce) = encrypt_key(secret_key, pw)?;
+            tracing::info!("Private key encrypted with PBKDF2 + AES-256-GCM");
+            build_encrypted_key_json(&address, &ciphertext, &salt, &nonce, chain_id)
+        }
+        None => {
+            tracing::warn!(
+                "Private key stored without encryption. Set CLAW_KEY_PASSWORD to enable encryption."
+            );
+            build_plaintext_key_json(&address, secret_key, chain_id)
+        }
+    };
+
+    write_key_file(&key_path, &key_data)?;
+    write_default_config(data_dir, chain_id)?;
+
+    Ok(address)
+}
+
+/// Export the private key from key.json.
+///
+/// Returns `(secret_key_bytes, address)`.
+pub fn export_key(data_dir: &Path) -> Result<([u8; 32], [u8; 32])> {
+    let cfg = load_config(data_dir)?;
+    Ok((cfg.signing_key_bytes, cfg.address))
+}
+
 /// Encrypt an existing plaintext key.json in-place.
 ///
 /// Reads the current key, encrypts it with the password from `CLAW_KEY_PASSWORD`,

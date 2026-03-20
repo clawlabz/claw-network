@@ -11,6 +11,7 @@ mod sync;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use libp2p::Multiaddr;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
@@ -101,6 +102,110 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
+    /// Unstake (unbond) CLAW from validator
+    Unstake {
+        /// Amount in CLW to unstake (e.g. "5000")
+        amount: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Claim matured unbonded stake
+    ClaimStake {
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Register an AI Agent on-chain
+    RegisterAgent {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Metadata key=value pairs (can be repeated)
+        #[arg(long)]
+        metadata: Vec<String>,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Transfer a custom token
+    TransferToken {
+        /// Token ID (hex, 64 chars)
+        token_id: String,
+        /// Recipient address (hex, 64 chars)
+        to: String,
+        /// Amount (integer, in token base units)
+        amount: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Create a new custom token
+    CreateToken {
+        /// Token name
+        #[arg(long)]
+        name: String,
+        /// Token symbol
+        #[arg(long)]
+        symbol: String,
+        /// Decimal places
+        #[arg(long)]
+        decimals: u8,
+        /// Initial total supply (in human units, e.g. "1000000")
+        #[arg(long)]
+        initial_supply: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Deploy a Wasm smart contract
+    DeployContract {
+        /// Path to .wasm file
+        wasm_file: PathBuf,
+        /// Constructor method name (optional)
+        #[arg(long, default_value = "")]
+        init_method: String,
+        /// Constructor arguments as hex bytes (optional)
+        #[arg(long, default_value = "")]
+        init_args: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Call a smart contract method (write transaction)
+    CallContract {
+        /// Contract address (hex, 64 chars)
+        address: String,
+        /// Method name to call
+        method: String,
+        /// Arguments as hex-encoded bytes
+        #[arg(long, default_value = "")]
+        args: String,
+        /// CLW value to send with the call (e.g. "0" or "10.5")
+        #[arg(long, default_value = "0")]
+        value: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Register a service on-chain
+    RegisterService {
+        /// Service type (e.g. "llm-inference", "data-indexing")
+        #[arg(long)]
+        service_type: String,
+        /// Service endpoint URL
+        #[arg(long)]
+        endpoint: String,
+        /// Price amount in CLW (e.g. "0.1")
+        #[arg(long)]
+        price: String,
+        /// Service description (optional)
+        #[arg(long, default_value = "")]
+        description: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
     /// Smart contract queries (reads from a running node via RPC)
     Contract {
         #[command(subcommand)]
@@ -117,6 +222,13 @@ enum KeyAction {
     Generate,
     /// Show current address
     Show,
+    /// Import a private key from hex
+    Import {
+        /// 64-character hex-encoded Ed25519 private key (32 bytes)
+        private_key_hex: String,
+    },
+    /// Export the private key as hex
+    Export,
 }
 
 #[derive(Subcommand)]
@@ -358,6 +470,29 @@ async fn main() -> Result<()> {
                 let cfg = config::load_config(&data_dir)?;
                 println!("Address: {}", hex::encode(cfg.address));
             }
+            KeyAction::Import { private_key_hex } => {
+                let private_key_hex = private_key_hex.trim();
+                if private_key_hex.len() != 64 {
+                    anyhow::bail!(
+                        "private key must be 64 hex characters (32 bytes), got {} chars",
+                        private_key_hex.len()
+                    );
+                }
+                let sk_bytes = hex::decode(private_key_hex)
+                    .map_err(|e| anyhow::anyhow!("invalid hex: {e}"))?;
+                let mut secret_key = [0u8; 32];
+                secret_key.copy_from_slice(&sk_bytes);
+
+                let address = config::import_key(&data_dir, &secret_key, "claw-devnet")?;
+                println!("Key imported successfully.");
+                println!("Address: {}", hex::encode(address));
+            }
+            KeyAction::Export => {
+                let (secret_key, address) = config::export_key(&data_dir)?;
+                eprintln!("WARNING: Never share your private key. Anyone with this key can control your account.");
+                println!("Address:     {}", hex::encode(address));
+                println!("Private Key: {}", hex::encode(secret_key));
+            }
         },
         Commands::EncryptKey => {
             config::encrypt_existing_key(&data_dir)?;
@@ -384,6 +519,30 @@ async fn main() -> Result<()> {
         }
         Commands::Stake { amount, rpc } => {
             handle_stake_cli(&data_dir, &amount, &rpc).await?;
+        }
+        Commands::Unstake { amount, rpc } => {
+            handle_unstake_cli(&data_dir, &amount, &rpc).await?;
+        }
+        Commands::ClaimStake { rpc } => {
+            handle_claim_stake_cli(&data_dir, &rpc).await?;
+        }
+        Commands::RegisterAgent { name, metadata, rpc } => {
+            handle_register_agent_cli(&data_dir, &name, &metadata, &rpc).await?;
+        }
+        Commands::TransferToken { token_id, to, amount, rpc } => {
+            handle_transfer_token_cli(&data_dir, &token_id, &to, &amount, &rpc).await?;
+        }
+        Commands::CreateToken { name, symbol, decimals, initial_supply, rpc } => {
+            handle_create_token_cli(&data_dir, &name, &symbol, decimals, &initial_supply, &rpc).await?;
+        }
+        Commands::DeployContract { wasm_file, init_method, init_args, rpc } => {
+            handle_deploy_contract_cli(&data_dir, &wasm_file, &init_method, &init_args, &rpc).await?;
+        }
+        Commands::CallContract { address, method, args, value, rpc } => {
+            handle_call_contract_cli(&data_dir, &address, &method, &args, &value, &rpc).await?;
+        }
+        Commands::RegisterService { service_type, endpoint, price, description, rpc } => {
+            handle_register_service_cli(&data_dir, &service_type, &endpoint, &price, &description, &rpc).await?;
         }
         Commands::Contract { action, rpc } => {
             handle_contract_cli(action, &rpc).await?;
@@ -559,6 +718,307 @@ async fn rpc_call(url: &str, method: &str, params: Vec<serde_json::Value>) -> Re
         anyhow::bail!("RPC error: {}", err);
     }
     Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+async fn handle_unstake_cli(data_dir: &std::path::Path, amount: &str, rpc: &str) -> Result<()> {
+    use claw_types::transaction::{StakeWithdrawPayload, TxType};
+
+    let raw_amount = parse_clw_amount(amount)?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Unstake {} CLW", amount);
+    println!("  Validator: {}", from_hex);
+    println!("  Raw:       {} (9 decimals)", raw_amount);
+
+    let payload = StakeWithdrawPayload {
+        amount: raw_amount,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::StakeWithdraw, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (unbonding period starts)");
+
+    Ok(())
+}
+
+async fn handle_claim_stake_cli(data_dir: &std::path::Path, rpc: &str) -> Result<()> {
+    use claw_types::transaction::{StakeClaimPayload, TxType};
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    // Query unbonding entries
+    let unbonding = rpc_call(rpc, "clw_getUnbonding", vec![serde_json::json!(&from_hex)]).await?;
+    if unbonding.is_null() || unbonding.as_array().map_or(true, |a| a.is_empty()) {
+        println!("No unbonding entries found for {}", from_hex);
+        return Ok(());
+    }
+
+    println!("Claim unbonded stake");
+    println!("  Validator: {}", from_hex);
+    if let Some(entries) = unbonding.as_array() {
+        println!("  Unbonding entries: {}", entries.len());
+        for entry in entries {
+            println!("    {}", entry);
+        }
+    }
+
+    let payload = StakeClaimPayload;
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::StakeClaim, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (claimed stake returns to balance)");
+
+    Ok(())
+}
+
+async fn handle_register_agent_cli(
+    data_dir: &std::path::Path,
+    name: &str,
+    metadata_args: &[String],
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{AgentRegisterPayload, TxType};
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    let mut metadata = BTreeMap::new();
+    for entry in metadata_args {
+        let parts: Vec<&str> = entry.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("invalid metadata format '{}', expected key=value", entry);
+        }
+        metadata.insert(parts[0].to_string(), parts[1].to_string());
+    }
+
+    println!("Register Agent");
+    println!("  Name:    {}", name);
+    println!("  Owner:   {}", from_hex);
+    if !metadata.is_empty() {
+        println!("  Metadata:");
+        for (k, v) in &metadata {
+            println!("    {}: {}", k, v);
+        }
+    }
+
+    let payload = AgentRegisterPayload {
+        name: name.to_string(),
+        metadata,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::AgentRegister, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (agent registered on-chain)");
+
+    Ok(())
+}
+
+async fn handle_transfer_token_cli(
+    data_dir: &std::path::Path,
+    token_id: &str,
+    to: &str,
+    amount: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{TokenMintTransferPayload, TxType};
+
+    let token_id_bytes = parse_hex_address(token_id)?;
+    let to_addr = parse_hex_address(to)?;
+    let raw_amount: u128 = amount.parse().map_err(|e| anyhow::anyhow!("invalid amount: {e}"))?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Transfer Token");
+    println!("  Token: {}", token_id);
+    println!("  From:  {}", from_hex);
+    println!("  To:    {}", to);
+    println!("  Amount: {}", amount);
+
+    let payload = TokenMintTransferPayload {
+        token_id: token_id_bytes,
+        to: to_addr,
+        amount: raw_amount,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::TokenMintTransfer, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (confirms in ~3s)");
+
+    Ok(())
+}
+
+async fn handle_create_token_cli(
+    data_dir: &std::path::Path,
+    name: &str,
+    symbol: &str,
+    decimals: u8,
+    initial_supply: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{TokenCreatePayload, TxType};
+
+    let total_supply: u128 = initial_supply.parse().map_err(|e| anyhow::anyhow!("invalid supply: {e}"))?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Create Token");
+    println!("  Name:     {}", name);
+    println!("  Symbol:   {}", symbol);
+    println!("  Decimals: {}", decimals);
+    println!("  Supply:   {}", initial_supply);
+    println!("  Creator:  {}", from_hex);
+
+    let payload = TokenCreatePayload {
+        name: name.to_string(),
+        symbol: symbol.to_string(),
+        decimals,
+        total_supply,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::TokenCreate, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (token created on-chain)");
+
+    Ok(())
+}
+
+async fn handle_deploy_contract_cli(
+    data_dir: &std::path::Path,
+    wasm_file: &std::path::Path,
+    init_method: &str,
+    init_args: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{ContractDeployPayload, TxType};
+
+    let code = std::fs::read(wasm_file)
+        .map_err(|e| anyhow::anyhow!("failed to read wasm file '{}': {e}", wasm_file.display()))?;
+
+    let init_args_bytes = if init_args.is_empty() {
+        Vec::new()
+    } else {
+        hex::decode(init_args).map_err(|e| anyhow::anyhow!("invalid hex init-args: {e}"))?
+    };
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Deploy Contract");
+    println!("  File:     {}", wasm_file.display());
+    println!("  Code:     {} bytes", code.len());
+    println!("  Deployer: {}", from_hex);
+    if !init_method.is_empty() {
+        println!("  Init:     {}({})", init_method, init_args);
+    }
+
+    let payload = ContractDeployPayload {
+        code,
+        init_method: init_method.to_string(),
+        init_args: init_args_bytes,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::ContractDeploy, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (contract deploys on next block)");
+
+    Ok(())
+}
+
+async fn handle_call_contract_cli(
+    data_dir: &std::path::Path,
+    address: &str,
+    method: &str,
+    args: &str,
+    value: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{ContractCallPayload, TxType};
+
+    let contract_addr = parse_hex_address(address)?;
+    let args_bytes = if args.is_empty() {
+        Vec::new()
+    } else {
+        hex::decode(args).map_err(|e| anyhow::anyhow!("invalid hex args: {e}"))?
+    };
+    let raw_value = parse_clw_amount(value)?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Call Contract");
+    println!("  Contract: {}", address);
+    println!("  Method:   {}", method);
+    println!("  Caller:   {}", from_hex);
+    if raw_value > 0 {
+        println!("  Value:    {} CLW", value);
+    }
+
+    let payload = ContractCallPayload {
+        contract: contract_addr,
+        method: method.to_string(),
+        args: args_bytes,
+        value: raw_value,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::ContractCall, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (executes on next block)");
+
+    Ok(())
+}
+
+async fn handle_register_service_cli(
+    data_dir: &std::path::Path,
+    service_type: &str,
+    endpoint: &str,
+    price: &str,
+    description: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{ServiceRegisterPayload, TxType};
+
+    let price_amount = parse_clw_amount(price)?;
+    let price_token = [0u8; 32]; // native CLAW token
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Register Service");
+    println!("  Type:     {}", service_type);
+    println!("  Endpoint: {}", endpoint);
+    println!("  Price:    {} CLW", price);
+    println!("  Owner:    {}", from_hex);
+    if !description.is_empty() {
+        println!("  Desc:     {}", description);
+    }
+
+    let payload = ServiceRegisterPayload {
+        service_type: service_type.to_string(),
+        description: description.to_string(),
+        endpoint: endpoint.to_string(),
+        price_token,
+        price_amount,
+        active: true,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::ServiceRegister, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (service registered on-chain)");
+
+    Ok(())
 }
 
 async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()> {
