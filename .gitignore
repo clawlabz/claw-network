@@ -23,3 +23,9 @@ Thumbs.db
 
 # Internal deployment (contains server IPs, keys, etc.)
 deploy-internal/
+
+# Private keys — double protection (even if deploy-internal/ rule removed)
+*.key.json
+**/keys/
+**/secret_key*
+**/key.json.bak
