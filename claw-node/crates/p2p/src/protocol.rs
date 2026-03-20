@@ -65,5 +65,7 @@ pub enum SyncResponse {
         state_root: [u8; 32],
         /// Borsh-serialized WorldState data.
         state_data: Vec<u8>,
+        /// The latest block at snapshot height, used to re-establish chain continuity after fork recovery.
+        latest_block: Block,
     },
 }

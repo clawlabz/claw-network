@@ -398,8 +398,8 @@ impl Chain {
         if ValidatorSet::is_epoch_boundary(new_height) {
             // Process downtime slashing before recalculating active set
             {
-                let slashing = std::mem::take(&mut inner.slashing);
-                slashing.process_downtime_slashing(&mut inner.validator_set);
+                let mut slashing = std::mem::take(&mut inner.slashing);
+                slashing.process_downtime_slashing(&mut inner.validator_set, new_height);
                 inner.slashing = slashing;
             }
             inner.slashing.unjail_expired(new_height);
@@ -603,8 +603,8 @@ impl Chain {
         if ValidatorSet::is_epoch_boundary(block.height) {
             // Process downtime slashing before recalculating active set
             {
-                let slashing = std::mem::take(&mut inner.slashing);
-                slashing.process_downtime_slashing(&mut inner.validator_set);
+                let mut slashing = std::mem::take(&mut inner.slashing);
+                slashing.process_downtime_slashing(&mut inner.validator_set, block.height);
                 inner.slashing = slashing;
             }
             inner.slashing.unjail_expired(block.height);
@@ -824,6 +824,7 @@ impl Chain {
                             height: inner.latest_block.height,
                             state_root: inner.latest_block.state_root,
                             state_data,
+                            latest_block: inner.latest_block.clone(),
                         }
                     }
                     _ => {
@@ -847,15 +848,26 @@ impl Chain {
                 let batch_count = blocks.len();
                 let mut applied = 0;
                 for block in blocks {
-                    if let Err(e) = self.apply_remote_block(block) {
-                        tracing::debug!(
-                            height = block.height,
-                            error = %e,
-                            "Failed to apply synced block"
-                        );
-                        break;
+                    match self.apply_remote_block(block) {
+                        Ok(()) => { applied += 1; }
+                        Err(e) => {
+                            // Fork detection: if the very first block fails with prev_hash mismatch,
+                            // the local chain has diverged from the network. Fall back to state snapshot sync.
+                            if applied == 0 && e.contains("prev_hash mismatch") {
+                                tracing::warn!(
+                                    height = block.height,
+                                    "Fork detected: local chain diverged from network. Requesting state snapshot for recovery."
+                                );
+                                return Some(SyncRequest::GetStateSnapshot);
+                            }
+                            tracing::debug!(
+                                height = block.height,
+                                error = %e,
+                                "Failed to apply synced block"
+                            );
+                            break;
+                        }
                     }
-                    applied += 1;
                 }
                 tracing::info!(applied, batch_count, "Applied synced blocks");
                 // If we applied the full batch, request the next batch
@@ -892,7 +904,7 @@ impl Chain {
                     None
                 }
             }
-            SyncResponse::StateSnapshot { height, state_root, state_data } => {
+            SyncResponse::StateSnapshot { height, state_root, state_data, latest_block } => {
                 tracing::info!(
                     snapshot_height = height,
                     state_data_size = state_data.len(),
@@ -917,18 +929,18 @@ impl Chain {
                 match borsh::from_slice::<claw_state::WorldState>(state_data) {
                     Ok(state) => {
                         inner.state = state;
-                        tracing::info!(height, "Fast sync: state snapshot applied successfully");
-
-                        // Now request blocks after the snapshot height
-                        let our_height = inner.latest_block.height;
-                        if *height > our_height {
-                            Some(SyncRequest::GetBlocks {
-                                from_height: our_height + 1,
-                                count: 100,
-                            })
-                        } else {
-                            None
+                        // Update latest_block from snapshot to re-establish chain continuity
+                        inner.latest_block = latest_block.clone();
+                        if let Err(e) = inner.store.put_block(latest_block) {
+                            tracing::error!(error = %e, "Failed to store snapshot block");
                         }
+                        tracing::info!(height, "Fork recovery: state snapshot applied, chain reset to height {}", height);
+
+                        // Request blocks after the snapshot height to continue syncing
+                        Some(SyncRequest::GetBlocks {
+                            from_height: height + 1,
+                            count: 100,
+                        })
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to deserialize state snapshot");

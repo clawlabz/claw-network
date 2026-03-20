@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use claw_storage::ChainStore;
+use claw_types::Block;
 
 use crate::chain::Chain;
 
@@ -128,6 +129,7 @@ pub fn build_state_snapshot_response(
     store: &ChainStore,
     latest_height: u64,
     latest_state_root: [u8; 32],
+    latest_block: Block,
 ) -> Option<claw_p2p::SyncResponse> {
     match store.get_state_snapshot() {
         Ok(Some(state_data)) => {
@@ -140,6 +142,7 @@ pub fn build_state_snapshot_response(
                 height: latest_height,
                 state_root: latest_state_root,
                 state_data,
+                latest_block,
             })
         }
         Ok(None) => {

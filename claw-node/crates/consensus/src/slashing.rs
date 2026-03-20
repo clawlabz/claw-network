@@ -121,8 +121,9 @@ impl SlashingState {
     ///
     /// Returns a list of (validator_address, slashed_amount).
     pub fn process_downtime_slashing(
-        &self,
+        &mut self,
         validator_set: &mut ValidatorSet,
+        current_height: u64,
     ) -> Vec<([u8; 32], u128)> {
         let mut slashed_validators = Vec::new();
 
@@ -143,13 +144,17 @@ impl SlashingState {
                 );
 
                 if slashed > 0 {
+                    // Jail the validator to exclude from next epoch's active set
+                    self.jailed.insert(*validator, current_height + JAIL_DURATION);
+
                     tracing::warn!(
                         validator = %hex::encode(validator),
                         missed,
                         assigned,
                         missed_percent,
                         slashed_amount = slashed,
-                        "Downtime slashing — validator missed too many proposal slots"
+                        jail_duration = JAIL_DURATION,
+                        "Downtime slashing — validator jailed for {} blocks", JAIL_DURATION
                     );
                     slashed_validators.push((*validator, slashed));
                 }
@@ -325,12 +330,17 @@ mod tests {
             slashing.record_missed_slot(&addr);
         }
 
-        let results = slashing.process_downtime_slashing(&mut vs);
+        let results = slashing.process_downtime_slashing(&mut vs, 100);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, addr);
 
         let expected_slash = original_stake / 100; // 1%
         assert_eq!(results[0].1, expected_slash);
+
+        // Validator should be jailed after downtime slashing
+        assert!(slashing.is_jailed(&addr, 100));
+        assert!(slashing.is_jailed(&addr, 100 + JAIL_DURATION - 1));
+        assert!(!slashing.is_jailed(&addr, 100 + JAIL_DURATION));
     }
 
     #[test]
@@ -347,8 +357,11 @@ mod tests {
             slashing.record_missed_slot(&addr);
         }
 
-        let results = slashing.process_downtime_slashing(&mut vs);
+        let results = slashing.process_downtime_slashing(&mut vs, 100);
         assert!(results.is_empty());
+
+        // Validator should NOT be jailed when under threshold
+        assert!(!slashing.is_jailed(&addr, 100));
     }
 
     #[test]
