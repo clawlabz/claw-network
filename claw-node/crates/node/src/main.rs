@@ -389,9 +389,10 @@ async fn main() -> Result<()> {
 
             let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes, &genesis_cfg)?;
 
-            // Fast sync: log intent (actual snapshot request happens on first peer connection)
+            // Fast sync: enable state snapshot request on first peer connection
             if sync_mode == sync::SyncMode::Fast {
                 sync::log_fast_sync_intent();
+                chain.set_fast_sync();
             }
 
             // Light mode: spawn periodic pruning task

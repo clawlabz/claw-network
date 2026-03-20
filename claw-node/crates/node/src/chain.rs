@@ -39,6 +39,8 @@ struct ChainInner {
     slashing: SlashingState,
     /// Pending votes for the latest block, keyed by voter address.
     pending_votes: std::collections::HashMap<[u8; 32], [u8; 64]>,
+    /// Whether to use fast sync (state snapshot) on first peer connection.
+    fast_sync_pending: bool,
 }
 
 impl Chain {
@@ -117,9 +119,17 @@ impl Chain {
                 validator_set,
                 slashing: SlashingState::new(),
                 pending_votes: std::collections::HashMap::new(),
+                fast_sync_pending: false,
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    /// Enable fast sync mode so the first peer connection requests a state
+    /// snapshot instead of individual blocks.
+    pub fn set_fast_sync(&self) {
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.fast_sync_pending = true;
     }
 
     /// Submit a transaction to the mempool.
@@ -697,8 +707,18 @@ impl Chain {
                             }
                         }
                         NetworkEvent::PeerConnected(peer) => {
-                            tracing::info!(%peer, "Peer connected — requesting chain status");
-                            p2p.send_sync_request(&peer, SyncRequest::GetStatus);
+                            let request = {
+                                let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                                if inner.fast_sync_pending {
+                                    inner.fast_sync_pending = false;
+                                    tracing::info!(%peer, "Fast sync: requesting state snapshot from peer");
+                                    SyncRequest::GetStateSnapshot
+                                } else {
+                                    tracing::info!(%peer, "Peer connected — requesting chain status");
+                                    SyncRequest::GetStatus
+                                }
+                            };
+                            p2p.send_sync_request(&peer, request);
                         }
                         NetworkEvent::PeerDisconnected(peer) => {
                             tracing::info!(%peer, "Peer disconnected");
@@ -778,10 +798,20 @@ impl Chain {
                 }
                 NetworkEvent::PeerConnected(peer) => {
                     self.peer_connected();
-                    tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected — requesting chain status");
+                    let request = {
+                        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                        if inner.fast_sync_pending {
+                            inner.fast_sync_pending = false;
+                            tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Fast sync: requesting state snapshot from peer");
+                            SyncRequest::GetStateSnapshot
+                        } else {
+                            tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected — requesting chain status");
+                            SyncRequest::GetStatus
+                        }
+                    };
                     let _ = command_tx.send(P2pCommand::SendSyncRequest {
                         peer,
-                        request: SyncRequest::GetStatus,
+                        request,
                     });
                 }
                 NetworkEvent::PeerDisconnected(peer) => {
