@@ -93,7 +93,9 @@ pub fn distribute_block_reward(
             reward * (*weight as u128) / (total_weight as u128)
         };
         if share > 0 {
-            *world.balances.entry(*addr).or_insert(0) += share;
+            // Route reward to owner if delegated, otherwise to validator
+            let reward_recipient = world.stake_delegations.get(addr).copied().unwrap_or(*addr);
+            *world.balances.entry(reward_recipient).or_insert(0) += share;
             distributed += share;
         }
     }
@@ -119,7 +121,9 @@ pub fn distribute_fees(
     // burned = total_fees - proposer_share - ecosystem_share (covers rounding)
 
     if proposer_share > 0 {
-        *world.balances.entry(*proposer).or_insert(0) += proposer_share;
+        // Route proposer fee to owner if delegated, otherwise to proposer
+        let reward_recipient = world.stake_delegations.get(proposer).copied().unwrap_or(*proposer);
+        *world.balances.entry(reward_recipient).or_insert(0) += proposer_share;
     }
 
     if ecosystem_share > 0 {

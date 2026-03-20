@@ -98,6 +98,10 @@ enum Commands {
     Stake {
         /// Amount in CLW to stake (e.g. "10000")
         amount: String,
+        /// Delegate to a different validator address (hex, 64 chars).
+        /// If omitted, the staker is also the block-producing validator (self-stake).
+        #[arg(long)]
+        validator_key: Option<String>,
         /// RPC endpoint URL
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
@@ -517,8 +521,8 @@ async fn main() -> Result<()> {
         Commands::Transfer { to, amount, rpc } => {
             handle_transfer_cli(&data_dir, &to, &amount, &rpc).await?;
         }
-        Commands::Stake { amount, rpc } => {
-            handle_stake_cli(&data_dir, &amount, &rpc).await?;
+        Commands::Stake { amount, validator_key, rpc } => {
+            handle_stake_cli(&data_dir, &amount, validator_key.as_deref(), &rpc).await?;
         }
         Commands::Unstake { amount, rpc } => {
             handle_unstake_cli(&data_dir, &amount, &rpc).await?;
@@ -662,7 +666,7 @@ async fn handle_transfer_cli(data_dir: &std::path::Path, to: &str, amount: &str,
     Ok(())
 }
 
-async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, rpc: &str) -> Result<()> {
+async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_key: Option<&str>, rpc: &str) -> Result<()> {
     use claw_types::transaction::{StakeDepositPayload, TxType};
 
     let raw_amount = parse_clw_amount(amount)?;
@@ -682,12 +686,26 @@ async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, rpc: &str) -
         anyhow::bail!("insufficient balance: have {:.4} CLW, need {} CLW", balance_clw, amount);
     }
 
-    println!("Stake {} CLW", amount);
-    println!("  Validator: {}", from_hex);
+    // Parse validator key for delegation, or default to self-stake
+    let validator = match validator_key {
+        Some(hex_str) => {
+            let addr = parse_hex_address(hex_str)?;
+            println!("Stake {} CLW (delegated)", amount);
+            println!("  Owner:     {}", from_hex);
+            println!("  Validator: {}", hex_str);
+            addr
+        }
+        None => {
+            println!("Stake {} CLW (self-stake)", amount);
+            println!("  Validator: {}", from_hex);
+            [0u8; 32] // sentinel for self-stake
+        }
+    };
     println!("  Raw:       {} (9 decimals)", raw_amount);
 
     let payload = StakeDepositPayload {
         amount: raw_amount,
+        validator,
     };
     let payload_bytes = borsh::to_vec(&payload)?;
 

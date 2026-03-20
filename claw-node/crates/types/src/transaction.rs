@@ -143,6 +143,9 @@ pub struct ContractCallPayload {
 pub struct StakeDepositPayload {
     /// Amount of CLW to stake (in base units, 9 decimals).
     pub amount: u128,
+    /// Optional: delegate block production to this address.
+    /// If all-zeros, the staker is also the validator (self-stake).
+    pub validator: [u8; 32],
 }
 
 /// Payload for initiating a stake withdrawal (unbonding).

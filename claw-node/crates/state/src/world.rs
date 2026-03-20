@@ -79,6 +79,9 @@ pub struct WorldState {
     pub platform_activity: BTreeMap<[u8; 32], claw_types::state::PlatformActivityAgg>,
     /// Tracks which Platform Agents have submitted reports this epoch: (reporter, epoch) → true.
     pub platform_report_tracker: BTreeMap<([u8; 32], u64), bool>,
+    /// Stake delegation: validator_address → owner_address (who staked for them).
+    /// When distributing rewards, send to owner, not validator.
+    pub stake_delegations: BTreeMap<[u8; 32], [u8; 32]>,
 }
 
 impl BorshDeserialize for WorldState {
@@ -167,6 +170,14 @@ impl BorshDeserialize for WorldState {
             BTreeMap::new()
         };
 
+        let has_more = (cursor.position() as usize) < buf.len();
+        let stake_delegations = if has_more {
+            BTreeMap::<[u8; 32], [u8; 32]>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
         Ok(WorldState {
             balances,
             token_balances,
@@ -185,6 +196,7 @@ impl BorshDeserialize for WorldState {
             validator_uptime,
             platform_activity,
             platform_report_tracker,
+            stake_delegations,
         })
     }
 }
@@ -403,6 +415,15 @@ impl WorldState {
             entry.extend_from_slice(b"platact:");
             entry.extend_from_slice(addr);
             entry.extend_from_slice(&borsh::to_vec(agg).expect("borsh serialization of PlatformActivityAgg should never fail"));
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Stake delegations
+        for (validator, owner) in &self.stake_delegations {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"deleg:");
+            entry.extend_from_slice(validator);
+            entry.extend_from_slice(owner);
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 

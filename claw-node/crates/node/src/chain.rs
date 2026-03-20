@@ -1240,6 +1240,17 @@ impl Chain {
         claw_state::compute_agent_score(&inner.state, addr)
     }
 
+    /// Get the owner address for a delegated validator. Returns None if no delegation exists.
+    pub fn get_stake_delegation(&self, validator: &[u8; 32]) -> Option<[u8; 32]> {
+        self.inner
+            .lock()
+            .expect("chain state mutex poisoned")
+            .state
+            .stake_delegations
+            .get(validator)
+            .copied()
+    }
+
     /// Get active validators with their stakes and weights.
     pub fn get_validators(&self) -> Vec<serde_json::Value> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");

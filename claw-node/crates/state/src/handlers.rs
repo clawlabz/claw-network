@@ -603,6 +603,10 @@ pub fn handle_platform_activity_report(
 const MIN_STAKE: u128 = 10_000_000_000_000;
 
 /// StakeDeposit: lock CLAW as validator stake.
+///
+/// Supports delegated staking: if `payload.validator` is non-zero, stake is
+/// recorded under the validator address (so they appear in the validator set),
+/// while the delegation mapping tracks the owner for reward routing.
 pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
     let payload = StakeDepositPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
@@ -620,8 +624,15 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
         });
     }
 
-    // Compute new total stake
-    let current_stake = state.stakes.get(&tx.from).copied().unwrap_or(0);
+    // Determine the validator address: delegate or self-stake
+    let validator_addr = if payload.validator == [0u8; 32] {
+        tx.from // self-stake
+    } else {
+        payload.validator // delegated
+    };
+
+    // Compute new total stake under the validator address
+    let current_stake = state.stakes.get(&validator_addr).copied().unwrap_or(0);
     let new_stake = current_stake
         .checked_add(payload.amount)
         .ok_or_else(|| StateError::StakeError("stake overflow".into()))?;
@@ -634,14 +645,22 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
         )));
     }
 
-    // Deduct from balance, add to stake
+    // Deduct from sender balance, record stake under validator address
     *state.balances.entry(tx.from).or_insert(0) -= payload.amount;
-    state.stakes.insert(tx.from, new_stake);
+    state.stakes.insert(validator_addr, new_stake);
+
+    // Record delegation: validator → owner (for reward routing).
+    // Only set if not already delegated (first staker is the owner).
+    state.stake_delegations.entry(validator_addr).or_insert(tx.from);
 
     Ok(())
 }
 
 /// StakeWithdraw: begin unbonding stake (starts countdown to claim).
+///
+/// Supports delegated staking: the sender can unstake if they are either
+/// the validator themselves (self-stake) or the delegated owner. The stake
+/// is looked up under the appropriate validator address.
 pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
     let payload = StakeWithdrawPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
@@ -650,7 +669,30 @@ pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result
         return Err(StateError::ZeroAmount);
     }
 
-    let current_stake = state.stakes.get(&tx.from).copied().unwrap_or(0);
+    // Determine the validator address whose stake to withdraw from.
+    // Case 1: tx.from has stake directly (self-stake or is the validator)
+    // Case 2: tx.from is an owner who delegated to a validator
+    let validator_addr = if state.stakes.get(&tx.from).copied().unwrap_or(0) > 0 {
+        // Direct stake exists under sender's address
+        tx.from
+    } else {
+        // Search for a delegation where tx.from is the owner
+        let delegated_validator = state
+            .stake_delegations
+            .iter()
+            .find(|(_, owner)| **owner == tx.from)
+            .map(|(validator, _)| *validator);
+        match delegated_validator {
+            Some(v) => v,
+            None => {
+                return Err(StateError::StakeError(
+                    "no stake found for this address (neither direct nor delegated)".into(),
+                ));
+            }
+        }
+    };
+
+    let current_stake = state.stakes.get(&validator_addr).copied().unwrap_or(0);
     if payload.amount > current_stake {
         return Err(StateError::StakeError(format!(
             "unstake {} exceeds staked amount {}",
@@ -670,12 +712,14 @@ pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result
 
     // Update or remove stake
     if remaining == 0 {
-        state.stakes.remove(&tx.from);
+        state.stakes.remove(&validator_addr);
+        // Clean up delegation mapping when fully unstaked
+        state.stake_delegations.remove(&validator_addr);
     } else {
-        state.stakes.insert(tx.from, remaining);
+        state.stakes.insert(validator_addr, remaining);
     }
 
-    // Create unbonding entry
+    // Create unbonding entry — funds return to the sender (owner)
     let release_height = state.block_height + UNBONDING_PERIOD_BLOCKS;
     state.unbonding_queue.push(UnbondingEntry {
         address: tx.from,

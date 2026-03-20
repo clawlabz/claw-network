@@ -366,6 +366,16 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
+        "clw_getStakeDelegation" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => {
+                    let owner = chain.get_stake_delegation(&a);
+                    Ok(serde_json::json!(owner.map(hex::encode)))
+                }
+                Err(e) => Err(e),
+            }
+        }
         "clw_getValidators" => {
             Ok(serde_json::json!(chain.get_validators()))
         }

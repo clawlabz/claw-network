@@ -468,7 +468,7 @@ mod tests {
         state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2)).unwrap();
 
         // Stake 50k CLW for addr1 (Platform Agent threshold)
-        let stake = claw_types::transaction::StakeDepositPayload { amount: 50_000_000_000_000 };
+        let stake = claw_types::transaction::StakeDepositPayload { amount: 50_000_000_000_000, validator: [0u8; 32] };
         state.apply_tx(&make_tx(&sk1, 2, TxType::StakeDeposit, &stake)).unwrap();
 
         (state, sk1, addr1, sk2, addr2)
