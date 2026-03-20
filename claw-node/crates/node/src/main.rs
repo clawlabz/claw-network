@@ -83,6 +83,24 @@ enum Commands {
         #[arg(long, default_value = "devnet")]
         network: Network,
     },
+    /// Transfer CLAW to another address
+    Transfer {
+        /// Recipient address (hex, 64 chars)
+        to: String,
+        /// Amount in CLW (e.g. "10000" or "0.5")
+        amount: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Stake CLAW to become a validator
+    Stake {
+        /// Amount in CLW to stake (e.g. "10000")
+        amount: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
     /// Smart contract queries (reads from a running node via RPC)
     Contract {
         #[command(subcommand)]
@@ -361,10 +379,162 @@ async fn main() -> Result<()> {
             let json = genesis::export_json(&config)?;
             println!("{json}");
         }
+        Commands::Transfer { to, amount, rpc } => {
+            handle_transfer_cli(&data_dir, &to, &amount, &rpc).await?;
+        }
+        Commands::Stake { amount, rpc } => {
+            handle_stake_cli(&data_dir, &amount, &rpc).await?;
+        }
         Commands::Contract { action, rpc } => {
             handle_contract_cli(action, &rpc).await?;
         }
     }
+
+    Ok(())
+}
+
+/// Parse a CLW amount string (supports decimals, e.g. "10000" or "0.5") into raw u128 (9 decimals).
+fn parse_clw_amount(s: &str) -> Result<u128> {
+    let s = s.trim();
+    let (whole, frac) = if let Some(dot) = s.find('.') {
+        let whole: u128 = s[..dot].parse().map_err(|e| anyhow::anyhow!("invalid amount: {e}"))?;
+        let frac_str = &s[dot + 1..];
+        let frac_len = frac_str.len();
+        if frac_len > 9 {
+            anyhow::bail!("too many decimal places (max 9)");
+        }
+        let frac: u128 = frac_str.parse().map_err(|e| anyhow::anyhow!("invalid decimal: {e}"))?;
+        let frac_scaled = frac * 10u128.pow(9 - frac_len as u32);
+        (whole, frac_scaled)
+    } else {
+        let whole: u128 = s.parse().map_err(|e| anyhow::anyhow!("invalid amount: {e}"))?;
+        (whole, 0)
+    };
+    Ok(whole * 1_000_000_000 + frac)
+}
+
+/// Parse a hex address string into [u8; 32].
+fn parse_hex_address(s: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(s).map_err(|e| anyhow::anyhow!("invalid hex address: {e}"))?;
+    if bytes.len() != 32 {
+        anyhow::bail!("address must be 64 hex chars (32 bytes), got {}", bytes.len());
+    }
+    let mut addr = [0u8; 32];
+    addr.copy_from_slice(&bytes);
+    Ok(addr)
+}
+
+/// Build, sign, and submit a transaction via RPC.
+async fn submit_tx(
+    data_dir: &std::path::Path,
+    rpc: &str,
+    tx_type: claw_types::transaction::TxType,
+    payload_bytes: Vec<u8>,
+) -> Result<String> {
+    use claw_types::transaction::Transaction;
+
+    let cfg = config::load_config(data_dir)?;
+    let from = cfg.address;
+
+    // Get current nonce
+    let nonce_result = rpc_call(rpc, "clw_getNonce", vec![serde_json::json!(hex::encode(from))]).await?;
+    let current_nonce: u64 = nonce_result.as_u64().unwrap_or(0);
+    let nonce = current_nonce + 1;
+
+    // Build transaction
+    let mut tx = Transaction {
+        tx_type,
+        from,
+        nonce,
+        payload: payload_bytes,
+        signature: [0u8; 64],
+    };
+
+    // Sign
+    let signing_key = claw_crypto::ed25519_dalek::SigningKey::from_bytes(&cfg.signing_key_bytes);
+    claw_crypto::signer::sign_transaction(&mut tx, &signing_key);
+
+    // Serialize
+    let tx_hex = hex::encode(borsh::to_vec(&tx)?);
+
+    // Submit
+    let result = rpc_call(rpc, "clw_sendTransaction", vec![serde_json::json!(tx_hex)]).await?;
+    let tx_hash = result.as_str().unwrap_or("unknown").to_string();
+
+    Ok(tx_hash)
+}
+
+async fn handle_transfer_cli(data_dir: &std::path::Path, to: &str, amount: &str, rpc: &str) -> Result<()> {
+    use claw_types::transaction::{TokenTransferPayload, TxType};
+
+    let to_addr = parse_hex_address(to)?;
+    let raw_amount = parse_clw_amount(amount)?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    // Check balance
+    let balance_result = rpc_call(rpc, "clw_getBalance", vec![serde_json::json!(&from_hex)]).await?;
+    let balance: u128 = balance_result.as_str()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| balance_result.as_u64().map(|v| v as u128))
+        .unwrap_or(0);
+
+    if balance < raw_amount {
+        let balance_clw = balance as f64 / 1_000_000_000.0;
+        anyhow::bail!("insufficient balance: have {:.4} CLW, need {} CLW", balance_clw, amount);
+    }
+
+    println!("Transfer {} CLW", amount);
+    println!("  From: {}", from_hex);
+    println!("  To:   {}", to);
+    println!("  Raw:  {} (9 decimals)", raw_amount);
+
+    let payload = TokenTransferPayload {
+        to: to_addr,
+        amount: raw_amount,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::TokenTransfer, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (confirms in ~3s)");
+
+    Ok(())
+}
+
+async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, rpc: &str) -> Result<()> {
+    use claw_types::transaction::{StakeDepositPayload, TxType};
+
+    let raw_amount = parse_clw_amount(amount)?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    // Check balance
+    let balance_result = rpc_call(rpc, "clw_getBalance", vec![serde_json::json!(&from_hex)]).await?;
+    let balance: u128 = balance_result.as_str()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| balance_result.as_u64().map(|v| v as u128))
+        .unwrap_or(0);
+
+    if balance < raw_amount {
+        let balance_clw = balance as f64 / 1_000_000_000.0;
+        anyhow::bail!("insufficient balance: have {:.4} CLW, need {} CLW", balance_clw, amount);
+    }
+
+    println!("Stake {} CLW", amount);
+    println!("  Validator: {}", from_hex);
+    println!("  Raw:       {} (9 decimals)", raw_amount);
+
+    let payload = StakeDepositPayload {
+        amount: raw_amount,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::StakeDeposit, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (active after next epoch)");
 
     Ok(())
 }
