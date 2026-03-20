@@ -965,23 +965,27 @@ impl Chain {
                     "Received state snapshot from peer"
                 );
 
-                // Verify the state_root matches the hash of state_data
-                use sha2::{Digest, Sha256};
-                let computed: [u8; 32] = Sha256::digest(state_data).into();
-                if computed != *state_root {
-                    tracing::error!("State snapshot verification failed: state_root mismatch");
-                    return None;
-                }
-
-                // Apply the snapshot: write state to storage and update chain
+                // Apply the snapshot: deserialize first, then verify state_root
                 let mut inner = self.inner.lock().expect("chain state mutex poisoned");
-                if let Err(e) = inner.store.put_state_snapshot(state_data) {
-                    tracing::error!(error = %e, "Failed to write state snapshot to storage");
-                    return None;
-                }
 
                 match borsh::from_slice::<claw_state::WorldState>(state_data) {
                     Ok(state) => {
+                        // Verify state_root by recomputing from deserialized state
+                        let computed_root = state.state_root();
+                        if computed_root != *state_root {
+                            tracing::error!(
+                                expected = %hex::encode(state_root),
+                                computed = %hex::encode(computed_root),
+                                "State snapshot verification failed: state_root mismatch"
+                            );
+                            return None;
+                        }
+
+                        if let Err(e) = inner.store.put_state_snapshot(state_data) {
+                            tracing::error!(error = %e, "Failed to write state snapshot to storage");
+                            return None;
+                        }
+
                         inner.state = state;
                         // Update latest_block from snapshot to re-establish chain continuity
                         inner.latest_block = latest_block.clone();
