@@ -8,6 +8,7 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use std::collections::HashSet;
+use std::path::Path;
 use tokio::sync::mpsc;
 use tracing;
 
@@ -66,14 +67,56 @@ pub struct P2pNetwork {
     vote_topic: gossipsub::IdentTopic,
 }
 
+/// Load an existing P2P keypair from disk, or generate a new one and save it.
+///
+/// The keypair is stored as protobuf-encoded bytes at `<data_dir>/p2p_key`.
+/// File permissions are set to 0600 (owner read/write only) on Unix systems.
+fn load_or_generate_keypair(data_dir: &Path) -> Result<identity::Keypair, Box<dyn std::error::Error>> {
+    let key_path = data_dir.join("p2p_key");
+    if key_path.exists() {
+        let bytes = std::fs::read(&key_path)
+            .map_err(|e| format!("failed to read P2P key from {}: {e}", key_path.display()))?;
+        let keypair = identity::Keypair::from_protobuf_encoding(&bytes)
+            .map_err(|e| format!("failed to decode P2P key from {}: {e}", key_path.display()))?;
+        tracing::info!(path = %key_path.display(), "Loaded existing P2P keypair");
+        Ok(keypair)
+    } else {
+        let keypair = identity::Keypair::generate_ed25519();
+        let bytes = keypair.to_protobuf_encoding()
+            .map_err(|e| format!("failed to encode P2P key: {e}"))?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(&key_path, &bytes)
+            .map_err(|e| format!("failed to write P2P key to {}: {e}", key_path.display()))?;
+
+        // Set restrictive file permissions (owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        tracing::info!(path = %key_path.display(), "Generated and saved new P2P keypair");
+        Ok(keypair)
+    }
+}
+
 impl P2pNetwork {
     /// Create a new P2P network.
     /// Returns (network, event_receiver, command_sender).
+    ///
+    /// The `data_dir` is used to persist the P2P keypair so the peer ID
+    /// remains stable across restarts.
     pub fn new(
+        data_dir: &Path,
         p2p_port: u16,
         bootstrap_addrs: Vec<Multiaddr>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>, mpsc::UnboundedSender<P2pCommand>), Box<dyn std::error::Error>> {
-        let local_key = identity::Keypair::generate_ed25519();
+        let local_key = load_or_generate_keypair(data_dir)?;
         let local_peer_id = local_key.public().to_peer_id();
 
         tracing::info!(%local_peer_id, "P2P identity created");
