@@ -41,6 +41,8 @@ struct ChainInner {
     pending_votes: std::collections::HashMap<[u8; 32], [u8; 64]>,
     /// Whether to use fast sync (state snapshot) on first peer connection.
     fast_sync_pending: bool,
+    /// Bootstrap peer IDs (string representation) — fast sync only targets these.
+    bootstrap_peer_ids: Vec<String>,
 }
 
 impl Chain {
@@ -120,6 +122,7 @@ impl Chain {
                 slashing: SlashingState::new(),
                 pending_votes: std::collections::HashMap::new(),
                 fast_sync_pending: false,
+                bootstrap_peer_ids: Vec::new(),
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -130,6 +133,13 @@ impl Chain {
     pub fn set_fast_sync(&self) {
         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
         inner.fast_sync_pending = true;
+    }
+
+    /// Store bootstrap peer IDs so fast sync only targets trusted bootstrap
+    /// peers rather than mDNS-discovered local peers that may be on forks.
+    pub fn set_bootstrap_peers(&self, peer_ids: Vec<String>) {
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.bootstrap_peer_ids = peer_ids;
     }
 
     /// Submit a transaction to the mempool.
@@ -710,9 +720,16 @@ impl Chain {
                             let request = {
                                 let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                                 if inner.fast_sync_pending {
-                                    inner.fast_sync_pending = false;
-                                    tracing::info!(%peer, "Fast sync: requesting state snapshot from peer");
-                                    SyncRequest::GetStateSnapshot
+                                    let peer_str = peer.to_string();
+                                    let is_bootstrap = inner.bootstrap_peer_ids.iter().any(|id| id == &peer_str);
+                                    if is_bootstrap {
+                                        inner.fast_sync_pending = false;
+                                        tracing::info!(%peer, "Fast sync: requesting state snapshot from bootstrap peer");
+                                        SyncRequest::GetStateSnapshot
+                                    } else {
+                                        tracing::info!(%peer, "Fast sync pending — skipping non-bootstrap peer, sending GetStatus");
+                                        SyncRequest::GetStatus
+                                    }
                                 } else {
                                     tracing::info!(%peer, "Peer connected — requesting chain status");
                                     SyncRequest::GetStatus
@@ -801,9 +818,16 @@ impl Chain {
                     let request = {
                         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                         if inner.fast_sync_pending {
-                            inner.fast_sync_pending = false;
-                            tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Fast sync: requesting state snapshot from peer");
-                            SyncRequest::GetStateSnapshot
+                            let peer_str = peer.to_string();
+                            let is_bootstrap = inner.bootstrap_peer_ids.iter().any(|id| id == &peer_str);
+                            if is_bootstrap {
+                                inner.fast_sync_pending = false;
+                                tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Fast sync: requesting state snapshot from bootstrap peer");
+                                SyncRequest::GetStateSnapshot
+                            } else {
+                                tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Fast sync pending — skipping non-bootstrap peer, sending GetStatus");
+                                SyncRequest::GetStatus
+                            }
                         } else {
                             tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected — requesting chain status");
                             SyncRequest::GetStatus

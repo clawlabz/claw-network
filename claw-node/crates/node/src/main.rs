@@ -431,6 +431,26 @@ async fn main() -> Result<()> {
                     .filter_map(|s| s.parse().ok())
                     .collect();
 
+                // Extract peer IDs from bootstrap multiaddrs for fast sync targeting.
+                // Multiaddr format: /ip4/.../tcp/.../p2p/<peer_id>
+                let bootstrap_peer_ids: Vec<String> = bootstrap_addrs
+                    .iter()
+                    .filter_map(|addr| {
+                        addr.iter().find_map(|proto| {
+                            if let libp2p::multiaddr::Protocol::P2p(peer_id) = proto {
+                                Some(peer_id.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                if !bootstrap_peer_ids.is_empty() {
+                    tracing::info!(count = bootstrap_peer_ids.len(), "Bootstrap peer IDs for fast sync: {:?}", bootstrap_peer_ids);
+                    chain.set_bootstrap_peers(bootstrap_peer_ids);
+                }
+
                 if bootstrap_addrs.is_empty() {
                     tracing::warn!("No bootstrap peers configured — running as solo node. Use --bootstrap to connect.");
                 }
