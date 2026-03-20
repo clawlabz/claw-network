@@ -82,6 +82,9 @@ pub struct WorldState {
     /// Stake delegation: validator_address → owner_address (who staked for them).
     /// When distributing rewards, send to owner, not validator.
     pub stake_delegations: BTreeMap<[u8; 32], [u8; 32]>,
+    /// Commission rate per validator: validator_address → commission in basis points (0-10000).
+    /// Default (absent) = 10000 (validator keeps all, i.e. self-stake or legacy delegation).
+    pub stake_commissions: BTreeMap<[u8; 32], u16>,
 }
 
 impl BorshDeserialize for WorldState {
@@ -178,6 +181,14 @@ impl BorshDeserialize for WorldState {
             BTreeMap::new()
         };
 
+        let has_more = (cursor.position() as usize) < buf.len();
+        let stake_commissions = if has_more {
+            BTreeMap::<[u8; 32], u16>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
         Ok(WorldState {
             balances,
             token_balances,
@@ -197,6 +208,7 @@ impl BorshDeserialize for WorldState {
             platform_activity,
             platform_report_tracker,
             stake_delegations,
+            stake_commissions,
         })
     }
 }
@@ -424,6 +436,15 @@ impl WorldState {
             entry.extend_from_slice(b"deleg:");
             entry.extend_from_slice(validator);
             entry.extend_from_slice(owner);
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Stake commissions
+        for (validator, commission_bps) in &self.stake_commissions {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"commission:");
+            entry.extend_from_slice(validator);
+            entry.extend_from_slice(&commission_bps.to_le_bytes());
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 

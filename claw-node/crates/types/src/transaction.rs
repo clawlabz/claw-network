@@ -146,6 +146,10 @@ pub struct StakeDepositPayload {
     /// Optional: delegate block production to this address.
     /// If all-zeros, the staker is also the validator (self-stake).
     pub validator: [u8; 32],
+    /// Commission rate in basis points (0-10000). The validator keeps this
+    /// percentage of block rewards; the delegator gets the rest.
+    /// Default: 10000 (validator keeps all, backward compatible with self-stake).
+    pub commission_bps: u16,
 }
 
 /// Payload for initiating a stake withdrawal (unbonding).

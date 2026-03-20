@@ -404,6 +404,16 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
         "clw_getValidators" => {
             Ok(serde_json::json!(chain.get_validators()))
         }
+        "clw_getValidatorDetail" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => match chain.get_validator_detail(&a) {
+                    Some(detail) => Ok(detail),
+                    None => Ok(Value::Null),
+                },
+                Err(e) => Err(e),
+            }
+        }
         "clw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())

@@ -1332,6 +1332,57 @@ impl Chain {
             .collect()
     }
 
+    /// Get comprehensive details for a single validator.
+    pub fn get_validator_detail(&self, addr: &[u8; 32]) -> Option<serde_json::Value> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+
+        // Must be an active validator or have stake
+        let stake = inner.state.stakes.get(addr).copied().unwrap_or(0);
+        if stake == 0 {
+            return None;
+        }
+
+        // Find weight and agent_score from active set
+        let (weight, agent_score) = inner
+            .validator_set
+            .active
+            .iter()
+            .find(|v| v.address == *addr)
+            .map(|v| (v.weight, v.agent_score))
+            .unwrap_or((0, 0));
+
+        let commission_bps = inner.state.stake_commissions.get(addr).copied().unwrap_or(10000);
+        let delegated_by = inner.state.stake_delegations.get(addr).map(hex::encode);
+
+        // Uptime data
+        let uptime = inner.state.validator_uptime.get(addr).map(|u| {
+            let uptime_pct = if u.expected_blocks > 0 {
+                (u.signed_blocks as f64 / u.expected_blocks as f64) * 100.0
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "produced_blocks": u.produced_blocks,
+                "expected_blocks": u.expected_blocks,
+                "signed_blocks": u.signed_blocks,
+                "uptime_pct": (uptime_pct * 10.0).round() / 10.0,
+            })
+        });
+
+        let jailed = inner.slashing.is_jailed(addr, inner.state.block_height);
+
+        Some(serde_json::json!({
+            "address": hex::encode(addr),
+            "stake": stake.to_string(),
+            "weight": weight,
+            "agentScore": agent_score,
+            "commission_bps": commission_bps,
+            "delegatedBy": delegated_by,
+            "uptime": uptime,
+            "jailed": jailed,
+        }))
+    }
+
     /// Testnet faucet: build a real TokenTransfer transaction from the node's
     /// validator keypair to the given address and submit it to the mempool.
     /// Returns the tx hash on success.

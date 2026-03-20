@@ -98,15 +98,39 @@ pub fn distribute_block_reward(
             reward * (*weight as u128) / (total_weight as u128)
         };
         if share > 0 {
-            // Route reward to owner if delegated, otherwise to validator
             let reward_recipient = world.stake_delegations.get(addr).copied().unwrap_or(*addr);
-            *world.balances.entry(reward_recipient).or_insert(0) += share;
+            if reward_recipient != *addr {
+                // Delegated: split by commission
+                let commission_bps = world.stake_commissions.get(addr).copied().unwrap_or(10000) as u128;
+                let validator_share = share * commission_bps / 10000;
+                let delegator_share = share - validator_share;
+
+                if validator_share > 0 {
+                    *world.balances.entry(*addr).or_insert(0) += validator_share;
+                    events.push(BlockEvent::RewardDistributed {
+                        recipient: *addr,
+                        amount: validator_share,
+                        reward_type: "validator_commission".into(),
+                    });
+                }
+                if delegator_share > 0 {
+                    *world.balances.entry(reward_recipient).or_insert(0) += delegator_share;
+                    events.push(BlockEvent::RewardDistributed {
+                        recipient: reward_recipient,
+                        amount: delegator_share,
+                        reward_type: "delegator_reward".into(),
+                    });
+                }
+            } else {
+                // Self-stake: all to validator
+                *world.balances.entry(*addr).or_insert(0) += share;
+                events.push(BlockEvent::RewardDistributed {
+                    recipient: *addr,
+                    amount: share,
+                    reward_type: "block_reward".into(),
+                });
+            }
             distributed += share;
-            events.push(BlockEvent::RewardDistributed {
-                recipient: reward_recipient,
-                amount: share,
-                reward_type: "block_reward".into(),
-            });
         }
     }
 
@@ -137,14 +161,38 @@ pub fn distribute_fees(
     let burned = total_fees - proposer_share - ecosystem_share;
 
     if proposer_share > 0 {
-        // Route proposer fee to owner if delegated, otherwise to proposer
         let reward_recipient = world.stake_delegations.get(proposer).copied().unwrap_or(*proposer);
-        *world.balances.entry(reward_recipient).or_insert(0) += proposer_share;
-        events.push(BlockEvent::RewardDistributed {
-            recipient: reward_recipient,
-            amount: proposer_share,
-            reward_type: "proposer_fee".into(),
-        });
+        if reward_recipient != *proposer {
+            // Delegated: split by commission
+            let commission_bps = world.stake_commissions.get(proposer).copied().unwrap_or(10000) as u128;
+            let validator_fee = proposer_share * commission_bps / 10000;
+            let delegator_fee = proposer_share - validator_fee;
+
+            if validator_fee > 0 {
+                *world.balances.entry(*proposer).or_insert(0) += validator_fee;
+                events.push(BlockEvent::RewardDistributed {
+                    recipient: *proposer,
+                    amount: validator_fee,
+                    reward_type: "proposer_fee_commission".into(),
+                });
+            }
+            if delegator_fee > 0 {
+                *world.balances.entry(reward_recipient).or_insert(0) += delegator_fee;
+                events.push(BlockEvent::RewardDistributed {
+                    recipient: reward_recipient,
+                    amount: delegator_fee,
+                    reward_type: "proposer_fee_delegator".into(),
+                });
+            }
+        } else {
+            // Self-stake: all to proposer
+            *world.balances.entry(*proposer).or_insert(0) += proposer_share;
+            events.push(BlockEvent::RewardDistributed {
+                recipient: *proposer,
+                amount: proposer_share,
+                reward_type: "proposer_fee".into(),
+            });
+        }
     }
 
     if ecosystem_share > 0 {

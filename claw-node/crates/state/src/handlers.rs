@@ -607,34 +607,54 @@ const MIN_STAKE: u128 = 10_000_000_000_000;
 /// Supports delegated staking: if `payload.validator` is non-zero, stake is
 /// recorded under the validator address (so they appear in the validator set),
 /// while the delegation mapping tracks the owner for reward routing.
+///
+/// Backward compatibility: old payloads (48 bytes: 16 + 32) without commission_bps
+/// are accepted and default to commission_bps = 10000 (validator keeps all).
 pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
-    let payload = StakeDepositPayload::try_from_slice(&tx.payload)
-        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+    // Backward-compatible deserialization: old payloads are 48 bytes (amount:16 + validator:32),
+    // new payloads are 50 bytes (amount:16 + validator:32 + commission_bps:2).
+    let (amount, validator, commission_bps) = if tx.payload.len() == 48 {
+        // Legacy payload without commission_bps
+        let legacy = borsh::from_slice::<(u128, [u8; 32])>(&tx.payload)
+            .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+        (legacy.0, legacy.1, 10000u16) // default: validator keeps all
+    } else {
+        let payload = StakeDepositPayload::try_from_slice(&tx.payload)
+            .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+        (payload.amount, payload.validator, payload.commission_bps)
+    };
 
-    if payload.amount == 0 {
+    if amount == 0 {
         return Err(StateError::ZeroAmount);
+    }
+
+    if commission_bps > 10000 {
+        return Err(StateError::StakeError(format!(
+            "commission_bps {} exceeds maximum 10000",
+            commission_bps
+        )));
     }
 
     // Check sender has enough balance
     let sender_bal = state.balances.get(&tx.from).copied().unwrap_or(0);
-    if sender_bal < payload.amount {
+    if sender_bal < amount {
         return Err(StateError::InsufficientBalance {
-            need: payload.amount,
+            need: amount,
             have: sender_bal,
         });
     }
 
     // Determine the validator address: delegate or self-stake
-    let validator_addr = if payload.validator == [0u8; 32] {
+    let validator_addr = if validator == [0u8; 32] {
         tx.from // self-stake
     } else {
-        payload.validator // delegated
+        validator // delegated
     };
 
     // Compute new total stake under the validator address
     let current_stake = state.stakes.get(&validator_addr).copied().unwrap_or(0);
     let new_stake = current_stake
-        .checked_add(payload.amount)
+        .checked_add(amount)
         .ok_or_else(|| StateError::StakeError("stake overflow".into()))?;
 
     // First-time stakers must meet the minimum stake
@@ -646,12 +666,15 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
     }
 
     // Deduct from sender balance, record stake under validator address
-    *state.balances.entry(tx.from).or_insert(0) -= payload.amount;
+    *state.balances.entry(tx.from).or_insert(0) -= amount;
     state.stakes.insert(validator_addr, new_stake);
 
     // Record delegation: validator → owner (for reward routing).
     // Only set if not already delegated (first staker is the owner).
     state.stake_delegations.entry(validator_addr).or_insert(tx.from);
+
+    // Record commission rate for this validator
+    state.stake_commissions.insert(validator_addr, commission_bps);
 
     Ok(())
 }
@@ -713,8 +736,9 @@ pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result
     // Update or remove stake
     if remaining == 0 {
         state.stakes.remove(&validator_addr);
-        // Clean up delegation mapping when fully unstaked
+        // Clean up delegation and commission mappings when fully unstaked
         state.stake_delegations.remove(&validator_addr);
+        state.stake_commissions.remove(&validator_addr);
     } else {
         state.stakes.insert(validator_addr, remaining);
     }

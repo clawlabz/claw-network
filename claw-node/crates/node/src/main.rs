@@ -102,6 +102,11 @@ enum Commands {
         /// If omitted, the staker is also the block-producing validator (self-stake).
         #[arg(long)]
         validator_key: Option<String>,
+        /// Commission rate in basis points (0-10000). The validator keeps this
+        /// percentage of block rewards; the delegator gets the rest.
+        /// Default: 8000 (80% to validator, 20% to delegator).
+        #[arg(long, default_value = "8000")]
+        commission: u16,
         /// RPC endpoint URL
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
@@ -542,8 +547,8 @@ async fn main() -> Result<()> {
         Commands::Transfer { to, amount, rpc } => {
             handle_transfer_cli(&data_dir, &to, &amount, &rpc).await?;
         }
-        Commands::Stake { amount, validator_key, rpc } => {
-            handle_stake_cli(&data_dir, &amount, validator_key.as_deref(), &rpc).await?;
+        Commands::Stake { amount, validator_key, commission, rpc } => {
+            handle_stake_cli(&data_dir, &amount, validator_key.as_deref(), commission, &rpc).await?;
         }
         Commands::Unstake { amount, rpc } => {
             handle_unstake_cli(&data_dir, &amount, &rpc).await?;
@@ -687,10 +692,14 @@ async fn handle_transfer_cli(data_dir: &std::path::Path, to: &str, amount: &str,
     Ok(())
 }
 
-async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_key: Option<&str>, rpc: &str) -> Result<()> {
+async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_key: Option<&str>, commission: u16, rpc: &str) -> Result<()> {
     use claw_types::transaction::{StakeDepositPayload, TxType};
 
     let raw_amount = parse_clw_amount(amount)?;
+
+    if commission > 10000 {
+        anyhow::bail!("commission must be 0-10000 basis points, got {}", commission);
+    }
 
     let cfg = config::load_config(data_dir)?;
     let from_hex = hex::encode(cfg.address);
@@ -722,11 +731,13 @@ async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_ke
             [0u8; 32] // sentinel for self-stake
         }
     };
+    println!("  Commission: {} bps ({}%)", commission, commission as f64 / 100.0);
     println!("  Raw:       {} (9 decimals)", raw_amount);
 
     let payload = StakeDepositPayload {
         amount: raw_amount,
         validator,
+        commission_bps: commission,
     };
     let payload_bytes = borsh::to_vec(&payload)?;
 
