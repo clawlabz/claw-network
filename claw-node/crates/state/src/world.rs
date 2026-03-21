@@ -279,6 +279,7 @@ impl WorldState {
             TxType::PlatformActivityReport => handlers::handle_platform_activity_report(self, tx),
             TxType::TokenApprove => handlers::handle_token_approve(self, tx),
             TxType::TokenBurn => handlers::handle_token_burn(self, tx),
+            TxType::ChangeDelegation => handlers::handle_change_delegation(self, tx),
         };
 
         if result.is_ok() {

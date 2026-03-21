@@ -546,6 +546,7 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
                 Err(_) => (None, None),
             }
         }
+        TxType::ChangeDelegation => (None, None),
     }
 }
 
@@ -566,6 +567,7 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::PlatformActivityReport => "PlatformActivityReport",
         claw_types::TxType::TokenApprove => "TokenApprove",
         claw_types::TxType::TokenBurn => "TokenBurn",
+        claw_types::TxType::ChangeDelegation => "ChangeDelegation",
     }
 }
 
@@ -612,7 +614,8 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         | claw_types::TxType::StakeClaim
         | claw_types::TxType::PlatformActivityReport
         | claw_types::TxType::TokenApprove
-        | claw_types::TxType::TokenBurn => (None, None),
+        | claw_types::TxType::TokenBurn
+        | claw_types::TxType::ChangeDelegation => (None, None),
         claw_types::TxType::ContractCall => {
             // payload starts with [contract: 32 bytes]
             if tx.payload.len() >= 32 {

@@ -129,6 +129,19 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
+    /// Change delegation of a validator stake to a new owner
+    ChangeDelegation {
+        /// Validator address to change delegation for (hex, 64 chars)
+        validator_key: String,
+        /// New owner/delegator address (hex, 64 chars)
+        new_owner: String,
+        /// New commission rate in basis points (0-10000)
+        #[arg(long, default_value = "8000")]
+        commission: u16,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
     /// Register an AI Agent on-chain
     RegisterAgent {
         /// Agent name
@@ -582,6 +595,9 @@ async fn main() -> Result<()> {
         Commands::ClaimStake { rpc } => {
             handle_claim_stake_cli(&data_dir, &rpc).await?;
         }
+        Commands::ChangeDelegation { validator_key, new_owner, commission, rpc } => {
+            handle_change_delegation_cli(&data_dir, &validator_key, &new_owner, commission, &rpc).await?;
+        }
         Commands::RegisterAgent { name, metadata, rpc } => {
             handle_register_agent_cli(&data_dir, &name, &metadata, &rpc).await?;
         }
@@ -774,6 +790,39 @@ async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_ke
     let payload_bytes = borsh::to_vec(&payload)?;
 
     let tx_hash = submit_tx(data_dir, rpc, TxType::StakeDeposit, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (active after next epoch)");
+
+    Ok(())
+}
+
+async fn handle_change_delegation_cli(data_dir: &std::path::Path, validator_key: &str, new_owner: &str, commission: u16, rpc: &str) -> Result<()> {
+    use claw_types::transaction::{ChangeDelegationPayload, TxType};
+
+    if commission > 10000 {
+        anyhow::bail!("commission must be 0-10000 basis points, got {}", commission);
+    }
+
+    let validator = parse_hex_address(validator_key)?;
+    let owner = parse_hex_address(new_owner)?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Change delegation:");
+    println!("  Sender:    {}", from_hex);
+    println!("  Validator: {}", validator_key);
+    println!("  New owner: {}", new_owner);
+    println!("  Commission: {} bps ({}%)", commission, commission as f64 / 100.0);
+
+    let payload = ChangeDelegationPayload {
+        validator,
+        new_owner: owner,
+        commission_bps: commission,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::ChangeDelegation, payload_bytes).await?;
     println!("  TX:   {}", tx_hash);
     println!("  Status: submitted (active after next epoch)");
 

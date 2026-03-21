@@ -50,6 +50,7 @@ pub enum TxType {
     PlatformActivityReport = 11,
     TokenApprove = 12,
     TokenBurn = 13,
+    ChangeDelegation = 14,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -185,6 +186,20 @@ pub struct TokenBurnPayload {
     pub token_id: [u8; 32],
     /// The amount to burn.
     pub amount: u128,
+}
+
+/// Payload for changing delegation of an existing validator stake.
+///
+/// Only the current delegator (or the validator itself for self-stake) can
+/// transfer delegation to a new owner. The stake amount stays unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ChangeDelegationPayload {
+    /// The validator address whose delegation to change.
+    pub validator: [u8; 32],
+    /// The new delegator/owner address.
+    pub new_owner: [u8; 32],
+    /// New commission rate in basis points (0-10000).
+    pub commission_bps: u16,
 }
 
 /// A single activity entry within a PlatformActivityReport.

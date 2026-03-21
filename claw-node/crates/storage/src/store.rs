@@ -170,7 +170,8 @@ impl ChainStore {
             }
             TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister
             | TxType::StakeDeposit | TxType::StakeWithdraw | TxType::StakeClaim
-            | TxType::PlatformActivityReport | TxType::TokenApprove | TxType::TokenBurn => None,
+            | TxType::PlatformActivityReport | TxType::TokenApprove | TxType::TokenBurn
+            | TxType::ChangeDelegation => None,
         }
     }
 

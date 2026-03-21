@@ -771,6 +771,56 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
     Ok(())
 }
 
+/// ChangeDelegation: transfer delegation of a validator stake to a new owner.
+///
+/// Only the current delegator (or the validator itself for self-stake) can
+/// change delegation. The stake amount is unaffected — only the reward
+/// routing and commission rate are updated.
+pub fn handle_change_delegation(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    let payload = ChangeDelegationPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    if payload.commission_bps > 10000 {
+        return Err(StateError::StakeError(format!(
+            "commission_bps {} exceeds maximum 10000",
+            payload.commission_bps
+        )));
+    }
+
+    // Validator must have an existing stake
+    let stake = state.stakes.get(&payload.validator).copied().unwrap_or(0);
+    if stake == 0 {
+        return Err(StateError::StakeError(
+            "validator has no active stake".into(),
+        ));
+    }
+
+    // Authorization: sender must be the current delegator or the validator itself
+    let current_delegator = state
+        .stake_delegations
+        .get(&payload.validator)
+        .copied()
+        .unwrap_or(payload.validator); // no delegation record = self-stake
+
+    if tx.from != current_delegator && tx.from != payload.validator {
+        return Err(StateError::StakeError(
+            "not authorized: sender is neither the current delegator nor the validator".into(),
+        ));
+    }
+
+    // Update delegation to new owner
+    state
+        .stake_delegations
+        .insert(payload.validator, payload.new_owner);
+
+    // Update commission rate
+    state
+        .stake_commissions
+        .insert(payload.validator, payload.commission_bps);
+
+    Ok(())
+}
+
 /// StakeWithdraw: begin unbonding stake (starts countdown to claim).
 ///
 /// Supports delegated staking: the sender can unstake if they are either
