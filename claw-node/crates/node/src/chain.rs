@@ -69,8 +69,13 @@ impl Chain {
                 let block = store.get_block(height)?.expect("block must exist");
                 tracing::info!(height, "Loaded chain from storage");
 
-                // Rebuild validator stakes from genesis config
-                let stakes = genesis::build_validator_set(genesis_config)?;
+                // Use on-chain stakes (state.stakes) as the validator set source,
+                // falling back to genesis config only if state has no stakes yet.
+                let stakes: Vec<([u8; 32], u128)> = if state.stakes.is_empty() {
+                    genesis::build_validator_set(genesis_config)?
+                } else {
+                    state.stakes.iter().map(|(addr, amount)| (*addr, *amount)).collect()
+                };
                 (state, block, stakes)
             }
             None => {
