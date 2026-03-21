@@ -255,10 +255,15 @@ Note: Most chains' tokens already had market prices before mainnet (via ICO/priv
 | Early exit or uptime <90% | No refund |
 | Slashed (malicious behavior) | No refund + delegation revoked |
 
-### Revenue Split
+### Revenue Split (On-Chain Commission System)
 
-Block rewards for delegated validators:
-- **80%** to validator operator (incentive to run well)
-- **20%** to foundation (covers ecosystem costs)
+Commission is configured on-chain via the `--commission` flag (in basis points, 0-10000) when staking. Default: 8000 (80%).
 
-Self-staked validators (Phase 3+): keep 100% of rewards minus on-chain commission.
+**Delegated validators** (foundation Phase 1-2):
+- Commission rate determines the split per block
+- Example at 8000 bps: **80%** to validator operator, **20%** to delegation owner (foundation)
+- Both block rewards and proposer fees are split by the same commission rate
+
+**Self-staked validators** (Phase 3+): keep 100% of their rewards (no delegation split).
+
+Block reward events are recorded on-chain as `BlockEvent::RewardDistributed` with distinct `reward_type` values (`block_reward`, `validator_commission`, `delegator_reward`, etc.) for full auditability. See README.md for the complete list.
