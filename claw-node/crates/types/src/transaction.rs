@@ -159,6 +159,8 @@ pub struct StakeDepositPayload {
 pub struct StakeWithdrawPayload {
     /// Amount of CLW to unbond (in base units, 9 decimals).
     pub amount: u128,
+    /// Validator to unstake from. All-zeros = self (backward compat).
+    pub validator: [u8; 32],
 }
 
 /// Payload for claiming unbonded stake (no fields needed — claims all mature entries).

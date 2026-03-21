@@ -115,6 +115,10 @@ enum Commands {
     Unstake {
         /// Amount in CLW to unstake (e.g. "5000")
         amount: String,
+        /// Validator address to unstake from (hex, 64 chars).
+        /// Required when unstaking as a delegator (Owner Key).
+        #[arg(long)]
+        validator_key: Option<String>,
         /// RPC endpoint URL
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
@@ -572,8 +576,8 @@ async fn main() -> Result<()> {
         Commands::Stake { amount, validator_key, commission, rpc } => {
             handle_stake_cli(&data_dir, &amount, validator_key.as_deref(), commission, &rpc).await?;
         }
-        Commands::Unstake { amount, rpc } => {
-            handle_unstake_cli(&data_dir, &amount, &rpc).await?;
+        Commands::Unstake { amount, validator_key, rpc } => {
+            handle_unstake_cli(&data_dir, &amount, validator_key.as_deref(), &rpc).await?;
         }
         Commands::ClaimStake { rpc } => {
             handle_claim_stake_cli(&data_dir, &rpc).await?;
@@ -798,7 +802,7 @@ async fn rpc_call(url: &str, method: &str, params: Vec<serde_json::Value>) -> Re
     Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null))
 }
 
-async fn handle_unstake_cli(data_dir: &std::path::Path, amount: &str, rpc: &str) -> Result<()> {
+async fn handle_unstake_cli(data_dir: &std::path::Path, amount: &str, validator_key: Option<&str>, rpc: &str) -> Result<()> {
     use claw_types::transaction::{StakeWithdrawPayload, TxType};
 
     let raw_amount = parse_clw_amount(amount)?;
@@ -806,12 +810,23 @@ async fn handle_unstake_cli(data_dir: &std::path::Path, amount: &str, rpc: &str)
     let cfg = config::load_config(data_dir)?;
     let from_hex = hex::encode(cfg.address);
 
+    let validator_display = match validator_key {
+        Some(vk) => format!("{} (delegated)", vk),
+        None => format!("{} (self)", from_hex),
+    };
+
     println!("Unstake {} CLW", amount);
-    println!("  Validator: {}", from_hex);
+    println!("  From:      {}", from_hex);
+    println!("  Validator: {}", validator_display);
     println!("  Raw:       {} (9 decimals)", raw_amount);
 
+    let validator = match validator_key {
+        Some(hex) => parse_hex_address(hex)?,
+        None => [0u8; 32],
+    };
     let payload = StakeWithdrawPayload {
         amount: raw_amount,
+        validator,
     };
     let payload_bytes = borsh::to_vec(&payload)?;
 

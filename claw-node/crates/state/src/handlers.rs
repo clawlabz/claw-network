@@ -774,21 +774,36 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
 /// the validator themselves (self-stake) or the delegated owner. The stake
 /// is looked up under the appropriate validator address.
 pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
-    let payload = StakeWithdrawPayload::try_from_slice(&tx.payload)
-        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+    // Backward compat: old payloads are 16 bytes (amount only), new are 48 (amount + validator)
+    let payload = if tx.payload.len() == 16 {
+        StakeWithdrawPayload {
+            amount: u128::from_le_bytes(tx.payload[..16].try_into().unwrap()),
+            validator: [0u8; 32],
+        }
+    } else {
+        StakeWithdrawPayload::try_from_slice(&tx.payload)
+            .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?
+    };
 
     if payload.amount == 0 {
         return Err(StateError::ZeroAmount);
     }
 
     // Determine the validator address whose stake to withdraw from.
-    // Case 1: tx.from has stake directly (self-stake or is the validator)
-    // Case 2: tx.from is an owner who delegated to a validator
-    let validator_addr = if state.stakes.get(&tx.from).copied().unwrap_or(0) > 0 {
-        // Direct stake exists under sender's address
+    // If payload.validator is specified (non-zero), use it directly.
+    // Otherwise fall back to tx.from (self-unstake) or find delegation.
+    let validator_addr = if payload.validator != [0u8; 32] {
+        // Explicit validator specified — verify sender is authorized
+        let owner = state.stake_delegations.get(&payload.validator);
+        if owner != Some(&tx.from) && payload.validator != tx.from {
+            return Err(StateError::StakeError(
+                "not authorized to unstake from this validator".into(),
+            ));
+        }
+        payload.validator
+    } else if state.stakes.get(&tx.from).copied().unwrap_or(0) > 0 {
         tx.from
     } else {
-        // Search for a delegation where tx.from is the owner
         let delegated_validator = state
             .stake_delegations
             .iter()
