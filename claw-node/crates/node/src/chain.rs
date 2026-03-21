@@ -300,6 +300,9 @@ impl Chain {
 
     /// Produce a block from pending mempool transactions.
     fn produce_block(inner: &mut ChainInner) -> Option<Block> {
+        // Supply integrity check: capture before state
+        let supply_before = inner.state.total_supply();
+
         // Produce blocks even when mempool is empty — continuous block production
         // ensures liveness, epoch progression, uptime tracking, and Agent Score updates.
 
@@ -484,6 +487,27 @@ impl Chain {
         let block_time = block.timestamp.saturating_sub(inner.latest_block.timestamp);
         if block_time > 0 {
             metrics::BLOCK_TIME_SECONDS.observe(block_time as f64);
+        }
+
+        // Supply integrity check: compare before/after
+        let supply_after = inner.state.total_supply();
+        // Expected: fee burns reduce supply, everything else is zero-sum
+        // total_fees were deducted from senders. Of that:
+        //   50% to proposer (zero-sum)
+        //   20% to ecosystem (zero-sum)
+        //   30% burned (supply reduction)
+        let expected_burn = total_fees * 30 / 100;
+        let expected_supply = supply_before - expected_burn;
+        if supply_after != expected_supply {
+            tracing::error!(
+                height = block.height,
+                before = supply_before,
+                after = supply_after,
+                expected = expected_supply,
+                diff = supply_after as i128 - expected_supply as i128,
+                total_fees,
+                "SUPPLY INTEGRITY VIOLATION in produce_block"
+            );
         }
 
         inner.latest_block = block.clone();

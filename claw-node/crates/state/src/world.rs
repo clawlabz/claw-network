@@ -476,6 +476,14 @@ impl WorldState {
         merkle_root(&leaves)
     }
 
+    /// Calculate total supply: sum of all balances + all stakes.
+    /// Used for supply integrity auditing.
+    pub fn total_supply(&self) -> u128 {
+        let total_balances: u128 = self.balances.values().sum();
+        let total_stakes: u128 = self.stakes.values().sum();
+        total_balances + total_stakes
+    }
+
     /// Get CLW balance for an address.
     pub fn get_balance(&self, addr: &[u8; 32]) -> u128 {
         self.balances.get(addr).copied().unwrap_or(0)
