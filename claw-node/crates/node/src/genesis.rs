@@ -280,6 +280,43 @@ pub fn create_genesis_state(config: &GenesisConfig) -> Result<WorldState> {
         *state.balances.entry(addr).or_insert(0) += balance;
     }
 
+    // Process genesis validator stakes: deduct from their balance and record in stakes.
+    // If the validator address has no balance (e.g., dedicated validator), deduct from
+    // the first allocation that has sufficient balance (typically team/foundation).
+    for validator in &config.validators {
+        let v_addr = parse_address(&validator.address, "genesis_validator")?;
+        let stake_amount = parse_balance(&validator.stake, "genesis_validator_stake")?;
+
+        // Try to deduct from validator's own balance first
+        let v_balance = state.balances.get(&v_addr).copied().unwrap_or(0);
+        if v_balance >= stake_amount {
+            *state.balances.entry(v_addr).or_insert(0) -= stake_amount;
+        } else {
+            // Deduct from the first allocation with sufficient balance
+            let mut deducted = false;
+            for alloc in &config.allocations {
+                let a_addr = parse_address(&alloc.address, &alloc.label)?;
+                let a_balance = state.balances.get(&a_addr).copied().unwrap_or(0);
+                if a_balance >= stake_amount {
+                    *state.balances.entry(a_addr).or_insert(0) -= stake_amount;
+                    tracing::info!(
+                        validator = %validator.address,
+                        source = %alloc.label,
+                        amount = stake_amount,
+                        "Genesis validator stake deducted from allocation"
+                    );
+                    deducted = true;
+                    break;
+                }
+            }
+            if !deducted {
+                bail!("insufficient balance for genesis validator stake: need {}", stake_amount);
+            }
+        }
+
+        state.stakes.insert(v_addr, stake_amount);
+    }
+
     Ok(state)
 }
 
