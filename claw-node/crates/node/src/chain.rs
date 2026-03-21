@@ -95,24 +95,28 @@ impl Chain {
             }
         };
 
-        // Initialize validator set, filtering out genesis placeholder addresses.
-        // Genesis placeholders have address = [index, 0, 0, ..., 0] — no real node behind them.
-        let mut stakes: Vec<([u8; 32], u128)> = validator_stakes
-            .into_iter()
-            .filter(|(addr, _)| {
-                // Keep if not a placeholder: a placeholder has addr[1..] all zeros
-                let is_placeholder = addr[1..].iter().all(|&b| b == 0);
-                if is_placeholder && addr[0] != 0 {
-                    tracing::info!(
-                        address = %hex::encode(addr),
-                        "Filtered out genesis placeholder validator"
-                    );
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
+        // Filter out genesis placeholder validators, but only if real validators exist.
+        // Placeholders have address = [index, 0, 0, ..., 0] — no real node behind them.
+        let has_real_validators = validator_stakes.iter().any(|(addr, _)| {
+            !(addr[1..].iter().all(|&b| b == 0) && addr[0] != 0)
+        });
+        let mut stakes: Vec<([u8; 32], u128)> = if has_real_validators {
+            validator_stakes
+                .into_iter()
+                .filter(|(addr, _)| {
+                    let is_placeholder = addr[1..].iter().all(|&b| b == 0) && addr[0] != 0;
+                    if is_placeholder {
+                        tracing::info!(
+                            address = %hex::encode(addr),
+                            "Filtered out genesis placeholder validator"
+                        );
+                    }
+                    !is_placeholder
+                })
+                .collect()
+        } else {
+            validator_stakes
+        };
         // Write genesis stakes into WorldState so they survive epoch recalculation.
         // ValidatorSet.recalculate_active reads from its own candidates (set via
         // with_initial_stakes), but state.stakes must also be populated for
