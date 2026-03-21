@@ -113,7 +113,7 @@ impl ClawBehaviour {
                 ProtocolSupport::Full,
             )],
             request_response::Config::default()
-                .with_request_timeout(Duration::from_secs(10)),
+                .with_request_timeout(Duration::from_secs(30)),
         );
 
         // mDNS for local discovery

@@ -736,9 +736,20 @@ impl Chain {
     pub async fn run_with_p2p(&self, mut p2p: P2pNetwork, mut event_rx: mpsc::UnboundedReceiver<NetworkEvent>) {
         let block_interval = tokio::time::Duration::from_secs(3);
         let mut block_timer = tokio::time::interval(block_interval);
+        // Periodic sync retry: if we fall behind, re-request from connected peers
+        let mut sync_retry_timer = tokio::time::interval(tokio::time::Duration::from_secs(15));
 
         loop {
             tokio::select! {
+                _ = sync_retry_timer.tick() => {
+                    // Ask all connected peers for their status to trigger catch-up
+                    let our_height = self.get_block_number();
+                    if our_height == 0 || p2p.connected_peer_count() > 0 {
+                        for peer in p2p.connected_peers() {
+                            p2p.send_sync_request(&peer, SyncRequest::GetStatus);
+                        }
+                    }
+                }
                 _ = block_timer.tick() => {
                     // Try to produce a block
                     let maybe_block = {
@@ -1008,7 +1019,7 @@ impl Chain {
                     let our_height = self.get_block_number();
                     Some(SyncRequest::GetBlocks {
                         from_height: our_height + 1,
-                        count: 100,
+                        count: 20,
                     })
                 } else {
                     None
@@ -1017,7 +1028,7 @@ impl Chain {
             SyncResponse::Status { height } => {
                 let our_height = self.get_block_number();
                 if *height > our_height {
-                    let count = std::cmp::min((*height - our_height) as u32, 100);
+                    let count = std::cmp::min((*height - our_height) as u32, 20);
                     tracing::info!(
                         our_height,
                         peer_height = height,
@@ -1076,7 +1087,7 @@ impl Chain {
                         // Request blocks after the snapshot height to continue syncing
                         Some(SyncRequest::GetBlocks {
                             from_height: height + 1,
-                            count: 100,
+                            count: 20,
                         })
                     }
                     Err(e) => {

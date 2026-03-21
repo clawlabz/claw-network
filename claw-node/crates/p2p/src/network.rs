@@ -277,6 +277,16 @@ impl P2pNetwork {
         self.peers.len()
     }
 
+    /// Alias for peer_count.
+    pub fn connected_peer_count(&self) -> usize {
+        self.peers.len()
+    }
+
+    /// Get list of connected peer IDs.
+    pub fn connected_peers(&self) -> Vec<PeerId> {
+        self.peers.iter().copied().collect()
+    }
+
     /// Run the network event loop. This drives the swarm, emits events,
     /// and processes commands from the chain engine.
     pub async fn run(&mut self) {
