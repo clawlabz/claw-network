@@ -415,6 +415,9 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
+        "clw_totalSupply" => {
+            Ok(serde_json::json!(chain.get_total_supply_audit()))
+        }
         "clw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())

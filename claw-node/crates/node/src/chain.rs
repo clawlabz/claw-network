@@ -1094,6 +1094,30 @@ impl Chain {
         self.inner.lock().expect("chain state mutex poisoned").latest_block.height
     }
 
+    /// Full supply audit: enumerate all balances and stakes.
+    pub fn get_total_supply_audit(&self) -> serde_json::Value {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let total_balances: u128 = inner.state.balances.values().sum();
+        let total_stakes: u128 = inner.state.stakes.values().sum();
+        let balances: Vec<serde_json::Value> = inner.state.balances.iter()
+            .filter(|(_, b)| **b > 0)
+            .map(|(addr, b)| serde_json::json!({"address": hex::encode(addr), "balance": b.to_string()}))
+            .collect();
+        let stakes: Vec<serde_json::Value> = inner.state.stakes.iter()
+            .filter(|(_, s)| **s > 0)
+            .map(|(addr, s)| serde_json::json!({"address": hex::encode(addr), "stake": s.to_string()}))
+            .collect();
+        serde_json::json!({
+            "totalBalances": total_balances.to_string(),
+            "totalStakes": total_stakes.to_string(),
+            "totalSupply": (total_balances + total_stakes).to_string(),
+            "numBalanceEntries": inner.state.balances.len(),
+            "numStakeEntries": inner.state.stakes.len(),
+            "balances": balances,
+            "stakes": stakes,
+        })
+    }
+
     pub fn get_block(&self, height: u64) -> Option<Block> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
         if height == inner.latest_block.height {
