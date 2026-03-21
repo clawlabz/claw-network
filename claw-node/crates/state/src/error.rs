@@ -108,4 +108,10 @@ pub enum StateError {
 
     #[error("contract transfer failed: insufficient balance (need {need}, have {have})")]
     ContractTransferInsufficientBalance { need: u128, have: u128 },
+
+    #[error("cannot approve self as spender")]
+    SelfApproval,
+
+    #[error("burn amount {burn} exceeds total supply {supply}")]
+    BurnExceedsSupply { burn: u128, supply: u128 },
 }

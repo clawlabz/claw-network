@@ -48,6 +48,8 @@ pub enum TxType {
     StakeWithdraw = 9,
     StakeClaim = 10,
     PlatformActivityReport = 11,
+    TokenApprove = 12,
+    TokenBurn = 13,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -162,6 +164,26 @@ pub struct StakeWithdrawPayload {
 /// Payload for claiming unbonded stake (no fields needed — claims all mature entries).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct StakeClaimPayload;
+
+/// Payload for approving a spender to transfer custom tokens on behalf of the owner.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct TokenApprovePayload {
+    /// The custom token ID.
+    pub token_id: [u8; 32],
+    /// The address being approved to spend tokens.
+    pub spender: [u8; 32],
+    /// The approved amount. Setting to 0 revokes the approval.
+    pub amount: u128,
+}
+
+/// Payload for burning (destroying) custom tokens from the sender's balance.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct TokenBurnPayload {
+    /// The custom token ID.
+    pub token_id: [u8; 32],
+    /// The amount to burn.
+    pub amount: u128,
+}
 
 /// A single activity entry within a PlatformActivityReport.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]

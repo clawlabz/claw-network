@@ -167,6 +167,28 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
+    /// Approve a spender to transfer custom tokens on your behalf
+    ApproveToken {
+        /// Token ID (hex, 64 chars)
+        token_id: String,
+        /// Spender address (hex, 64 chars)
+        spender: String,
+        /// Approved amount (integer, in token base units; 0 to revoke)
+        amount: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Burn (destroy) custom tokens from your balance
+    BurnToken {
+        /// Token ID (hex, 64 chars)
+        token_id: String,
+        /// Amount to burn (integer, in token base units)
+        amount: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
     /// Deploy a Wasm smart contract
     DeployContract {
         /// Path to .wasm file
@@ -565,6 +587,12 @@ async fn main() -> Result<()> {
         Commands::CreateToken { name, symbol, decimals, initial_supply, rpc } => {
             handle_create_token_cli(&data_dir, &name, &symbol, decimals, &initial_supply, &rpc).await?;
         }
+        Commands::ApproveToken { token_id, spender, amount, rpc } => {
+            handle_approve_token_cli(&data_dir, &token_id, &spender, &amount, &rpc).await?;
+        }
+        Commands::BurnToken { token_id, amount, rpc } => {
+            handle_burn_token_cli(&data_dir, &token_id, &amount, &rpc).await?;
+        }
         Commands::DeployContract { wasm_file, init_method, init_args, rpc } => {
             handle_deploy_contract_cli(&data_dir, &wasm_file, &init_method, &init_args, &rpc).await?;
         }
@@ -938,6 +966,78 @@ async fn handle_create_token_cli(
     let tx_hash = submit_tx(data_dir, rpc, TxType::TokenCreate, payload_bytes).await?;
     println!("  TX:   {}", tx_hash);
     println!("  Status: submitted (token created on-chain)");
+
+    Ok(())
+}
+
+async fn handle_approve_token_cli(
+    data_dir: &std::path::Path,
+    token_id: &str,
+    spender: &str,
+    amount: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{TokenApprovePayload, TxType};
+
+    let token_id_bytes = parse_hex_address(token_id)?;
+    let spender_bytes = parse_hex_address(spender)?;
+    let raw_amount: u128 = amount.parse().map_err(|e| anyhow::anyhow!("invalid amount: {e}"))?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Approve Token");
+    println!("  Token:   {}", token_id);
+    println!("  Owner:   {}", from_hex);
+    println!("  Spender: {}", spender);
+    println!("  Amount:  {}", amount);
+
+    let payload = TokenApprovePayload {
+        token_id: token_id_bytes,
+        spender: spender_bytes,
+        amount: raw_amount,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::TokenApprove, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    if raw_amount == 0 {
+        println!("  Status: submitted (approval revoked)");
+    } else {
+        println!("  Status: submitted (approval set)");
+    }
+
+    Ok(())
+}
+
+async fn handle_burn_token_cli(
+    data_dir: &std::path::Path,
+    token_id: &str,
+    amount: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{TokenBurnPayload, TxType};
+
+    let token_id_bytes = parse_hex_address(token_id)?;
+    let raw_amount: u128 = amount.parse().map_err(|e| anyhow::anyhow!("invalid amount: {e}"))?;
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Burn Token");
+    println!("  Token:  {}", token_id);
+    println!("  Burner: {}", from_hex);
+    println!("  Amount: {}", amount);
+
+    let payload = TokenBurnPayload {
+        token_id: token_id_bytes,
+        amount: raw_amount,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::TokenBurn, payload_bytes).await?;
+    println!("  TX:   {}", tx_hash);
+    println!("  Status: submitted (tokens burned, supply reduced)");
 
     Ok(())
 }

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use claw_consensus::{elect_proposer, elect_fallback_proposer, quorum, SlashingState, ValidatorSet, BLOCK_TIME_SECS, MIN_STAKE};
+use claw_consensus::{elect_proposer, elect_fallback_proposer, quorum, SlashingState, ValidatorSet, BLOCK_TIME_SECS};
 use claw_crypto::ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
 use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, P2pNetwork, SyncRequest, SyncResponse};
 use claw_state::WorldState;
@@ -91,16 +91,7 @@ impl Chain {
         };
 
         // Initialize validator set from genesis config.
-        // If the node's own address is not already in the validator set (devnet),
-        // include it as a fallback so the node can produce blocks.
-        let mut stakes = validator_stakes;
-        if !stakes.iter().any(|(addr, _)| *addr == validator_address) {
-            stakes.push((validator_address, MIN_STAKE * 100));
-            tracing::info!(
-                address = %hex::encode(validator_address),
-                "Node address not in genesis validators, adding as fallback"
-            );
-        }
+        let stakes = validator_stakes;
         // Write genesis stakes into WorldState so they survive epoch recalculation.
         // ValidatorSet.recalculate_active reads from its own candidates (set via
         // with_initial_stakes), but state.stakes must also be populated for
@@ -108,6 +99,15 @@ impl Chain {
         for (addr, amount) in &stakes {
             state.stakes.entry(*addr).or_insert(*amount);
         }
+
+        // Warn if this node's address is not in the genesis validator set.
+        if !stakes.iter().any(|(addr, _)| *addr == validator_address) {
+            tracing::warn!(
+                address = %hex::encode(validator_address),
+                "Node address not in genesis validators — node will sync but not produce blocks until staked"
+            );
+        }
+
         let validator_set = ValidatorSet::with_initial_stakes(stakes);
 
         Ok(Self {
@@ -1071,6 +1071,11 @@ impl Chain {
 
     pub fn get_token_info(&self, token_id: &[u8; 32]) -> Option<claw_types::state::TokenDef> {
         self.inner.lock().expect("chain state mutex poisoned").state.tokens.get(token_id).cloned()
+    }
+
+    /// Get token allowance for (owner, spender, token_id).
+    pub fn get_token_allowance(&self, owner: &[u8; 32], spender: &[u8; 32], token_id: &[u8; 32]) -> u128 {
+        self.inner.lock().expect("chain state mutex poisoned").state.get_token_allowance(owner, spender, token_id)
     }
 
     /// Get transactions involving a given address (as sender or recipient).

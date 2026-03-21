@@ -85,6 +85,8 @@ pub struct WorldState {
     /// Commission rate per validator: validator_address → commission in basis points (0-10000).
     /// Default (absent) = 10000 (validator keeps all, i.e. self-stake or legacy delegation).
     pub stake_commissions: BTreeMap<[u8; 32], u16>,
+    /// Token allowances: (owner, spender, token_id) → approved amount.
+    pub token_allowances: BTreeMap<([u8; 32], [u8; 32], [u8; 32]), u128>,
 }
 
 impl BorshDeserialize for WorldState {
@@ -189,6 +191,14 @@ impl BorshDeserialize for WorldState {
             BTreeMap::new()
         };
 
+        let has_more = (cursor.position() as usize) < buf.len();
+        let token_allowances = if has_more {
+            BTreeMap::<([u8; 32], [u8; 32], [u8; 32]), u128>::deserialize_reader(&mut cursor)
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
         Ok(WorldState {
             balances,
             token_balances,
@@ -209,6 +219,7 @@ impl BorshDeserialize for WorldState {
             platform_report_tracker,
             stake_delegations,
             stake_commissions,
+            token_allowances,
         })
     }
 }
@@ -266,6 +277,8 @@ impl WorldState {
             TxType::StakeWithdraw => handlers::handle_stake_withdraw(self, tx),
             TxType::StakeClaim => handlers::handle_stake_claim(self, tx),
             TxType::PlatformActivityReport => handlers::handle_platform_activity_report(self, tx),
+            TxType::TokenApprove => handlers::handle_token_approve(self, tx),
+            TxType::TokenBurn => handlers::handle_token_burn(self, tx),
         };
 
         if result.is_ok() {
@@ -448,6 +461,17 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
+        // Token allowances
+        for ((owner, spender, token_id), amount) in &self.token_allowances {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"tallowance:");
+            entry.extend_from_slice(owner);
+            entry.extend_from_slice(spender);
+            entry.extend_from_slice(token_id);
+            entry.extend_from_slice(&amount.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
         leaves.sort();
         merkle_root(&leaves)
     }
@@ -468,6 +492,19 @@ impl WorldState {
     /// Get nonce for an address.
     pub fn get_nonce(&self, addr: &[u8; 32]) -> u64 {
         self.nonces.get(addr).copied().unwrap_or(0)
+    }
+
+    /// Get token allowance for (owner, spender, token_id).
+    pub fn get_token_allowance(
+        &self,
+        owner: &[u8; 32],
+        spender: &[u8; 32],
+        token_id: &[u8; 32],
+    ) -> u128 {
+        self.token_allowances
+            .get(&(*owner, *spender, *token_id))
+            .copied()
+            .unwrap_or(0)
     }
 }
 

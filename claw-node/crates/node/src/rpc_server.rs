@@ -17,6 +17,7 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use claw_types::transaction::{
     TxType, TokenTransferPayload, TokenMintTransferPayload, ReputationAttestPayload,
+    TokenApprovePayload, TokenBurnPayload,
 };
 
 use crate::chain::Chain;
@@ -458,6 +459,15 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 "description": "Fixed fee per transaction",
             }))
         }
+        "clw_getTokenAllowance" => {
+            let owner = parse_address(&req.params, 0);
+            let spender = parse_address(&req.params, 1);
+            let token = parse_address(&req.params, 2);
+            match (owner, spender, token) {
+                (Ok(o), Ok(s), Ok(t)) => Ok(serde_json::json!(chain.get_token_allowance(&o, &s, &t).to_string())),
+                _ => Err("invalid params: expected (owner, spender, tokenId)".into()),
+            }
+        }
         _ => Err(format!("method not found: {}", req.method)),
     };
 
@@ -503,6 +513,18 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
         }
         TxType::AgentRegister | TxType::TokenCreate | TxType::ServiceRegister
         | TxType::ContractDeploy | TxType::StakeClaim | TxType::PlatformActivityReport => (None, None),
+        TxType::TokenApprove => {
+            match borsh::from_slice::<TokenApprovePayload>(&tx.payload) {
+                Ok(p) => (Some(hex::encode(p.spender)), Some(p.amount.to_string())),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::TokenBurn => {
+            match borsh::from_slice::<TokenBurnPayload>(&tx.payload) {
+                Ok(p) => (None, Some(p.amount.to_string())),
+                Err(_) => (None, None),
+            }
+        }
         TxType::ContractCall => {
             match borsh::from_slice::<claw_types::transaction::ContractCallPayload>(&tx.payload) {
                 Ok(p) => (Some(hex::encode(p.contract)), Some(p.value.to_string())),
@@ -539,6 +561,8 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::StakeWithdraw => "StakeWithdraw",
         claw_types::TxType::StakeClaim => "StakeClaim",
         claw_types::TxType::PlatformActivityReport => "PlatformActivityReport",
+        claw_types::TxType::TokenApprove => "TokenApprove",
+        claw_types::TxType::TokenBurn => "TokenBurn",
     }
 }
 
@@ -583,7 +607,9 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         | claw_types::TxType::StakeDeposit
         | claw_types::TxType::StakeWithdraw
         | claw_types::TxType::StakeClaim
-        | claw_types::TxType::PlatformActivityReport => (None, None),
+        | claw_types::TxType::PlatformActivityReport
+        | claw_types::TxType::TokenApprove
+        | claw_types::TxType::TokenBurn => (None, None),
         claw_types::TxType::ContractCall => {
             // payload starts with [contract: 32 bytes]
             if tx.payload.len() >= 32 {

@@ -140,6 +140,9 @@ pub fn handle_token_create(state: &mut WorldState, tx: &Transaction) -> Result<(
 }
 
 /// TokenMintTransfer: transfer a custom token.
+///
+/// If the sender does not hold enough tokens but has an allowance from a token
+/// holder, the allowance is consumed instead (ERC-20 style `transferFrom`).
 pub fn handle_token_mint_transfer(
     state: &mut WorldState,
     tx: &Transaction,
@@ -595,6 +598,92 @@ pub fn handle_platform_activity_report(
 
     // Mark this reporter as having submitted for this epoch
     state.platform_report_tracker.insert((tx.from, current_epoch), true);
+
+    Ok(())
+}
+
+/// TokenApprove: set allowance for a spender on a custom token.
+pub fn handle_token_approve(
+    state: &mut WorldState,
+    tx: &Transaction,
+) -> Result<(), StateError> {
+    let payload = TokenApprovePayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    if payload.token_id == NATIVE_TOKEN_ID {
+        return Err(StateError::NativeTokenIdForCustom);
+    }
+
+    if !state.tokens.contains_key(&payload.token_id) {
+        return Err(StateError::TokenNotFound);
+    }
+
+    if payload.spender == tx.from {
+        return Err(StateError::SelfApproval);
+    }
+
+    let key = (tx.from, payload.spender, payload.token_id);
+    if payload.amount == 0 {
+        // Revoke approval
+        state.token_allowances.remove(&key);
+    } else {
+        state.token_allowances.insert(key, payload.amount);
+    }
+
+    Ok(())
+}
+
+/// TokenBurn: destroy tokens from the sender's balance, reducing total supply.
+pub fn handle_token_burn(
+    state: &mut WorldState,
+    tx: &Transaction,
+) -> Result<(), StateError> {
+    let payload = TokenBurnPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    if payload.amount == 0 {
+        return Err(StateError::ZeroAmount);
+    }
+
+    if payload.token_id == NATIVE_TOKEN_ID {
+        return Err(StateError::NativeTokenIdForCustom);
+    }
+
+    let token = state.tokens.get(&payload.token_id)
+        .ok_or(StateError::TokenNotFound)?;
+
+    // Check sender has enough tokens
+    let sender_bal = state
+        .token_balances
+        .get(&(tx.from, payload.token_id))
+        .copied()
+        .unwrap_or(0);
+
+    if sender_bal < payload.amount {
+        return Err(StateError::InsufficientBalance {
+            need: payload.amount,
+            have: sender_bal,
+        });
+    }
+
+    // Check total_supply won't underflow
+    if token.total_supply < payload.amount {
+        return Err(StateError::BurnExceedsSupply {
+            burn: payload.amount,
+            supply: token.total_supply,
+        });
+    }
+
+    // Deduct from sender balance
+    *state
+        .token_balances
+        .entry((tx.from, payload.token_id))
+        .or_insert(0) -= payload.amount;
+
+    // Reduce total supply
+    if let Some(token_def) = state.tokens.get_mut(&payload.token_id) {
+        token_def.total_supply -= payload.amount;
+    }
 
     Ok(())
 }
