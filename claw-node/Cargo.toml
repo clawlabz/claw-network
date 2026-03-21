@@ -43,7 +43,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 blake3 = "1"
 rand = "0.8"
 aes-gcm = "0.10"
-pbkdf2 = { version = "0.2.0", features = ["simple"] }
+pbkdf2 = { version = "0.12", features = ["simple"] }
 sha2 = "0.10"
 
 # Storage (pure Rust, no C++ dependency)
@@ -55,7 +55,7 @@ tokio = { version = "1", features = ["full"] }
 
 # HTTP/RPC
 axum = { version = "0.8", features = ["ws"] }
-reqwest = { version = "0.2.0", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
