@@ -27,13 +27,16 @@ export type TxType = (typeof TxType)[keyof typeof TxType];
 // Chain constants
 // ---------------------------------------------------------------------------
 
-/** Native CLW token ID (all zeros, represents the native token). */
+/** Native CLAW token ID (all zeros, represents the native token). */
 export const NATIVE_TOKEN_ID = new Uint8Array(32);
 
-/** CLW token decimals. */
-export const CLW_DECIMALS = 9;
+/** CLAW token decimals. */
+export const CLAW_DECIMALS = 9;
 
-/** Gas fee per transaction in base units (0.001 CLW). */
+/** @deprecated Use CLAW_DECIMALS */
+export const CLW_DECIMALS = CLAW_DECIMALS;
+
+/** Gas fee per transaction in base units (0.001 CLAW). */
 export const GAS_FEE = 1_000_000n;
 
 /** Default RPC endpoints. */

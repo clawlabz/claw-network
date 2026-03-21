@@ -101,7 +101,7 @@ pub fn distribute_block_reward(
             let reward_recipient = world.stake_delegations.get(addr).copied().unwrap_or(*addr);
             if reward_recipient != *addr {
                 // Delegated: split by commission
-                let commission_bps = world.stake_commissions.get(addr).copied().unwrap_or(10000) as u128;
+                let commission_bps = world.stake_commissions.get(addr).copied().unwrap_or(8000) as u128;
                 let validator_share = share * commission_bps / 10000;
                 let delegator_share = share - validator_share;
 
@@ -164,7 +164,7 @@ pub fn distribute_fees(
         let reward_recipient = world.stake_delegations.get(proposer).copied().unwrap_or(*proposer);
         if reward_recipient != *proposer {
             // Delegated: split by commission
-            let commission_bps = world.stake_commissions.get(proposer).copied().unwrap_or(10000) as u128;
+            let commission_bps = world.stake_commissions.get(proposer).copied().unwrap_or(8000) as u128;
             let validator_fee = proposer_share * commission_bps / 10000;
             let delegator_fee = proposer_share - validator_fee;
 

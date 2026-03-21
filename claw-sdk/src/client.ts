@@ -202,7 +202,7 @@ export class ClawClient {
 
   // --- Top-level convenience methods ---
 
-  /** Transfer native CLW tokens. Returns tx hash. */
+  /** Transfer native CLAW tokens. Returns tx hash. */
   async transfer(params: TokenTransferParams): Promise<string> {
     const payload = encodeTokenTransferPayload(
       fromHex(params.to),
@@ -211,7 +211,7 @@ export class ClawClient {
     return this.buildAndSendTx(TxType.TokenTransfer, payload);
   }
 
-  /** Get native CLW balance for an address (hex). */
+  /** Get native CLAW balance for an address (hex). */
   async getBalance(address: string): Promise<bigint> {
     const result = await this.rpc.call<string>('clw_getBalance', [address]);
     return BigInt(result);

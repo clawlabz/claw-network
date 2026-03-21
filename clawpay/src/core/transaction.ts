@@ -21,7 +21,7 @@
  * Signable bytes: tx_type(1) || from(32) || nonce(8 LE) || payload(raw, no length prefix)
  */
 
-import { type RawTransaction, type TokenTransferPayload, type ServiceRegisterPayload, TxType, CLW_DECIMALS, NATIVE_TOKEN_ID } from './types.js';
+import { type RawTransaction, type TokenTransferPayload, type ServiceRegisterPayload, TxType, CLAW_DECIMALS, NATIVE_TOKEN_ID } from './types.js';
 import { type Wallet, bytesToHex, hexToBytes } from './wallet.js';
 
 // ---------------------------------------------------------------------------
@@ -145,11 +145,11 @@ export function serializeTransaction(tx: RawTransaction): Uint8Array {
 export interface TransferParams {
   readonly to: string; // hex address
   readonly amount: string; // human-readable (e.g., "10" = 10 CLAW)
-  readonly decimals?: number; // defaults to CLW_DECIMALS (9)
+  readonly decimals?: number; // defaults to CLAW_DECIMALS (9)
 }
 
 /** Parse a human-readable amount string to base units. */
-export function parseAmount(amount: string, decimals: number = CLW_DECIMALS): bigint {
+export function parseAmount(amount: string, decimals: number = CLAW_DECIMALS): bigint {
   const parts = amount.split('.');
   const whole = BigInt(parts[0] || '0');
   let fractional = 0n;
@@ -161,7 +161,7 @@ export function parseAmount(amount: string, decimals: number = CLW_DECIMALS): bi
 }
 
 /** Format base units to human-readable string. */
-export function formatAmount(baseUnits: bigint, decimals: number = CLW_DECIMALS): string {
+export function formatAmount(baseUnits: bigint, decimals: number = CLAW_DECIMALS): string {
   const divisor = 10n ** BigInt(decimals);
   const whole = baseUnits / divisor;
   const frac = baseUnits % divisor;
@@ -181,7 +181,7 @@ export async function buildTransferTx(
     throw new Error(`Invalid recipient address: expected 32 bytes, got ${to.length}`);
   }
 
-  const decimals = params.decimals ?? CLW_DECIMALS;
+  const decimals = params.decimals ?? CLAW_DECIMALS;
   const amount = parseAmount(params.amount, decimals);
   if (amount <= 0n) {
     throw new Error('Transfer amount must be positive');

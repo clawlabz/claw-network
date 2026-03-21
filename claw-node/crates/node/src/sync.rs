@@ -116,10 +116,8 @@ pub fn log_fast_sync_intent() {
 ///
 /// Returns `true` if the snapshot is valid, `false` otherwise.
 pub fn verify_state_snapshot(state_root: &[u8; 32], state_data: &[u8]) -> bool {
-    use sha2::{Digest, Sha256};
-    let computed = Sha256::digest(state_data);
-    let computed_bytes: [u8; 32] = computed.into();
-    computed_bytes == *state_root
+    let computed = blake3::hash(state_data);
+    computed.as_bytes() == state_root
 }
 
 /// Build a state snapshot response from the current chain store and latest block info.
@@ -180,9 +178,8 @@ mod tests {
 
     #[test]
     fn test_verify_state_snapshot() {
-        use sha2::{Digest, Sha256};
         let data = b"test state data";
-        let hash: [u8; 32] = Sha256::digest(data).into();
+        let hash: [u8; 32] = *blake3::hash(data).as_bytes();
         assert!(verify_state_snapshot(&hash, data));
         assert!(!verify_state_snapshot(&[0u8; 32], data));
     }

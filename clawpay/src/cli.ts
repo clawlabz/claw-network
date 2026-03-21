@@ -14,7 +14,7 @@
 import { Wallet, bytesToHex } from './core/wallet.js';
 import { RpcClient } from './core/rpc.js';
 import { buildTransferTx, formatAmount } from './core/transaction.js';
-import { RPC_MAINNET, RPC_TESTNET, CLW_DECIMALS } from './core/types.js';
+import { RPC_MAINNET, RPC_TESTNET, CLAW_DECIMALS } from './core/types.js';
 
 // ---------------------------------------------------------------------------
 // Argument parsing (zero-dependency)
@@ -94,7 +94,7 @@ async function queryBalance(
 
   const rpc = new RpcClient({ url: rpcUrl });
   const balance = await rpc.getBalance(address);
-  const formatted = formatAmount(balance, CLW_DECIMALS);
+  const formatted = formatAmount(balance, CLAW_DECIMALS);
   console.log(`Balance: ${formatted} CLAW`);
   console.log(`  (${balance.toString()} base units)`);
 }

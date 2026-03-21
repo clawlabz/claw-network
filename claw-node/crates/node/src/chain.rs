@@ -100,7 +100,7 @@ impl Chain {
         let has_real_validators = validator_stakes.iter().any(|(addr, _)| {
             !(addr[1..].iter().all(|&b| b == 0) && addr[0] != 0)
         });
-        let mut stakes: Vec<([u8; 32], u128)> = if has_real_validators {
+        let stakes: Vec<([u8; 32], u128)> = if has_real_validators {
             validator_stakes
                 .into_iter()
                 .filter(|(addr, _)| {
@@ -125,25 +125,13 @@ impl Chain {
             state.stakes.entry(*addr).or_insert(*amount);
         }
 
-        // If this node's address is not in the validator set, add it with
-        // the minimum viable stake so it can participate in consensus.
-        // The real stake comes from on-chain delegation.
+        // If this node's address is not in the validator set, log a warning.
+        // The node will sync blocks but cannot produce until it stakes.
         if !stakes.iter().any(|(addr, _)| *addr == validator_address) {
-            if state.stakes.get(&validator_address).copied().unwrap_or(0) > 0 {
-                // Node has on-chain stake but wasn't in the initial list — add it
-                let on_chain_stake = state.stakes[&validator_address];
-                stakes.push((validator_address, on_chain_stake));
-                tracing::info!(
-                    address = %hex::encode(validator_address),
-                    stake = on_chain_stake,
-                    "Added node to validator set from on-chain stake"
-                );
-            } else {
-                tracing::warn!(
-                    address = %hex::encode(validator_address),
-                    "Node address not staked — will sync but not produce blocks"
-                );
-            }
+            tracing::warn!(
+                address = %hex::encode(validator_address),
+                "Node not in validator set — will sync only, stake to become a validator"
+            );
         }
 
         let validator_set = ValidatorSet::with_initial_stakes(stakes);
@@ -473,6 +461,8 @@ impl Chain {
                 new_height,
             );
             inner.slashing.reset_epoch_counters();
+            // Reset uptime counters for new epoch
+            inner.state.validator_uptime.clear();
             tracing::info!(
                 epoch = inner.validator_set.epoch,
                 validators = inner.validator_set.active.len(),
@@ -679,7 +669,12 @@ impl Chain {
                 block.height,
             );
             inner.slashing.reset_epoch_counters();
+            // Reset uptime counters for new epoch
+            inner.state.validator_uptime.clear();
         }
+
+        // Clear pending votes after accepting a remote block
+        inner.pending_votes.clear();
 
         tracing::info!(
             height = block.height,

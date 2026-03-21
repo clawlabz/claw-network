@@ -525,6 +525,9 @@ pub fn handle_contract_call(
 /// Maximum action_type length for platform reports.
 const MAX_ACTION_TYPE_LEN: usize = claw_types::state::MAX_ACTION_TYPE_LEN;
 
+/// Epoch length in blocks (must match claw_consensus::EPOCH_LENGTH).
+const EPOCH_LENGTH: u64 = 100;
+
 /// PlatformActivityReport: submit on-chain activity data from a platform.
 ///
 /// Only Platform Agents (registered agents with >= 50,000 CLW staked) can submit.
@@ -559,7 +562,7 @@ pub fn handle_platform_activity_report(
     }
 
     // Each Platform Agent can submit once per epoch
-    let current_epoch = state.block_height / 100; // EPOCH_LENGTH = 100
+    let current_epoch = state.block_height / EPOCH_LENGTH;
     if state.platform_report_tracker.contains_key(&(tx.from, current_epoch)) {
         return Err(StateError::PlatformReportAlreadySubmitted);
     }

@@ -88,7 +88,7 @@ enum Commands {
     Transfer {
         /// Recipient address (hex, 64 chars)
         to: String,
-        /// Amount in CLW (e.g. "10000" or "0.5")
+        /// Amount in CLAW (e.g. "10000" or "0.5")
         amount: String,
         /// RPC endpoint URL
         #[arg(long, default_value = "http://localhost:9710")]
@@ -96,7 +96,7 @@ enum Commands {
     },
     /// Stake CLAW to become a validator
     Stake {
-        /// Amount in CLW to stake (e.g. "10000")
+        /// Amount in CLAW to stake (e.g. "10000")
         amount: String,
         /// Delegate to a different validator address (hex, 64 chars).
         /// If omitted, the staker is also the block-producing validator (self-stake).
@@ -113,7 +113,7 @@ enum Commands {
     },
     /// Unstake (unbond) CLAW from validator
     Unstake {
-        /// Amount in CLW to unstake (e.g. "5000")
+        /// Amount in CLAW to unstake (e.g. "5000")
         amount: String,
         /// Validator address to unstake from (hex, 64 chars).
         /// Required when unstaking as a delegator (Owner Key).
@@ -216,7 +216,7 @@ enum Commands {
         /// Arguments as hex-encoded bytes
         #[arg(long, default_value = "")]
         args: String,
-        /// CLW value to send with the call (e.g. "0" or "10.5")
+        /// CLAW value to send with the call (e.g. "0" or "10.5")
         #[arg(long, default_value = "0")]
         value: String,
         /// RPC endpoint URL
@@ -231,7 +231,7 @@ enum Commands {
         /// Service endpoint URL
         #[arg(long)]
         endpoint: String,
-        /// Price amount in CLW (e.g. "0.1")
+        /// Price amount in CLAW (e.g. "0.1")
         #[arg(long)]
         price: String,
         /// Service description (optional)
@@ -614,7 +614,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Parse a CLW amount string (supports decimals, e.g. "10000" or "0.5") into raw u128 (9 decimals).
+/// Parse a CLAW amount string (supports decimals, e.g. "10000" or "0.5") into raw u128 (9 decimals).
 fn parse_clw_amount(s: &str) -> Result<u128> {
     let s = s.trim();
     let (whole, frac) = if let Some(dot) = s.find('.') {
@@ -703,10 +703,10 @@ async fn handle_transfer_cli(data_dir: &std::path::Path, to: &str, amount: &str,
 
     if balance < raw_amount {
         let balance_clw = balance as f64 / 1_000_000_000.0;
-        anyhow::bail!("insufficient balance: have {:.4} CLW, need {} CLW", balance_clw, amount);
+        anyhow::bail!("insufficient balance: have {:.4} CLAW, need {} CLAW", balance_clw, amount);
     }
 
-    println!("Transfer {} CLW", amount);
+    println!("Transfer {} CLAW", amount);
     println!("  From: {}", from_hex);
     println!("  To:   {}", to);
     println!("  Raw:  {} (9 decimals)", raw_amount);
@@ -745,20 +745,20 @@ async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_ke
 
     if balance < raw_amount {
         let balance_clw = balance as f64 / 1_000_000_000.0;
-        anyhow::bail!("insufficient balance: have {:.4} CLW, need {} CLW", balance_clw, amount);
+        anyhow::bail!("insufficient balance: have {:.4} CLAW, need {} CLAW", balance_clw, amount);
     }
 
     // Parse validator key for delegation, or default to self-stake
     let validator = match validator_key {
         Some(hex_str) => {
             let addr = parse_hex_address(hex_str)?;
-            println!("Stake {} CLW (delegated)", amount);
+            println!("Stake {} CLAW (delegated)", amount);
             println!("  Owner:     {}", from_hex);
             println!("  Validator: {}", hex_str);
             addr
         }
         None => {
-            println!("Stake {} CLW (self-stake)", amount);
+            println!("Stake {} CLAW (self-stake)", amount);
             println!("  Validator: {}", from_hex);
             [0u8; 32] // sentinel for self-stake
         }
@@ -815,7 +815,7 @@ async fn handle_unstake_cli(data_dir: &std::path::Path, amount: &str, validator_
         None => format!("{} (self)", from_hex),
     };
 
-    println!("Unstake {} CLW", amount);
+    println!("Unstake {} CLAW", amount);
     println!("  From:      {}", from_hex);
     println!("  Validator: {}", validator_display);
     println!("  Raw:       {} (9 decimals)", raw_amount);
@@ -1126,7 +1126,7 @@ async fn handle_call_contract_cli(
     println!("  Method:   {}", method);
     println!("  Caller:   {}", from_hex);
     if raw_value > 0 {
-        println!("  Value:    {} CLW", value);
+        println!("  Value:    {} CLAW", value);
     }
 
     let payload = ContractCallPayload {
@@ -1163,7 +1163,7 @@ async fn handle_register_service_cli(
     println!("Register Service");
     println!("  Type:     {}", service_type);
     println!("  Endpoint: {}", endpoint);
-    println!("  Price:    {} CLW", price);
+    println!("  Price:    {} CLAW", price);
     println!("  Owner:    {}", from_hex);
     if !description.is_empty() {
         println!("  Desc:     {}", description);

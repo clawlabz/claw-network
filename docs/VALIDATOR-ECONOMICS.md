@@ -237,7 +237,7 @@ Note: Most chains' tokens already had market prices before mainnet (via ICO/priv
 | Tier | Deposit | CLAW Delegation | Target |
 |------|---------|----------------|--------|
 | **Pioneer** | $2,000 USDT | 10,000 CLAW | Individual developers, community contributors |
-| **Partner** | $5,000 USDT | 30,000 CLAW | Small companies, technical teams |
+| **Partner** | $5,000 USDT | 50,000 CLAW | Small companies, technical teams |
 | **Enterprise** | $10,000 USDT | 100,000 CLAW | Institutions, professional validator operators |
 
 ### Why this range is reasonable

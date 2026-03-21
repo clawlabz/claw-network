@@ -146,3 +146,6 @@ pub const CLW_DECIMALS: u8 = 9;
 
 /// Total CLW supply: 1 billion tokens = 1_000_000_000 * 10^9 base units.
 pub const CLW_TOTAL_SUPPLY: u128 = 1_000_000_000_000_000_000;
+
+/// Native token symbol.
+pub const NATIVE_TOKEN_SYMBOL: &str = "CLAW";

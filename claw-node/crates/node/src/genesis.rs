@@ -71,7 +71,7 @@ fn standard_allocations() -> Vec<GenesisAllocation> {
             label: "ecosystem_fund".into(),
         },
         GenesisAllocation {
-            address: genesis_address_hex(3),
+            address: "71fa1a514e07c7c96bf0c825c29dfc8059cfa995318972dd258a4e316873e66b".into(),
             balance: (CLW_TOTAL_SUPPLY * 15 / 100).to_string(),
             label: "team".into(),
         },
@@ -138,13 +138,13 @@ pub fn default_testnet() -> GenesisConfig {
 pub fn default_mainnet() -> GenesisConfig {
     GenesisConfig {
         chain_id: "claw-mainnet-1".into(),
-        timestamp: 1741737600,
+        timestamp: 1742515200, // 2025-03-21 00:00:00 UTC
         allocations: standard_allocations(),
         validators: vec![
-            // Genesis validators to be defined before mainnet launch
+            // Hetzner genesis validator operated by ClawLabz
             GenesisValidator {
-                address: genesis_address_hex(30),
-                stake: (MIN_STAKE * 100).to_string(),
+                address: "ffa28f7c6469ab7490ce540a0e49aa64bc77b4dc5bb2a83b17ddd10a9c8ea62e".into(),
+                stake: (MIN_STAKE * 100).to_string(), // 1,000,000 CLAW
             },
         ],
     }

@@ -19,6 +19,7 @@ export {
 export {
   TxType,
   NATIVE_TOKEN_ID,
+  CLAW_DECIMALS,
   CLW_DECIMALS,
   GAS_FEE,
   RPC_MAINNET,

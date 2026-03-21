@@ -135,6 +135,21 @@ impl ValidatorSet {
         // Take top MAX_VALIDATORS
         weighted.truncate(MAX_VALIDATORS);
         self.active = weighted;
+
+        // Ensure at least one validator remains active
+        if self.active.is_empty() && !self.candidates.is_empty() {
+            // If all were jailed, pick the one with highest stake regardless of jail status
+            if let Some((_, stake_info)) = self.candidates.iter().next_back() {
+                self.active.push(ActiveValidator {
+                    address: stake_info.address,
+                    stake: stake_info.amount,
+                    agent_score: 0,
+                    weight: 1,
+                });
+                tracing::warn!("All validators jailed — keeping last resort validator to prevent chain halt");
+            }
+        }
+
         self.epoch += 1;
     }
 

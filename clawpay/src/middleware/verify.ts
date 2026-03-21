@@ -2,7 +2,7 @@
  * Shared payment verification logic used by all middleware adapters.
  */
 
-import { type PayCredential, CLW_DECIMALS } from '../core/types.js';
+import { type PayCredential, CLAW_DECIMALS } from '../core/types.js';
 import { type RpcClient } from '../core/rpc.js';
 import { parseAmount } from '../core/transaction.js';
 
@@ -49,7 +49,7 @@ export async function verifyPayment(
   }
 
   // 5. Verify amount (compare in base units)
-  const requiredBaseUnits = parseAmount(expectedAmount, CLW_DECIMALS);
+  const requiredBaseUnits = parseAmount(expectedAmount, CLAW_DECIMALS);
   const actualBaseUnits = BigInt(txInfo.amount ?? '0');
   if (actualBaseUnits < requiredBaseUnits) {
     return { valid: false, reason: 'Insufficient payment amount' };
