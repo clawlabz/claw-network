@@ -95,8 +95,24 @@ impl Chain {
             }
         };
 
-        // Initialize validator set from genesis config.
-        let mut stakes = validator_stakes;
+        // Initialize validator set, filtering out genesis placeholder addresses.
+        // Genesis placeholders have address = [index, 0, 0, ..., 0] — no real node behind them.
+        let mut stakes: Vec<([u8; 32], u128)> = validator_stakes
+            .into_iter()
+            .filter(|(addr, _)| {
+                // Keep if not a placeholder: a placeholder has addr[1..] all zeros
+                let is_placeholder = addr[1..].iter().all(|&b| b == 0);
+                if is_placeholder && addr[0] != 0 {
+                    tracing::info!(
+                        address = %hex::encode(addr),
+                        "Filtered out genesis placeholder validator"
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
         // Write genesis stakes into WorldState so they survive epoch recalculation.
         // ValidatorSet.recalculate_active reads from its own candidates (set via
         // with_initial_stakes), but state.stakes must also be populated for
