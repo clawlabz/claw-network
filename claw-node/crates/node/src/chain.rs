@@ -96,7 +96,7 @@ impl Chain {
         };
 
         // Initialize validator set from genesis config.
-        let stakes = validator_stakes;
+        let mut stakes = validator_stakes;
         // Write genesis stakes into WorldState so they survive epoch recalculation.
         // ValidatorSet.recalculate_active reads from its own candidates (set via
         // with_initial_stakes), but state.stakes must also be populated for
@@ -105,12 +105,25 @@ impl Chain {
             state.stakes.entry(*addr).or_insert(*amount);
         }
 
-        // Warn if this node's address is not in the genesis validator set.
+        // If this node's address is not in the validator set, add it with
+        // the minimum viable stake so it can participate in consensus.
+        // The real stake comes from on-chain delegation.
         if !stakes.iter().any(|(addr, _)| *addr == validator_address) {
-            tracing::warn!(
-                address = %hex::encode(validator_address),
-                "Node address not in genesis validators — node will sync but not produce blocks until staked"
-            );
+            if state.stakes.get(&validator_address).copied().unwrap_or(0) > 0 {
+                // Node has on-chain stake but wasn't in the initial list — add it
+                let on_chain_stake = state.stakes[&validator_address];
+                stakes.push((validator_address, on_chain_stake));
+                tracing::info!(
+                    address = %hex::encode(validator_address),
+                    stake = on_chain_stake,
+                    "Added node to validator set from on-chain stake"
+                );
+            } else {
+                tracing::warn!(
+                    address = %hex::encode(validator_address),
+                    "Node address not staked — will sync but not produce blocks"
+                );
+            }
         }
 
         let validator_set = ValidatorSet::with_initial_stakes(stakes);
