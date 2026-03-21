@@ -517,6 +517,7 @@ impl Chain {
     /// Apply a block received from the network.
     pub fn apply_remote_block(&self, block: &Block) -> Result<(), String> {
         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+        let supply_before = inner.state.total_supply();
 
         // Validate block connects to our chain
         if block.height != inner.latest_block.height + 1 {
@@ -699,6 +700,22 @@ impl Chain {
 
         // Clear pending votes after accepting a remote block
         inner.pending_votes.clear();
+
+        // Supply integrity check for apply_remote_block
+        let supply_after = inner.state.total_supply();
+        let expected_burn = total_fees * 30 / 100;
+        let expected_supply = supply_before - expected_burn;
+        if supply_after != expected_supply {
+            tracing::error!(
+                height = block.height,
+                before = supply_before,
+                after = supply_after,
+                expected = expected_supply,
+                diff = supply_after as i128 - expected_supply as i128,
+                total_fees,
+                "SUPPLY INTEGRITY VIOLATION in apply_remote_block"
+            );
+        }
 
         tracing::info!(
             height = block.height,
