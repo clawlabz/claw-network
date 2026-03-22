@@ -1055,9 +1055,10 @@ impl Chain {
                         Err(e) => {
                             // Fork detection: if the very first block fails with prev_hash mismatch,
                             // the local chain has diverged from the network. Fall back to state snapshot sync.
-                            if applied == 0 && e.contains("prev_hash mismatch") {
+                            if applied == 0 && (e.contains("prev_hash mismatch") || e.contains("state_root mismatch")) {
                                 tracing::warn!(
                                     height = block.height,
+                                    error = %e,
                                     "Fork detected: local chain diverged from network. Requesting state snapshot for recovery."
                                 );
                                 return Some(SyncRequest::GetStateSnapshot);

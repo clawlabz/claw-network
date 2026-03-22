@@ -65,6 +65,8 @@ pub struct P2pNetwork {
     tx_topic: gossipsub::IdentTopic,
     block_topic: gossipsub::IdentTopic,
     vote_topic: gossipsub::IdentTopic,
+    /// Bootstrap addresses for periodic reconnection.
+    bootstrap_addrs: Vec<Multiaddr>,
 }
 
 /// Load an existing P2P keypair from disk, or generate a new one and save it.
@@ -153,12 +155,14 @@ impl P2pNetwork {
 
         // Dial bootstrap peers (deduplicated)
         let mut seen_addrs = HashSet::new();
+        let mut stored_bootstrap = Vec::new();
         for addr in bootstrap_addrs {
             if seen_addrs.insert(addr.clone()) {
                 tracing::info!(%addr, "Dialing bootstrap peer");
                 if let Err(e) = swarm.dial(addr.clone()) {
                     tracing::warn!(%addr, error=%e, "Failed to dial bootstrap");
                 }
+                stored_bootstrap.push(addr);
             }
         }
 
@@ -174,6 +178,7 @@ impl P2pNetwork {
                 tx_topic,
                 block_topic,
                 vote_topic,
+                bootstrap_addrs: stored_bootstrap,
             },
             event_rx,
             command_tx,
@@ -290,8 +295,24 @@ impl P2pNetwork {
     /// Run the network event loop. This drives the swarm, emits events,
     /// and processes commands from the chain engine.
     pub async fn run(&mut self) {
+        let mut bootstrap_redial = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             tokio::select! {
+                _ = bootstrap_redial.tick() => {
+                    // Redial bootstrap peers that are not currently connected
+                    for addr in &self.bootstrap_addrs {
+                        // Extract peer ID from multiaddr to check if already connected
+                        let peer_id = addr.iter().find_map(|p| {
+                            if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+                        });
+                        if let Some(pid) = peer_id {
+                            if !self.peers.contains(&pid) {
+                                tracing::debug!(%addr, "Redialing disconnected bootstrap peer");
+                                let _ = self.swarm.dial(addr.clone());
+                            }
+                        }
+                    }
+                }
                 Some(cmd) = self.command_rx.recv() => {
                     match cmd {
                         P2pCommand::SendSyncRequest { peer, request } => {
