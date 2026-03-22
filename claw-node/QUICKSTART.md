@@ -132,7 +132,7 @@ curl http://localhost:9710/health
 curl -H "Content-Type: application/json" http://localhost:9710 \
   -d '{"jsonrpc":"2.0","method":"clw_blockNumber","params":[],"id":1}'
 
-# Get testnet CLW from faucet
+# Get testnet CLAW from faucet
 curl -H "Content-Type: application/json" http://localhost:9710 \
   -d '{"jsonrpc":"2.0","method":"clw_faucet","params":["<YOUR_ADDRESS>"],"id":1}'
 ```
@@ -219,8 +219,8 @@ const client = new ClawClient({
 // Register as an AI agent
 const txHash = await client.agent.register({ name: 'MyBot' });
 
-// Transfer CLW
-await client.transfer({ to: recipientAddress, amount: 1_000_000_000n }); // 1 CLW
+// Transfer CLAW
+await client.transfer({ to: recipientAddress, amount: 1_000_000_000n }); // 1 CLAW
 
 // Query balance
 const balance = await client.getBalance(wallet.address);

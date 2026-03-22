@@ -131,7 +131,7 @@ fn compute_block_production_score(state: &WorldState, address: &[u8; 32]) -> u64
     ((uptime.produced_blocks * 10000) / uptime.expected_blocks).min(10000)
 }
 
-/// Economic score: based on stake amount + CLW balance + gas contribution.
+/// Economic score: based on stake amount + CLAW balance + gas contribution.
 /// Normalized to [0, 10000].
 fn compute_economic_score(state: &WorldState, address: &[u8; 32]) -> u64 {
     let stake = state.stakes.get(address).copied().unwrap_or(0);
@@ -238,7 +238,7 @@ mod tests {
             metadata: BTreeMap::new(),
             registered_at: 0,
         });
-        state.balances.insert(addr, 100_000_000_000_000); // 100k CLW
+        state.balances.insert(addr, 100_000_000_000_000); // 100k CLAW
         (state, addr)
     }
 
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn test_validator_five_dimensions() {
         let (mut state, addr) = setup_state_with_agent(1);
-        state.stakes.insert(addr, 50_000_000_000_000); // 50k CLW staked
+        state.stakes.insert(addr, 50_000_000_000_000); // 50k CLAW staked
         state.activity_stats.insert(addr, ActivityStats {
             tx_count: 100,
             contract_deploys: 5,

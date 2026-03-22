@@ -137,14 +137,14 @@ pub struct ContractCallPayload {
     pub method: String,
     /// Method arguments (borsh-encoded).
     pub args: Vec<u8>,
-    /// Native CLW value to send with the call.
+    /// Native CLAW value to send with the call.
     pub value: u128,
 }
 
 /// Payload for depositing stake to become a validator.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct StakeDepositPayload {
-    /// Amount of CLW to stake (in base units, 9 decimals).
+    /// Amount of CLAW to stake (in base units, 9 decimals).
     pub amount: u128,
     /// Optional: delegate block production to this address.
     /// If all-zeros, the staker is also the validator (self-stake).
@@ -158,7 +158,7 @@ pub struct StakeDepositPayload {
 /// Payload for initiating a stake withdrawal (unbonding).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct StakeWithdrawPayload {
-    /// Amount of CLW to unbond (in base units, 9 decimals).
+    /// Amount of CLAW to unbond (in base units, 9 decimals).
     pub amount: u128,
     /// Validator to unstake from. All-zeros = self (backward compat).
     pub validator: [u8; 32],
@@ -215,7 +215,7 @@ pub struct ActivityEntry {
 
 /// Payload for submitting platform activity reports (tx type 11).
 ///
-/// Only Platform Agents (staked >= 50,000 CLW) can submit these reports.
+/// Only Platform Agents (staked >= 50,000 CLAW) can submit these reports.
 /// Each Platform Agent can submit at most once per epoch (100 blocks).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct PlatformActivityReportPayload {

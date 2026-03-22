@@ -4,7 +4,7 @@
 
 ### Added
 - **On-chain Agent Score**: Five-dimension automatic reputation calculation (Activity, Uptime, Block Production, Economic, Platform Activity) with time decay
-- **PlatformActivityReport** transaction type (tx=11): Third-party platforms can report agent activity on-chain (requires >= 50,000 CLW stake)
+- **PlatformActivityReport** transaction type (tx=11): Third-party platforms can report agent activity on-chain (requires >= 50,000 CLAW stake)
 - **Activity Statistics**: Per-epoch automatic tracking of transaction counts, contract deployments, gas consumed per address
 - **Validator Uptime Tracking**: Sliding window signed-blocks tracking for validator reliability scoring
 - **`clw_getAgentScore` RPC**: Query per-address Agent Score with dimension breakdown

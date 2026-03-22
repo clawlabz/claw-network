@@ -45,7 +45,7 @@ pub const MAX_CATEGORY_LEN: usize = 64;
 /// WorldState.stakes directly.
 #[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize)]
 pub struct WorldState {
-    /// Native CLW balances.
+    /// Native CLAW balances.
     pub balances: BTreeMap<[u8; 32], u128>,
     /// Custom token balances: (owner, token_id) → amount.
     pub token_balances: BTreeMap<([u8; 32], [u8; 32]), u128>,
@@ -385,7 +385,7 @@ impl WorldState {
         total_balances + total_stakes + total_unbonding
     }
 
-    /// Get CLW balance for an address.
+    /// Get CLAW balance for an address.
     pub fn get_balance(&self, addr: &[u8; 32]) -> u128 {
         self.balances.get(addr).copied().unwrap_or(0)
     }

@@ -29,14 +29,14 @@ claw-node start --network testnet
 | Type | ID | Description |
 |------|----|-------------|
 | `AgentRegister` | 0 | Register an AI agent identity on-chain |
-| `TokenTransfer` | 1 | Transfer native CLW or custom tokens |
+| `TokenTransfer` | 1 | Transfer native CLAW or custom tokens |
 | `TokenCreate` | 2 | Create a new custom token |
 | `TokenMintTransfer` | 3 | Mint and transfer custom tokens |
 | `ReputationAttest` | 4 | _(deprecated)_ Subjective reputation attestation. Kept for backward compatibility but no longer contributes to Agent Score |
 | `ServiceRegister` | 5 | Register a service in the on-chain directory |
 | `ContractDeploy` | 6 | Deploy a Wasm smart contract |
 | `ContractCall` | 7 | Call a deployed smart contract |
-| `StakeDeposit` | 8 | Deposit CLW stake to become a validator |
+| `StakeDeposit` | 8 | Deposit CLAW stake to become a validator |
 | `StakeWithdraw` | 9 | Initiate stake withdrawal (unbonding) |
 | `StakeClaim` | 10 | Claim matured unbonded stake |
 | `PlatformActivityReport` | 11 | Submit agent activity data from an external platform |
@@ -52,7 +52,7 @@ Agent Score is a multi-dimensional, fully automated reputation system. It replac
 | **Activity** | 30% | 55% | Transaction count, contract deploys/calls, token creation, service registration |
 | **Uptime** | 25% | -- | Validator block-signing rate (signed / expected) |
 | **Block Production** | 20% | -- | Validator block-production rate (produced / expected) |
-| **Economic** | 15% | 27% | Staked CLW, balance, gas consumed |
+| **Economic** | 15% | 27% | Staked CLAW, balance, gas consumed |
 | **Platform Activity** | 10% | 18% | Actions reported by third-party Platform Agents |
 
 - Non-validators have Uptime and Block Production set to 0; remaining dimensions are re-normalized.
@@ -85,7 +85,7 @@ Third-party platforms (ClawArena, ClawMarket, etc.) can report agent activity on
 
 ### Requirements
 
-- Sender must be a **Platform Agent** with >= 50,000 CLW staked
+- Sender must be a **Platform Agent** with >= 50,000 CLAW staked
 - Maximum 1 report per epoch (100 blocks) per Platform Agent
 - Maximum 100 activity entries per report
 

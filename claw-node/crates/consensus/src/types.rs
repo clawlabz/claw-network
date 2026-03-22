@@ -3,7 +3,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-/// Minimum stake to become a validator candidate (10,000 CLW = 10_000 * 10^9).
+/// Minimum stake to become a validator candidate (10,000 CLAW = 10_000 * 10^9).
 pub const MIN_STAKE: u128 = 10_000_000_000_000;
 
 /// Maximum active validators per epoch.
@@ -58,7 +58,7 @@ impl Default for WeightConfig {
 pub struct StakeInfo {
     /// Validator address (Ed25519 public key).
     pub address: [u8; 32],
-    /// Amount of CLW staked (in base units, 9 decimals).
+    /// Amount of CLAW staked (in base units, 9 decimals).
     pub amount: u128,
     /// Block height at which the stake was last updated.
     pub staked_at: u64,

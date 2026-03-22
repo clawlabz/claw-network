@@ -62,7 +62,7 @@ pub struct ServiceEntry {
     pub service_type: String,
     /// Human-readable description.
     pub description: String,
-    /// Token accepted for payment (CLW native = all zeros).
+    /// Token accepted for payment (CLAW native = all zeros).
     pub price_token: [u8; 32],
     /// Price amount per unit of service.
     pub price_amount: u128,
@@ -77,7 +77,7 @@ pub struct ServiceEntry {
 pub struct UnbondingEntry {
     /// Validator address that initiated the unbonding.
     pub address: [u8; 32],
-    /// Amount of CLW being unbonded.
+    /// Amount of CLAW being unbonded.
     pub amount: u128,
     /// Block height at which the unbonded stake can be claimed.
     pub release_height: u64,
@@ -128,24 +128,24 @@ pub struct PlatformActivityAgg {
 pub const MAX_ACTION_TYPE_LEN: usize = 64;
 
 /// Minimum stake required for a Platform Agent to submit activity reports.
-/// 50,000 CLW with 9 decimals.
+/// 50,000 CLAW with 9 decimals.
 pub const PLATFORM_AGENT_MIN_STAKE: u128 = 50_000_000_000_000;
 
 /// Maximum number of activity entries per report.
 pub const MAX_ACTIVITY_ENTRIES: usize = 100;
 
-/// Native CLW token ID (all zeros, represents the native token).
+/// Native CLAW token ID (all zeros, represents the native token).
 pub const NATIVE_TOKEN_ID: [u8; 32] = [0u8; 32];
 
 /// Gas fee per transaction in native token units.
-/// 0.001 CLW = 1_000_000 units (assuming 9 decimals).
+/// 0.001 CLAW = 1_000_000 units (assuming 9 decimals).
 pub const GAS_FEE: u128 = 1_000_000;
 
-/// CLW token decimals.
-pub const CLW_DECIMALS: u8 = 9;
+/// CLAW token decimals.
+pub const CLAW_DECIMALS: u8 = 9;
 
-/// Total CLW supply: 1 billion tokens = 1_000_000_000 * 10^9 base units.
-pub const CLW_TOTAL_SUPPLY: u128 = 1_000_000_000_000_000_000;
+/// Total CLAW supply: 1 billion tokens = 1_000_000_000 * 10^9 base units.
+pub const CLAW_TOTAL_SUPPLY: u128 = 1_000_000_000_000_000_000;
 
 /// Native token symbol.
 pub const NATIVE_TOKEN_SYMBOL: &str = "CLAW";

@@ -1569,7 +1569,7 @@ impl Chain {
     pub fn faucet_drip(&self, to: &[u8; 32]) -> Result<[u8; 32], String> {
         use claw_types::transaction::{TokenTransferPayload, TxType};
 
-        let drip: u128 = 10_000_000_000; // 10 CLW (9 decimals)
+        let drip: u128 = 10_000_000_000; // 10 CLAW (9 decimals)
 
         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
 

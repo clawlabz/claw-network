@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use claw_consensus::MIN_STAKE;
 use claw_state::WorldState;
 use claw_types::block::Block;
-use claw_types::state::CLW_TOTAL_SUPPLY;
+use claw_types::state::CLAW_TOTAL_SUPPLY;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -62,27 +62,27 @@ fn standard_allocations() -> Vec<GenesisAllocation> {
     vec![
         GenesisAllocation {
             address: genesis_address_hex(1),
-            balance: (CLW_TOTAL_SUPPLY * 40 / 100).to_string(),
+            balance: (CLAW_TOTAL_SUPPLY * 40 / 100).to_string(),
             label: "node_incentives".into(),
         },
         GenesisAllocation {
             address: genesis_address_hex(2),
-            balance: (CLW_TOTAL_SUPPLY * 25 / 100).to_string(),
+            balance: (CLAW_TOTAL_SUPPLY * 25 / 100).to_string(),
             label: "ecosystem_fund".into(),
         },
         GenesisAllocation {
             address: "71fa1a514e07c7c96bf0c825c29dfc8059cfa995318972dd258a4e316873e66b".into(),
-            balance: (CLW_TOTAL_SUPPLY * 15 / 100).to_string(),
+            balance: (CLAW_TOTAL_SUPPLY * 15 / 100).to_string(),
             label: "team".into(),
         },
         GenesisAllocation {
             address: genesis_address_hex(4),
-            balance: (CLW_TOTAL_SUPPLY * 10 / 100).to_string(),
+            balance: (CLAW_TOTAL_SUPPLY * 10 / 100).to_string(),
             label: "early_contributors".into(),
         },
         GenesisAllocation {
             address: genesis_address_hex(5),
-            balance: (CLW_TOTAL_SUPPLY * 10 / 100).to_string(),
+            balance: (CLAW_TOTAL_SUPPLY * 10 / 100).to_string(),
             label: "liquidity_reserve".into(),
         },
     ]
@@ -212,11 +212,11 @@ pub fn validate(config: &GenesisConfig) -> Result<()> {
     }
 
     // Total supply check
-    if total != CLW_TOTAL_SUPPLY {
+    if total != CLAW_TOTAL_SUPPLY {
         bail!(
-            "total allocation {} does not equal CLW_TOTAL_SUPPLY {}",
+            "total allocation {} does not equal CLAW_TOTAL_SUPPLY {}",
             total,
-            CLW_TOTAL_SUPPLY
+            CLAW_TOTAL_SUPPLY
         );
     }
 
@@ -257,7 +257,7 @@ pub fn load_genesis_config(
         "No genesis.json found, using built-in default"
     );
     let config = default_for_network(network, node_address);
-    // Built-in devnet config includes faucet allocation beyond CLW_TOTAL_SUPPLY,
+    // Built-in devnet config includes faucet allocation beyond CLAW_TOTAL_SUPPLY,
     // so we skip strict validation for devnet defaults.
     if network != "devnet" && network != "claw-devnet" {
         validate(&config)?;
@@ -380,7 +380,7 @@ mod tests {
     fn devnet_skips_supply_check_due_to_faucet() {
         let addr = [42u8; 32];
         let config = default_devnet(Some(&addr));
-        // Devnet has faucet allocation beyond CLW_TOTAL_SUPPLY, so strict
+        // Devnet has faucet allocation beyond CLAW_TOTAL_SUPPLY, so strict
         // validation would fail — this is expected.
         assert!(validate(&config).is_err());
     }

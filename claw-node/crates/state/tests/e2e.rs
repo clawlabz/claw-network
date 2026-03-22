@@ -36,7 +36,7 @@ fn full_e2e_all_six_tx_types() {
 
     let mut state = WorldState::default();
     state.block_height = 1;
-    state.balances.insert(addr1, 10_000_000_000); // 10 CLW
+    state.balances.insert(addr1, 10_000_000_000); // 10 CLAW
     state.balances.insert(addr2, 10_000_000_000);
 
     // === TX 1: Agent Register (addr1) ===
@@ -59,12 +59,12 @@ fn full_e2e_all_six_tx_types() {
     state.apply_tx(&tx).unwrap();
     assert_eq!(state.agents.len(), 2);
 
-    // === TX 3: Token Transfer (CLW: addr1 → addr2) ===
+    // === TX 3: Token Transfer (CLAW: addr1 → addr2) ===
     let initial1 = state.get_balance(&addr1);
     let initial2 = state.get_balance(&addr2);
     let tx = make_tx(&sk1, 2, TxType::TokenTransfer, &TokenTransferPayload {
         to: addr2,
-        amount: 2_000_000_000, // 2 CLW
+        amount: 2_000_000_000, // 2 CLAW
     });
     state.apply_tx(&tx).unwrap();
     assert_eq!(state.get_balance(&addr2), initial2 + 2_000_000_000);
@@ -110,7 +110,7 @@ fn full_e2e_all_six_tx_types() {
         service_type: "code-review".into(),
         description: "Automated code review powered by AI".into(),
         price_token: NATIVE_TOKEN_ID,
-        price_amount: 5_000_000, // 0.005 CLW
+        price_amount: 5_000_000, // 0.005 CLAW
         endpoint: "https://agent-alpha.example.com/review".into(),
         active: true,
     });
@@ -139,7 +139,7 @@ fn full_e2e_all_six_tx_types() {
     assert_eq!(state.get_balance(&addr2), 10_000_000_000 + 2_000_000_000 - 2 * GAS_FEE);
 
     println!("\n=== E2E Test Summary ===");
-    println!("Transactions: 8 (2 register + 1 CLW transfer + 1 token create + 1 custom transfer + 2 reputation + 1 service)");
+    println!("Transactions: 8 (2 register + 1 CLAW transfer + 1 token create + 1 custom transfer + 2 reputation + 1 service)");
     println!("Agents: {}", state.agents.len());
     println!("Custom tokens: {}", state.tokens.len());
     println!("Reputation records: {}", state.reputation.len());

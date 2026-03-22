@@ -54,7 +54,7 @@ fn safe_add(balance: u128, amount: u128) -> Result<u128, StateError> {
         .ok_or(StateError::BalanceOverflow { amount, balance })
 }
 
-/// TokenTransfer: transfer native CLW.
+/// TokenTransfer: transfer native CLAW.
 pub fn handle_token_transfer(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
     let payload = TokenTransferPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
@@ -530,7 +530,7 @@ const EPOCH_LENGTH: u64 = 100;
 
 /// PlatformActivityReport: submit on-chain activity data from a platform.
 ///
-/// Only Platform Agents (registered agents with >= 50,000 CLW staked) can submit.
+/// Only Platform Agents (registered agents with >= 50,000 CLAW staked) can submit.
 /// Each Platform Agent can submit at most once per epoch (100 blocks).
 pub fn handle_platform_activity_report(
     state: &mut WorldState,
@@ -544,7 +544,7 @@ pub fn handle_platform_activity_report(
         return Err(StateError::AgentNotRegistered);
     }
 
-    // Submitter must have >= 50,000 CLW staked (Platform Agent threshold)
+    // Submitter must have >= 50,000 CLAW staked (Platform Agent threshold)
     let stake = state.stakes.get(&tx.from).copied().unwrap_or(0);
     if stake < claw_types::state::PLATFORM_AGENT_MIN_STAKE {
         return Err(StateError::PlatformStakeTooLow {

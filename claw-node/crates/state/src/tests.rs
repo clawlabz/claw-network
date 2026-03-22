@@ -16,7 +16,7 @@ mod tests {
         let (sk, vk) = generate_keypair();
         let addr = vk.to_bytes();
         let mut state = WorldState::default();
-        state.balances.insert(addr, 100 * GAS_FEE + 1_000_000_000); // plenty of CLW
+        state.balances.insert(addr, 100 * GAS_FEE + 1_000_000_000); // plenty of CLAW
         (state, sk, addr)
     }
 
@@ -448,7 +448,7 @@ mod tests {
 
     // === PlatformActivityReport ===
 
-    /// Helper: set up a Platform Agent (registered + staked >= 50k CLW).
+    /// Helper: set up a Platform Agent (registered + staked >= 50k CLAW).
     fn setup_platform_agent() -> (WorldState, claw_crypto::ed25519_dalek::SigningKey, [u8; 32],
                                   claw_crypto::ed25519_dalek::SigningKey, [u8; 32]) {
         let (sk1, vk1) = generate_keypair();
@@ -458,7 +458,7 @@ mod tests {
         let mut state = WorldState::default();
 
         // Fund both agents generously
-        state.balances.insert(addr1, 100_000_000_000_000); // 100k CLW
+        state.balances.insert(addr1, 100_000_000_000_000); // 100k CLAW
         state.balances.insert(addr2, 100_000_000_000_000);
 
         // Register both
@@ -467,7 +467,7 @@ mod tests {
         let reg2 = AgentRegisterPayload { name: "agent2".into(), metadata: BTreeMap::new() };
         state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2)).unwrap();
 
-        // Stake 50k CLW for addr1 (Platform Agent threshold)
+        // Stake 50k CLAW for addr1 (Platform Agent threshold)
         let stake = claw_types::transaction::StakeDepositPayload { amount: 50_000_000_000_000, validator: [0u8; 32], commission_bps: 10000 };
         state.apply_tx(&make_tx(&sk1, 2, TxType::StakeDeposit, &stake)).unwrap();
 
