@@ -465,17 +465,15 @@ impl Chain {
             );
         }
 
-        // Epoch boundary: slashing + validator set rotation
+        // Epoch boundary: validator set rotation (no downtime slashing)
         if ValidatorSet::is_epoch_boundary(new_height) {
-            // Process downtime slashing — operates directly on WorldState.stakes
-            {
-                let mut slashing = std::mem::take(&mut inner.slashing);
-                slashing.process_downtime_slashing(&mut inner.state.stakes, new_height);
-                slashing.unjail_expired(new_height);
-                inner.slashing = slashing;
-            }
+            // Identify offline validators (for reward exclusion, NOT slashing)
+            let _offline = inner.slashing.process_downtime_penalties();
+            // TODO: pass offline list to next epoch's reward distribution
 
-            // Recalculate active set after slashing
+            inner.slashing.unjail_expired(new_height);
+
+            // Recalculate active set
             let stakes = inner.state.stakes.clone();
             let rep = inner.state.reputation.clone();
             let slashing_ref = inner.slashing.clone();
@@ -723,17 +721,12 @@ impl Chain {
             );
         }
 
-        // Epoch rotation check with slashing (only at epoch boundaries)
+        // Epoch rotation (no downtime slashing — only reward exclusion)
         if ValidatorSet::is_epoch_boundary(block.height) {
-            // Process downtime slashing — operates directly on WorldState.stakes
-            {
-                let mut slashing = std::mem::take(&mut inner.slashing);
-                slashing.process_downtime_slashing(&mut inner.state.stakes, block.height);
-                slashing.unjail_expired(block.height);
-                inner.slashing = slashing;
-            }
+            let _offline = inner.slashing.process_downtime_penalties();
+            inner.slashing.unjail_expired(block.height);
 
-            // Recalculate active set after slashing
+            // Recalculate active set
             let stakes = inner.state.stakes.clone();
             let rep = inner.state.reputation.clone();
             let slashing_ref = inner.slashing.clone();

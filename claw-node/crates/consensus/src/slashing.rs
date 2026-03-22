@@ -117,18 +117,20 @@ impl SlashingState {
         *self.missed_slots.entry(*validator).or_insert(0) += 1;
     }
 
-    /// Process downtime slashing at epoch boundary.
+    /// Identify offline validators at epoch boundary.
     ///
-    /// For each validator that missed > 50% of their assigned proposal slots
-    /// in this epoch, slash 1% of their stake directly in WorldState.stakes.
+    /// Validators that missed > 50% of their assigned proposal slots in this
+    /// epoch are marked as offline. They are NOT slashed or jailed — they
+    /// simply won't receive block rewards in the next epoch.
     ///
-    /// Returns a list of (validator_address, slashed_amount).
-    pub fn process_downtime_slashing(
-        &mut self,
-        stakes: &mut BTreeMap<[u8; 32], u128>,
-        current_height: u64,
-    ) -> Vec<([u8; 32], u128)> {
-        let mut slashed_validators = Vec::new();
+    /// Design rationale: downtime is not malicious behavior. Slashing is
+    /// reserved for equivocation (double-signing). Withholding rewards is
+    /// sufficient economic incentive to stay online. This aligns with
+    /// Ethereum, Polkadot, and Solana's approach.
+    ///
+    /// Returns the list of offline validator addresses.
+    pub fn process_downtime_penalties(&self) -> Vec<[u8; 32]> {
+        let mut offline_validators = Vec::new();
 
         for (validator, &assigned) in &self.assigned_slots {
             if assigned == 0 {
@@ -136,31 +138,21 @@ impl SlashingState {
             }
 
             let missed = self.missed_slots.get(validator).copied().unwrap_or(0);
-            debug_assert!(assigned > 0, "assigned slots must be nonzero after guard");
             let missed_percent = (missed * 100) / assigned;
 
             if missed_percent > DOWNTIME_THRESHOLD_PERCENT {
-                let slashed = slash_stake(stakes, validator, DOWNTIME_SLASH_BPS);
-
-                if slashed > 0 {
-                    // Jail the validator to exclude from next epoch's active set
-                    self.jailed.insert(*validator, current_height + JAIL_DURATION);
-
-                    tracing::warn!(
-                        validator = %hex::encode(validator),
-                        missed,
-                        assigned,
-                        missed_percent,
-                        slashed_amount = slashed,
-                        jail_duration = JAIL_DURATION,
-                        "Downtime slashing — validator jailed for {} blocks", JAIL_DURATION
-                    );
-                    slashed_validators.push((*validator, slashed));
-                }
+                tracing::info!(
+                    validator = %hex::encode(validator),
+                    missed,
+                    assigned,
+                    missed_percent,
+                    "Validator offline — excluded from next epoch rewards (no slash)"
+                );
+                offline_validators.push(*validator);
             }
         }
 
-        slashed_validators
+        offline_validators
     }
 
     /// Reset per-epoch counters. Called at epoch boundary after processing.
@@ -318,8 +310,8 @@ mod tests {
     }
 
     #[test]
-    fn downtime_slashing_over_threshold() {
-        let mut stakes = setup_stakes();
+    fn downtime_over_threshold_returns_offline_no_slash() {
+        let stakes = setup_stakes();
         let mut slashing = SlashingState::new();
         let addr = make_address(2);
         let original_stake = stakes[&addr];
@@ -332,22 +324,19 @@ mod tests {
             slashing.record_missed_slot(&addr);
         }
 
-        let results = slashing.process_downtime_slashing(&mut stakes, 100);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, addr);
+        let offline = slashing.process_downtime_penalties();
+        assert_eq!(offline.len(), 1);
+        assert_eq!(offline[0], addr);
 
-        let expected_slash = original_stake / 100; // 1%
-        assert_eq!(results[0].1, expected_slash);
+        // Stake should NOT be reduced (no slashing for downtime)
+        assert_eq!(stakes[&addr], original_stake);
 
-        // Validator should be jailed after downtime slashing
-        assert!(slashing.is_jailed(&addr, 100));
-        assert!(slashing.is_jailed(&addr, 100 + JAIL_DURATION - 1));
-        assert!(!slashing.is_jailed(&addr, 100 + JAIL_DURATION));
+        // Validator should NOT be jailed (no jailing for downtime)
+        assert!(!slashing.is_jailed(&addr, 100));
     }
 
     #[test]
-    fn downtime_under_threshold_no_slash() {
-        let mut stakes = setup_stakes();
+    fn downtime_under_threshold_not_offline() {
         let mut slashing = SlashingState::new();
         let addr = make_address(2);
 
@@ -359,11 +348,8 @@ mod tests {
             slashing.record_missed_slot(&addr);
         }
 
-        let results = slashing.process_downtime_slashing(&mut stakes, 100);
-        assert!(results.is_empty());
-
-        // Validator should NOT be jailed when under threshold
-        assert!(!slashing.is_jailed(&addr, 100));
+        let offline = slashing.process_downtime_penalties();
+        assert!(offline.is_empty());
     }
 
     #[test]
