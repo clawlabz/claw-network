@@ -3,7 +3,7 @@
 //! All slashing operations modify WorldState.stakes directly (the single source
 //! of truth). ValidatorSet is never mutated by slashing code.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use claw_crypto::ed25519_dalek::{Signature, VerifyingKey};
 use crate::types::{EPOCH_LENGTH, MIN_STAKE};
@@ -44,6 +44,9 @@ pub struct SlashingState {
     pub missed_slots: BTreeMap<[u8; 32], u64>,
     /// Total proposal slots assigned per validator in the current epoch.
     pub assigned_slots: BTreeMap<[u8; 32], u64>,
+    /// Permanently tracked evidence hashes to prevent replay.
+    /// Each hash is blake3(validator || height || block_hash_a || block_hash_b).
+    pub processed_evidence: BTreeSet<[u8; 32]>,
 }
 
 impl SlashingState {
@@ -70,6 +73,20 @@ impl SlashingState {
         stakes: &mut BTreeMap<[u8; 32], u128>,
         current_height: u64,
     ) -> Result<u128, &'static str> {
+        // Deduplication: compute evidence fingerprint and reject replays
+        let evidence_hash = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&evidence.validator);
+            hasher.update(&evidence.height.to_le_bytes());
+            hasher.update(&evidence.block_hash_a);
+            hasher.update(&evidence.block_hash_b);
+            let h: [u8; 32] = *hasher.finalize().as_bytes();
+            h
+        };
+        if self.processed_evidence.contains(&evidence_hash) {
+            return Err("equivocation evidence already processed");
+        }
+
         // Validate: must be two different block hashes
         if evidence.block_hash_a == evidence.block_hash_b {
             return Err("equivocation evidence has identical block hashes");
@@ -115,7 +132,8 @@ impl SlashingState {
             "Equivocation detected — validator slashed and jailed"
         );
 
-        // Store evidence
+        // Store evidence and mark as processed
+        self.processed_evidence.insert(evidence_hash);
         self.evidence.push(evidence);
 
         Ok(slashed)
@@ -201,8 +219,10 @@ impl SlashingState {
 
 /// Slash a validator's stake by the given basis points (e.g., 1000 = 10%).
 /// Operates directly on WorldState.stakes. If the remaining stake falls below
-/// MIN_STAKE, the stake entry is removed entirely.
-/// Returns the amount slashed (burned — not credited to anyone).
+/// MIN_STAKE, the stake entry is removed entirely and the **full** original
+/// stake is reported as burned (not just the percentage), because the entire
+/// amount is destroyed when the entry is removed.
+/// Returns the amount burned (not credited to anyone).
 fn slash_stake(
     stakes: &mut BTreeMap<[u8; 32], u128>,
     address: &[u8; 32],
@@ -221,14 +241,14 @@ fn slash_stake(
     let remaining = stake.saturating_sub(slash_amount);
 
     if remaining < MIN_STAKE {
-        // Remove stake entirely
+        // Remove stake entirely — the full stake is burned
         stakes.remove(address);
+        stake
     } else {
-        // Reduce stake
+        // Reduce stake — only the slash portion is burned
         *stakes.get_mut(address).unwrap() = remaining;
+        slash_amount
     }
-
-    slash_amount
 }
 
 #[cfg(test)]
@@ -415,10 +435,56 @@ mod tests {
         slashing.record_missed_slot(&addr);
         slashing.evidence.push(make_equivocation(1, [1u8; 32], [2u8; 32], 1));
 
+        // Add a processed evidence hash to verify it persists
+        slashing.processed_evidence.insert([99u8; 32]);
+
         slashing.reset_epoch_counters();
         assert!(slashing.missed_slots.is_empty());
         assert!(slashing.assigned_slots.is_empty());
         assert!(slashing.evidence.is_empty());
         // Jailed validators should NOT be cleared by epoch reset
+        // Processed evidence should NOT be cleared by epoch reset (permanent dedup)
+        assert!(!slashing.processed_evidence.is_empty());
+    }
+
+    #[test]
+    fn equivocation_replay_rejected() {
+        let mut stakes = setup_stakes();
+        let mut slashing = SlashingState::new();
+
+        let evidence1 = make_equivocation(1, [1u8; 32], [2u8; 32], 42);
+        let evidence2 = make_equivocation(1, [1u8; 32], [2u8; 32], 42);
+
+        // First report succeeds
+        assert!(slashing
+            .report_equivocation(evidence1, &mut stakes, 50)
+            .is_ok());
+
+        // Replay of the same evidence is rejected
+        let result = slashing.report_equivocation(evidence2, &mut stakes, 50);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "equivocation evidence already processed");
+    }
+
+    #[test]
+    fn equivocation_replay_survives_epoch_reset() {
+        let mut stakes = setup_stakes();
+        let mut slashing = SlashingState::new();
+
+        let evidence1 = make_equivocation(1, [1u8; 32], [2u8; 32], 42);
+        let evidence2 = make_equivocation(1, [1u8; 32], [2u8; 32], 42);
+
+        // First report succeeds
+        assert!(slashing
+            .report_equivocation(evidence1, &mut stakes, 50)
+            .is_ok());
+
+        // Reset epoch counters (simulating epoch boundary)
+        slashing.reset_epoch_counters();
+
+        // Replay after epoch reset is still rejected
+        let result = slashing.report_equivocation(evidence2, &mut stakes, 50);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "equivocation evidence already processed");
     }
 }

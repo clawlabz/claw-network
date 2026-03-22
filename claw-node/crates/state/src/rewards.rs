@@ -78,7 +78,7 @@ pub fn distribute_block_reward(
         return events;
     }
 
-    let total_weight: u64 = validators.iter().map(|(_, w)| *w).sum();
+    let total_weight: u64 = validators.iter().fold(0u64, |acc, (_, w)| acc.saturating_add(*w));
     if total_weight == 0 {
         return events;
     }

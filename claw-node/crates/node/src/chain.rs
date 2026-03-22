@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use claw_consensus::{elect_proposer, elect_fallback_proposer, quorum, SlashingState, ValidatorSet, BLOCK_TIME_SECS};
 use claw_crypto::ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
@@ -48,6 +48,9 @@ struct ChainInner {
     fast_sync_pending: bool,
     /// Bootstrap peer IDs (string representation) — fast sync only targets these.
     bootstrap_peer_ids: Vec<String>,
+    /// Monotonic timestamp of when the latest block was received/produced.
+    /// Immune to system clock manipulation since `Instant` is monotonic.
+    latest_block_received: Instant,
 }
 
 impl Chain {
@@ -168,6 +171,7 @@ impl Chain {
                 offline_validators: Vec::new(),
                 fast_sync_pending: false,
                 bootstrap_peer_ids: Vec::new(),
+                latest_block_received: Instant::now(),
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -230,13 +234,13 @@ impl Chain {
 
     /// Check if we are the fallback proposer and the primary has timed out.
     /// Returns true if elapsed time > 2x BLOCK_TIME_SECS and we are the fallback.
+    ///
+    /// Uses monotonic `Instant` (latest_block_received) instead of `SystemTime`
+    /// to prevent clock manipulation attacks where a validator sets their clock
+    /// forward to always activate as fallback.
     fn is_fallback_proposer(inner: &ChainInner) -> bool {
         let next_height = inner.latest_block.height + 1;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let elapsed = now.saturating_sub(inner.latest_block.timestamp);
+        let elapsed = inner.latest_block_received.elapsed().as_secs();
 
         // Only activate fallback after 2x block time
         if elapsed <= BLOCK_TIME_SECS * 2 {
@@ -471,6 +475,26 @@ impl Chain {
             );
         }
 
+        // Persist block to storage
+        if let Err(e) = inner.store.put_block(&block) {
+            tracing::error!(error = %e, "Failed to store block");
+            return None;
+        }
+
+        // Write state snapshot BEFORE epoch processing so it matches state_root.
+        // Epoch processing affects the NEXT block's starting state.
+        Self::sync_slashing_to_world_state(inner);
+        match borsh::to_vec(&inner.state) {
+            Ok(state_bytes) => {
+                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
+                    tracing::error!(error = %e, "Failed to store state snapshot");
+                }
+            }
+            Err(e) => {
+                tracing::error!("State serialization failed: {e}");
+            }
+        }
+
         // Epoch boundary: validator set rotation (no downtime slashing)
         if ValidatorSet::is_epoch_boundary(new_height) {
             // Identify offline validators — excluded from rewards in the NEXT epoch.
@@ -496,24 +520,18 @@ impl Chain {
                 validators = inner.validator_set.active.len(),
                 "Epoch rotation"
             );
-        }
 
-        // Persist slashing state to WorldState BEFORE writing snapshot
-        Self::sync_slashing_to_world_state(inner);
-
-        // Persist block and state snapshot (after slashing sync so snapshot is complete)
-        if let Err(e) = inner.store.put_block(&block) {
-            tracing::error!(error = %e, "Failed to store block");
-            return None;
-        }
-        match borsh::to_vec(&inner.state) {
-            Ok(state_bytes) => {
-                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                    tracing::error!(error = %e, "Failed to store state snapshot");
+            // Persist slashing state changes from epoch processing
+            Self::sync_slashing_to_world_state(inner);
+            match borsh::to_vec(&inner.state) {
+                Ok(state_bytes) => {
+                    if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
+                        tracing::error!(error = %e, "Failed to store post-epoch state snapshot");
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::error!("State serialization failed: {e}");
+                Err(e) => {
+                    tracing::error!("Post-epoch state serialization failed: {e}");
+                }
             }
         }
 
@@ -534,6 +552,7 @@ impl Chain {
         }
 
         inner.latest_block = block.clone();
+        inner.latest_block_received = Instant::now();
         Some(block)
     }
 
@@ -727,6 +746,25 @@ impl Chain {
             );
         }
 
+        // Store block
+        if let Err(e) = inner.store.put_block(block) {
+            return Err(format!("store block: {e}"));
+        }
+
+        // Write state snapshot BEFORE epoch processing so it matches state_root.
+        // Epoch processing affects the NEXT block's starting state.
+        Self::sync_slashing_to_world_state(&mut inner);
+        match borsh::to_vec(&inner.state) {
+            Ok(state_bytes) => {
+                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
+                    tracing::error!(error = %e, "Failed to store state snapshot");
+                }
+            }
+            Err(e) => {
+                tracing::error!("State serialization failed: {e}");
+            }
+        }
+
         // Epoch rotation (no downtime slashing — only reward exclusion)
         if ValidatorSet::is_epoch_boundary(block.height) {
             inner.offline_validators = inner.slashing.process_downtime_penalties();
@@ -745,23 +783,18 @@ impl Chain {
             inner.slashing.reset_epoch_counters();
             // Reset uptime counters for new epoch
             inner.state.validator_uptime.clear();
-        }
 
-        // Persist slashing state to WorldState BEFORE writing snapshot
-        Self::sync_slashing_to_world_state(&mut inner);
-
-        // Store block and state snapshot (after slashing sync so snapshot is complete)
-        if let Err(e) = inner.store.put_block(block) {
-            return Err(format!("store block: {e}"));
-        }
-        match borsh::to_vec(&inner.state) {
-            Ok(state_bytes) => {
-                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                    tracing::error!(error = %e, "Failed to store state snapshot");
+            // Persist slashing state changes from epoch processing
+            Self::sync_slashing_to_world_state(&mut inner);
+            match borsh::to_vec(&inner.state) {
+                Ok(state_bytes) => {
+                    if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
+                        tracing::error!(error = %e, "Failed to store post-epoch state snapshot");
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::error!("State serialization failed: {e}");
+                Err(e) => {
+                    tracing::error!("Post-epoch state serialization failed: {e}");
+                }
             }
         }
 
@@ -780,6 +813,7 @@ impl Chain {
         metrics::BLOCK_HEIGHT.set(block.height as f64);
 
         inner.latest_block = block.clone();
+        inner.latest_block_received = Instant::now();
         Ok(())
     }
 
@@ -912,8 +946,9 @@ impl Chain {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
         match request {
             SyncRequest::GetBlocks { from_height, count } => {
+                let capped_count = (*count).min(100) as u64;
                 let mut blocks = Vec::new();
-                for h in *from_height..(*from_height + *count as u64) {
+                for h in *from_height..(*from_height + capped_count) {
                     if h == inner.latest_block.height {
                         blocks.push(inner.latest_block.clone());
                     } else if let Ok(Some(block)) = inner.store.get_block(h) {
@@ -1021,7 +1056,7 @@ impl Chain {
                     None
                 }
             }
-            SyncResponse::StateSnapshot { height, state_root, state_data, latest_block, genesis_hash } => {
+            SyncResponse::StateSnapshot { height, state_root: _, state_data, latest_block, genesis_hash } => {
                 tracing::info!(
                     snapshot_height = height,
                     state_data_size = state_data.len(),
@@ -1041,15 +1076,59 @@ impl Chain {
                     return None;
                 }
 
+                // --- Verify the snapshot's latest_block against OUR validator set ---
+                // This prevents an attacker from fabricating a block with a fake
+                // proposer and self-signed state_root.
+
+                // 1. Verify block hash is self-consistent
+                if !latest_block.verify_hash() {
+                    tracing::warn!("Snapshot rejected: latest_block has invalid hash");
+                    return None;
+                }
+
+                // 2. Check proposer is in our CURRENT validator set (before replacement)
+                let is_known_validator = inner.validator_set.active.iter()
+                    .any(|v| v.address == latest_block.validator);
+                if !is_known_validator {
+                    tracing::warn!(
+                        proposer = %hex::encode(latest_block.validator),
+                        "Snapshot rejected: block proposer not in our validator set"
+                    );
+                    return None;
+                }
+
+                // 3. Verify the proposer's signature on the block
+                {
+                    let has_valid_proposer_sig = if let Ok(vk) = VerifyingKey::from_bytes(&latest_block.validator) {
+                        latest_block.signatures.iter().any(|(addr, sig_bytes)| {
+                            *addr == latest_block.validator && {
+                                let sig = Signature::from_bytes(sig_bytes);
+                                vk.verify_strict(&latest_block.hash, &sig).is_ok()
+                            }
+                        })
+                    } else {
+                        false
+                    };
+
+                    if !has_valid_proposer_sig {
+                        tracing::warn!(
+                            proposer = %hex::encode(latest_block.validator),
+                            "Snapshot rejected: proposer signature missing or invalid"
+                        );
+                        return None;
+                    }
+                }
+
                 match borsh::from_slice::<claw_state::WorldState>(state_data) {
                     Ok(state) => {
-                        // Verify state_root by recomputing from deserialized state
+                        // Verify state_root matches the BLOCK's state_root (not the response field).
+                        // The response's state_root could be manipulated independently.
                         let computed_root = state.state_root();
-                        if computed_root != *state_root {
+                        if computed_root != latest_block.state_root {
                             tracing::error!(
-                                expected = %hex::encode(state_root),
+                                block_state_root = %hex::encode(latest_block.state_root),
                                 computed = %hex::encode(computed_root),
-                                "State snapshot verification failed: state_root mismatch"
+                                "State snapshot verification failed: state_root does not match block"
                             );
                             return None;
                         }
@@ -1078,6 +1157,7 @@ impl Chain {
                         inner.state = state;
                         // Update latest_block from snapshot to re-establish chain continuity
                         inner.latest_block = latest_block.clone();
+                        inner.latest_block_received = Instant::now();
                         if let Err(e) = inner.store.put_block(latest_block) {
                             tracing::error!(error = %e, "Failed to store snapshot block");
                         }
