@@ -16,14 +16,65 @@ use crate::world::{
 /// Prevents infinite loops in pure Wasm computation that bypass host-function fuel metering.
 const CONTRACT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Execute a contract in a scoped thread with a timeout.
+/// Lightweight owned snapshot of chain state, allowing the execution thread to
+/// be fully detached (no borrowed references).
+struct ChainStateSnapshot {
+    balances: std::collections::BTreeMap<[u8; 32], u128>,
+    agent_scores: std::collections::BTreeMap<[u8; 32], u64>,
+    registered_agents: std::collections::BTreeSet<[u8; 32]>,
+    contract_storage: std::collections::BTreeMap<[u8; 32], std::collections::BTreeMap<Vec<u8>, Vec<u8>>>,
+}
+
+impl ChainStateSnapshot {
+    /// Capture the subset of chain state needed for VM execution.
+    fn capture(state: &dyn claw_vm::ChainState, addresses: &[[u8; 32]]) -> Self {
+        let mut balances = std::collections::BTreeMap::new();
+        let mut agent_scores = std::collections::BTreeMap::new();
+        let mut registered_agents = std::collections::BTreeSet::new();
+        for addr in addresses {
+            balances.insert(*addr, state.get_balance(addr));
+            agent_scores.insert(*addr, state.get_agent_score(addr));
+            if state.get_agent_registered(addr) {
+                registered_agents.insert(*addr);
+            }
+        }
+        Self {
+            balances,
+            agent_scores,
+            registered_agents,
+            contract_storage: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl claw_vm::ChainState for ChainStateSnapshot {
+    fn get_balance(&self, address: &[u8; 32]) -> u128 {
+        self.balances.get(address).copied().unwrap_or(0)
+    }
+    fn get_agent_score(&self, address: &[u8; 32]) -> u64 {
+        self.agent_scores.get(address).copied().unwrap_or(0)
+    }
+    fn get_agent_registered(&self, address: &[u8; 32]) -> bool {
+        self.registered_agents.contains(address)
+    }
+    fn get_contract_storage(&self, contract: &[u8; 32], key: &[u8]) -> Option<Vec<u8>> {
+        self.contract_storage
+            .get(contract)
+            .and_then(|m| m.get(key).cloned())
+    }
+}
+
+/// Execute a contract in a detached thread with a timeout.
 ///
 /// The VM's fuel system only meters host function calls. Pure Wasm computation
 /// (loops, arithmetic) is unmetered, so a malicious contract could infinite-loop.
-/// This wrapper runs the execution in a separate thread and aborts if it exceeds
-/// the timeout.
+/// This wrapper runs the execution in a detached `std::thread::spawn` and
+/// abandons the thread on timeout. Unlike `thread::scope`, a detached thread
+/// does not block the caller — on timeout, the caller returns immediately with
+/// an error while the orphaned thread eventually terminates (wasmer memory is
+/// freed when the thread drops).
 fn execute_with_timeout(
-    engine: &claw_vm::VmEngine,
+    _engine: &claw_vm::VmEngine,
     code: &[u8],
     method: &str,
     args: &[u8],
@@ -33,18 +84,23 @@ fn execute_with_timeout(
 ) -> Result<claw_vm::ExecutionResult, claw_vm::VmError> {
     let (tx, rx) = std::sync::mpsc::channel();
 
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            let result = engine.execute(code, method, args, ctx, storage, chain_state);
-            // Ignore send error — receiver may have timed out and been dropped
-            let _ = tx.send(result);
-        });
+    // Snapshot chain state and clone all data so the thread owns everything.
+    let snapshot = ChainStateSnapshot::capture(chain_state, &[ctx.caller, ctx.contract_address]);
+    let code = code.to_vec();
+    let method = method.to_string();
+    let args = args.to_vec();
 
-        rx.recv_timeout(CONTRACT_EXECUTION_TIMEOUT)
-            .unwrap_or(Err(claw_vm::VmError::ExecutionFailed(
-                format!("contract execution timed out after {}s", CONTRACT_EXECUTION_TIMEOUT.as_secs()),
-            )))
-    })
+    std::thread::spawn(move || {
+        let engine = claw_vm::VmEngine::new();
+        let result = engine.execute(&code, &method, &args, ctx, storage, &snapshot);
+        // Ignore send error — receiver may have timed out and been dropped
+        let _ = tx.send(result);
+    });
+
+    rx.recv_timeout(CONTRACT_EXECUTION_TIMEOUT)
+        .unwrap_or(Err(claw_vm::VmError::ExecutionFailed(
+            format!("contract execution timed out after {}s", CONTRACT_EXECUTION_TIMEOUT.as_secs()),
+        )))
 }
 
 /// AgentRegister: register a new agent identity.
@@ -243,6 +299,12 @@ pub fn handle_reputation_attest(
 ) -> Result<(), StateError> {
     let payload = ReputationAttestPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Global cap on reputation records to prevent unbounded growth
+    const MAX_REPUTATION_RECORDS: usize = 100_000;
+    if state.reputation.len() >= MAX_REPUTATION_RECORDS {
+        return Err(StateError::StakeError("reputation attestation limit reached".into()));
+    }
 
     if tx.from == payload.to {
         return Err(StateError::SelfAttestation);
@@ -854,6 +916,12 @@ pub fn handle_change_delegation(state: &mut WorldState, tx: &Transaction) -> Res
         )));
     }
 
+    if payload.new_owner == payload.validator {
+        return Err(StateError::StakeError(
+            "new_owner cannot be the same as validator (use self-stake instead)".into(),
+        ));
+    }
+
     // Validator must have an existing stake
     let stake = state.stakes.get(&payload.validator).copied().unwrap_or(0);
     if stake == 0 {
@@ -968,6 +1036,13 @@ pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result
         state.stake_commissions.remove(&validator_addr);
     } else {
         state.stakes.insert(validator_addr, remaining);
+    }
+
+    // Cap unbonding entries per address to prevent spam
+    const MAX_UNBONDING_PER_ADDRESS: usize = 100;
+    let pending = state.unbonding_queue.iter().filter(|e| e.address == validator_addr).count();
+    if pending >= MAX_UNBONDING_PER_ADDRESS {
+        return Err(StateError::StakeError("too many pending unbonding entries".into()));
     }
 
     // Create unbonding entry — funds return to the sender (owner)

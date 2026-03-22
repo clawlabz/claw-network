@@ -77,6 +77,25 @@ impl Chain {
                 let block = store.get_block(height)?.expect("block must exist");
                 tracing::info!(height, "Loaded chain from storage");
 
+                // Verify state snapshot integrity against the latest block's state_root.
+                let computed_root = state.state_root();
+                if computed_root != block.state_root {
+                    tracing::error!(
+                        block_root = %hex::encode(block.state_root),
+                        computed_root = %hex::encode(computed_root),
+                        height,
+                        "State snapshot does not match block state_root — data is corrupted. \
+                         Delete chain.redb and restart to resync from genesis."
+                    );
+                    anyhow::bail!(
+                        "State snapshot mismatch at height {height}: block state_root={} computed={} — \
+                         delete {:?} and restart",
+                        hex::encode(block.state_root),
+                        hex::encode(computed_root),
+                        db_path,
+                    );
+                }
+
                 // Get genesis hash from block 0
                 let gen_hash = store.get_block(0)?
                     .map(|b| b.hash)
@@ -215,6 +234,12 @@ impl Chain {
         }
 
         let tx_hash = tx.hash();
+
+        // Reject duplicate transactions already in the mempool
+        if inner.mempool.iter().any(|m| m.hash() == tx_hash) {
+            return Err("duplicate transaction in mempool".into());
+        }
+
         inner.mempool.push(tx);
         metrics::MEMPOOL_SIZE.set(inner.mempool.len() as f64);
         Ok(tx_hash)
@@ -367,6 +392,14 @@ impl Chain {
         // Sort by (from, nonce) for deterministic ordering
         pending.sort_by(|a, b| a.from.cmp(&b.from).then(a.nonce.cmp(&b.nonce)));
 
+        // Cap per-block transaction count
+        const MAX_BLOCK_TXS: usize = 500;
+        if pending.len() > MAX_BLOCK_TXS {
+            // Return excess transactions to mempool
+            let excess = pending.split_off(MAX_BLOCK_TXS);
+            inner.mempool = excess;
+        }
+
         for tx in pending {
             match inner.state.apply_tx(&tx) {
                 Ok(fee) => {
@@ -479,23 +512,19 @@ impl Chain {
             );
         }
 
-        // Persist block to storage
-        if let Err(e) = inner.store.put_block(&block) {
-            tracing::error!(error = %e, "Failed to store block");
-            return None;
-        }
-
-        // Write state snapshot BEFORE epoch processing so it matches state_root.
-        // Epoch processing affects the NEXT block's starting state.
+        // Atomically persist block + state snapshot in a single transaction.
+        // This prevents inconsistency on crash between two separate writes.
         Self::sync_slashing_to_world_state(inner);
         match borsh::to_vec(&inner.state) {
             Ok(state_bytes) => {
-                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                    tracing::error!(error = %e, "Failed to store state snapshot");
+                if let Err(e) = inner.store.put_block_and_snapshot(&block, &state_bytes) {
+                    tracing::error!(error = %e, "Failed to store block and snapshot");
+                    return None;
                 }
             }
             Err(e) => {
                 tracing::error!("State serialization failed: {e}");
+                return None;
             }
         }
 
@@ -589,6 +618,21 @@ impl Chain {
         // Verify block hash
         if !block.verify_hash() {
             return Err("invalid block hash".into());
+        }
+
+        // Reject blocks with timestamps too far in the future (30s clock skew tolerance)
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        if block.timestamp > now + 30 {
+            return Err(format!("block timestamp {} is in the future", block.timestamp));
+        }
+        // Reject timestamp regression
+        if block.timestamp < inner.latest_block.timestamp {
+            return Err("block timestamp regresses".into());
+        }
+
+        // Reject oversized blocks
+        if block.transactions.len() > 500 {
+            return Err(format!("block has too many transactions: {}", block.transactions.len()));
         }
 
         // Verify BFT signatures for finality
@@ -756,22 +800,16 @@ impl Chain {
             );
         }
 
-        // Store block
-        if let Err(e) = inner.store.put_block(block) {
-            return Err(format!("store block: {e}"));
-        }
-
-        // Write state snapshot BEFORE epoch processing so it matches state_root.
-        // Epoch processing affects the NEXT block's starting state.
+        // Atomically persist block + state snapshot in a single transaction.
         Self::sync_slashing_to_world_state(&mut inner);
         match borsh::to_vec(&inner.state) {
             Ok(state_bytes) => {
-                if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                    tracing::error!(error = %e, "Failed to store state snapshot");
+                if let Err(e) = inner.store.put_block_and_snapshot(block, &state_bytes) {
+                    return Err(format!("store block and snapshot: {e}"));
                 }
             }
             Err(e) => {
-                tracing::error!("State serialization failed: {e}");
+                return Err(format!("state serialization failed: {e}"));
             }
         }
 
@@ -958,7 +996,8 @@ impl Chain {
             SyncRequest::GetBlocks { from_height, count } => {
                 let capped_count = (*count).min(100) as u64;
                 let mut blocks = Vec::new();
-                for h in *from_height..(*from_height + capped_count) {
+                let end = from_height.saturating_add(capped_count);
+                for h in *from_height..end {
                     if h == inner.latest_block.height {
                         blocks.push(inner.latest_block.clone());
                     } else if let Ok(Some(block)) = inner.store.get_block(h) {
@@ -1423,9 +1462,19 @@ impl Chain {
             fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
         };
 
-        let engine = claw_vm::VmEngine::new();
-        engine
-            .execute(&code, method, args, ctx, storage, &snapshot)
+        // Execute with timeout to prevent infinite-loop contracts from blocking
+        let method_owned = method.to_string();
+        let args_owned = args.to_vec();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let engine = claw_vm::VmEngine::new();
+            let result = engine.execute(&code, &method_owned, &args_owned, ctx, storage, &snapshot);
+            let _ = tx.send(result);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or(Err(claw_vm::VmError::ExecutionFailed(
+                "contract view execution timed out after 5s".to_string(),
+            )))
             .map_err(|e| e.to_string())
     }
 

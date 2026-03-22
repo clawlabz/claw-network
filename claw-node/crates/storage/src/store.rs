@@ -92,36 +92,64 @@ impl ChainStore {
             borsh::to_vec(block).map_err(|e| StoreError::Serialize(e.to_string()))?;
 
         let write_txn = self.db.begin_write()?;
+        Self::write_block_tables(&write_txn, block, &block_bytes)?;
+        write_txn.commit()?;
+
+        Ok(())
+    }
+
+    /// Atomically store a block AND state snapshot in a single transaction.
+    /// Prevents inconsistency where a block is persisted but the snapshot is not
+    /// (or vice versa) due to a crash between two separate writes.
+    pub fn put_block_and_snapshot(&self, block: &Block, snapshot: &[u8]) -> Result<(), StoreError> {
+        let block_bytes =
+            borsh::to_vec(block).map_err(|e| StoreError::Serialize(e.to_string()))?;
+
+        let write_txn = self.db.begin_write()?;
+        Self::write_block_tables(&write_txn, block, &block_bytes)?;
         {
-            let mut blocks = write_txn.open_table(BLOCKS)?;
-            blocks.insert(block.height, block_bytes.as_slice())?;
-
-            // Update tx index + address tx index
-            let mut tx_index = write_txn.open_table(TX_INDEX)?;
-            let mut addr_tx_index = write_txn.open_table(ADDRESS_TX_INDEX)?;
-
-            for (tx_idx, tx) in block.transactions.iter().enumerate() {
-                let tx_hash = tx.hash();
-                tx_index.insert(tx_hash.as_slice(), block.height)?;
-
-                let entry = (block.height, tx_idx as u32);
-
-                // Index the sender (from)
-                Self::append_address_entry(&mut addr_tx_index, &tx.from, entry)?;
-
-                // Index the recipient (to) if one exists in the payload
-                if let Some(to_addr) = Self::extract_to_address(tx.tx_type, &tx.payload) {
-                    if to_addr != tx.from {
-                        Self::append_address_entry(&mut addr_tx_index, &to_addr, entry)?;
-                    }
-                }
-            }
-
-            // Update latest height
             let mut meta = write_txn.open_table(META)?;
-            meta.insert(META_LATEST_HEIGHT, block.height.to_le_bytes().as_slice())?;
+            meta.insert(META_STATE_SNAPSHOT, snapshot)?;
         }
         write_txn.commit()?;
+
+        Ok(())
+    }
+
+    /// Internal helper: write block data, tx indexes, and latest height into an
+    /// existing write transaction. Shared by `put_block` and `put_block_and_snapshot`.
+    fn write_block_tables(
+        write_txn: &redb::WriteTransaction,
+        block: &Block,
+        block_bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        let mut blocks = write_txn.open_table(BLOCKS)?;
+        blocks.insert(block.height, block_bytes)?;
+
+        // Update tx index + address tx index
+        let mut tx_index = write_txn.open_table(TX_INDEX)?;
+        let mut addr_tx_index = write_txn.open_table(ADDRESS_TX_INDEX)?;
+
+        for (tx_idx, tx) in block.transactions.iter().enumerate() {
+            let tx_hash = tx.hash();
+            tx_index.insert(tx_hash.as_slice(), block.height)?;
+
+            let entry = (block.height, tx_idx as u32);
+
+            // Index the sender (from)
+            Self::append_address_entry(&mut addr_tx_index, &tx.from, entry)?;
+
+            // Index the recipient (to) if one exists in the payload
+            if let Some(to_addr) = Self::extract_to_address(tx.tx_type, &tx.payload) {
+                if to_addr != tx.from {
+                    Self::append_address_entry(&mut addr_tx_index, &to_addr, entry)?;
+                }
+            }
+        }
+
+        // Update latest height
+        let mut meta = write_txn.open_table(META)?;
+        meta.insert(META_LATEST_HEIGHT, block.height.to_le_bytes().as_slice())?;
 
         Ok(())
     }

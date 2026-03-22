@@ -101,13 +101,12 @@ fn write_bytes(env: &FunctionEnvMut<HostEnv>, ptr: u32, data: &[u8]) -> Result<(
     Ok(())
 }
 
-/// Helper to deduct fuel inside a host function. Panics (traps) on exhaustion.
 /// Deduct fuel for a host function call.
 ///
-/// Panics on fuel exhaustion. This is intentional — wasmer catches Rust panics
-/// from host functions and converts them to `RuntimeError`, which is then
-/// returned from `Instance::call()` as an error. The caller (`execute_with_timeout`)
-/// handles this via `thread::scope` + `recv_timeout`.
+/// Panics on fuel exhaustion. Wasmer's singlepass backend catches panics from
+/// host functions via `catch_unwind` and converts them into `RuntimeError`,
+/// which is returned from `Instance::call()`. The caller in `engine.rs`
+/// detects "fuel" in the error message and maps it to `VmError::OutOfFuel`.
 fn deduct_fuel(env: &FunctionEnvMut<HostEnv>, cost: u64) {
     let data = env.data();
     if let Err(msg) = HostEnv::consume_fuel(
@@ -333,7 +332,12 @@ pub fn host_log(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
     };
     let msg = String::from_utf8_lossy(&bytes).to_string();
     tracing::info!(target: "claw_vm", "contract log: {}", msg);
-    env.data().logs.lock().unwrap().push(msg);
+    const MAX_LOG_ENTRIES: usize = 100;
+    let mut logs = env.data().logs.lock().unwrap();
+    if logs.len() >= MAX_LOG_ENTRIES {
+        return; // silently drop excess log entries
+    }
+    logs.push(msg);
 }
 
 /// Set the return data for the execution result.
@@ -347,6 +351,9 @@ pub fn host_return_data(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
 }
 
 /// Abort execution with an error message.
+///
+/// Panics to trap execution. Wasmer catches the panic from host functions
+/// and converts it into a `RuntimeError` returned from `Instance::call()`.
 pub fn host_abort(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
     let bytes = read_bytes(&env, ptr, len).unwrap_or_default();
     let msg = String::from_utf8_lossy(&bytes).to_string();
