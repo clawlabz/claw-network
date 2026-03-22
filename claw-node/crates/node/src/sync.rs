@@ -8,7 +8,6 @@
 use std::path::Path;
 
 use claw_storage::ChainStore;
-use claw_types::Block;
 
 use crate::chain::Chain;
 
@@ -111,50 +110,6 @@ pub fn log_fast_sync_intent() {
     );
 }
 
-/// For Fast Sync mode: verify that a received state snapshot's state_root matches
-/// the hash of the state data.
-///
-/// Returns `true` if the snapshot is valid, `false` otherwise.
-pub fn verify_state_snapshot(state_root: &[u8; 32], state_data: &[u8]) -> bool {
-    let computed = blake3::hash(state_data);
-    computed.as_bytes() == state_root
-}
-
-/// Build a state snapshot response from the current chain store and latest block info.
-///
-/// Returns `None` if no state snapshot is available.
-pub fn build_state_snapshot_response(
-    store: &ChainStore,
-    latest_height: u64,
-    latest_state_root: [u8; 32],
-    latest_block: Block,
-) -> Option<claw_p2p::SyncResponse> {
-    match store.get_state_snapshot() {
-        Ok(Some(state_data)) => {
-            tracing::debug!(
-                height = latest_height,
-                state_data_size = state_data.len(),
-                "Serving state snapshot to peer"
-            );
-            Some(claw_p2p::SyncResponse::StateSnapshot {
-                height: latest_height,
-                state_root: latest_state_root,
-                state_data,
-                latest_block,
-                genesis_hash: [0u8; 32], // unused — chain.rs handler provides the real genesis_hash
-            })
-        }
-        Ok(None) => {
-            tracing::warn!("State snapshot requested but none available");
-            None
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to read state snapshot from storage");
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,13 +130,5 @@ mod tests {
         assert_eq!(SyncMode::Full.to_string(), "full");
         assert_eq!(SyncMode::Fast.to_string(), "fast");
         assert_eq!(SyncMode::Light.to_string(), "light");
-    }
-
-    #[test]
-    fn test_verify_state_snapshot() {
-        let data = b"test state data";
-        let hash: [u8; 32] = *blake3::hash(data).as_bytes();
-        assert!(verify_state_snapshot(&hash, data));
-        assert!(!verify_state_snapshot(&[0u8; 32], data));
     }
 }

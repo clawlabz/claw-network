@@ -10,10 +10,8 @@ use crate::types::{EPOCH_LENGTH, MIN_STAKE};
 /// Penalty for equivocation (double-signing): 10% of stake (1000 basis points).
 const EQUIVOCATION_SLASH_BPS: u64 = 1000;
 
-/// Penalty for downtime (missed proposals): 1% of stake (100 basis points).
-const DOWNTIME_SLASH_BPS: u64 = 100;
-
-/// Threshold for downtime slashing: validator must miss > 50% of their slots.
+/// Threshold for downtime: validator must miss > 50% of their slots to be
+/// excluded from rewards. No slashing — only reward withholding.
 const DOWNTIME_THRESHOLD_PERCENT: u64 = 50;
 
 /// Jail duration in blocks (1 epoch).

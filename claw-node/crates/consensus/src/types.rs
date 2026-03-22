@@ -53,17 +53,6 @@ impl Default for WeightConfig {
     }
 }
 
-/// Information about a staked validator candidate.
-#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
-pub struct StakeInfo {
-    /// Validator address (Ed25519 public key).
-    pub address: [u8; 32],
-    /// Amount of CLAW staked (in base units, 9 decimals).
-    pub amount: u128,
-    /// Block height at which the stake was last updated.
-    pub staked_at: u64,
-}
-
 /// An active validator with computed weight.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct ActiveValidator {

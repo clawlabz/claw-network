@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use claw_consensus::{elect_proposer, elect_fallback_proposer, quorum, SlashingState, ValidatorSet, BLOCK_TIME_SECS};
 use claw_crypto::ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
-use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, P2pNetwork, SyncRequest, SyncResponse};
+use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, SyncRequest, SyncResponse};
 use claw_state::WorldState;
 use claw_storage::ChainStore;
 use claw_types::block::Block;
@@ -41,6 +41,9 @@ struct ChainInner {
     slashing: SlashingState,
     /// Pending votes for the latest block, keyed by voter address.
     pending_votes: std::collections::HashMap<[u8; 32], [u8; 64]>,
+    /// Validators identified as offline at the last epoch boundary.
+    /// These are excluded from block reward distribution during the current epoch.
+    offline_validators: Vec<[u8; 32]>,
     /// Whether to use fast sync (state snapshot) on first peer connection.
     fast_sync_pending: bool,
     /// Bootstrap peer IDs (string representation) — fast sync only targets these.
@@ -162,6 +165,7 @@ impl Chain {
                 genesis_hash,
                 slashing,
                 pending_votes: std::collections::HashMap::new(),
+                offline_validators: Vec::new(),
                 fast_sync_pending: false,
                 bootstrap_peer_ids: Vec::new(),
             })),
@@ -374,11 +378,13 @@ impl Chain {
             }
         }
 
-        // Distribute block rewards to validators (even for empty blocks)
+        // Distribute block rewards to validators (even for empty blocks).
+        // Exclude validators identified as offline in the previous epoch.
         let validators: Vec<([u8; 32], u64)> = inner
             .validator_set
             .active
             .iter()
+            .filter(|v| !inner.offline_validators.contains(&v.address))
             .map(|v| (v.address, v.weight))
             .collect();
         let reward_events = claw_state::rewards::distribute_block_reward(
@@ -467,9 +473,8 @@ impl Chain {
 
         // Epoch boundary: validator set rotation (no downtime slashing)
         if ValidatorSet::is_epoch_boundary(new_height) {
-            // Identify offline validators (for reward exclusion, NOT slashing)
-            let _offline = inner.slashing.process_downtime_penalties();
-            // TODO: pass offline list to next epoch's reward distribution
+            // Identify offline validators — excluded from rewards in the NEXT epoch.
+            inner.offline_validators = inner.slashing.process_downtime_penalties();
 
             inner.slashing.unjail_expired(new_height);
 
@@ -648,12 +653,13 @@ impl Chain {
             total_fees += fee;
         }
 
-        // Distribute block rewards to validators
+        // Distribute block rewards to validators, excluding offline ones.
         // (return values ignored — remote block already carries events)
         let validators: Vec<([u8; 32], u64)> = inner
             .validator_set
             .active
             .iter()
+            .filter(|v| !inner.offline_validators.contains(&v.address))
             .map(|v| (v.address, v.weight))
             .collect();
         let _ = claw_state::rewards::distribute_block_reward(
@@ -723,7 +729,7 @@ impl Chain {
 
         // Epoch rotation (no downtime slashing — only reward exclusion)
         if ValidatorSet::is_epoch_boundary(block.height) {
-            let _offline = inner.slashing.process_downtime_penalties();
+            inner.offline_validators = inner.slashing.process_downtime_penalties();
             inner.slashing.unjail_expired(block.height);
 
             // Recalculate active set
@@ -775,110 +781,6 @@ impl Chain {
 
         inner.latest_block = block.clone();
         Ok(())
-    }
-
-    /// Run the main loop: block production + P2P event processing.
-    pub async fn run_with_p2p(&self, mut p2p: P2pNetwork, mut event_rx: mpsc::UnboundedReceiver<NetworkEvent>) {
-        let block_interval = tokio::time::Duration::from_secs(3);
-        let mut block_timer = tokio::time::interval(block_interval);
-        // Periodic sync retry: if we fall behind, re-request from connected peers
-        let mut sync_retry_timer = tokio::time::interval(tokio::time::Duration::from_secs(15));
-
-        loop {
-            tokio::select! {
-                _ = sync_retry_timer.tick() => {
-                    // Ask all connected peers for their status to trigger catch-up
-                    let our_height = self.get_block_number();
-                    if our_height == 0 || p2p.connected_peer_count() > 0 {
-                        for peer in p2p.connected_peers() {
-                            p2p.send_sync_request(&peer, SyncRequest::GetStatus);
-                        }
-                    }
-                }
-                _ = block_timer.tick() => {
-                    // Try to produce a block
-                    let maybe_block = {
-                        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
-                        Self::produce_block(&mut inner)
-                    };
-                    if let Some(block) = maybe_block {
-                        // Broadcast to peers
-                        p2p.broadcast_block(&block);
-                    }
-                }
-                Some(event) = event_rx.recv() => {
-                    match event {
-                        NetworkEvent::NewTx(tx) => {
-                            // Add to mempool if valid
-                            match self.submit_tx(tx) {
-                                Ok(hash) => {
-                                    tracing::debug!(tx_hash = %hex::encode(hash), "Accepted tx from network");
-                                }
-                                Err(e) => {
-                                    tracing::debug!(error = %e, "Rejected tx from network");
-                                }
-                            }
-                        }
-                        NetworkEvent::NewBlock(block) => {
-                            match self.apply_remote_block(&block) {
-                                Ok(()) => {
-                                    // If we are a validator, sign and broadcast our vote
-                                    let maybe_vote = {
-                                        let inner = self.inner.lock().expect("chain state mutex poisoned");
-                                        Self::create_vote_for_block(&inner, &block)
-                                    };
-                                    if let Some(vote) = maybe_vote {
-                                        p2p.broadcast_vote(&vote);
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::debug!(error = %e, "Rejected block from network");
-                                }
-                            }
-                        }
-                        NetworkEvent::Vote(vote) => {
-                            let mut inner = self.inner.lock().expect("chain state mutex poisoned");
-                            Self::apply_vote(&mut inner, &vote);
-                        }
-                        NetworkEvent::SyncRequest { peer, request, channel, .. } => {
-                            let response = self.handle_sync_request(&request);
-                            tracing::debug!(?peer, "Sync request handled, sending response");
-                            p2p.send_sync_response(channel, response);
-                        }
-                        NetworkEvent::SyncResponse { peer, response } => {
-                            if let Some(follow_up) = self.handle_sync_response(&response) {
-                                tracing::debug!(?peer, "Sending follow-up sync request");
-                                p2p.send_sync_request(&peer, follow_up);
-                            }
-                        }
-                        NetworkEvent::PeerConnected(peer) => {
-                            let request = {
-                                let mut inner = self.inner.lock().expect("chain state mutex poisoned");
-                                if inner.fast_sync_pending {
-                                    let peer_str = peer.to_string();
-                                    let is_bootstrap = inner.bootstrap_peer_ids.iter().any(|id| id == &peer_str);
-                                    if is_bootstrap {
-                                        inner.fast_sync_pending = false;
-                                        tracing::info!(%peer, "Fast sync: requesting state snapshot from bootstrap peer");
-                                        SyncRequest::GetStateSnapshot
-                                    } else {
-                                        tracing::info!(%peer, "Fast sync pending — skipping non-bootstrap peer, sending GetStatus");
-                                        SyncRequest::GetStatus
-                                    }
-                                } else {
-                                    tracing::info!(%peer, "Peer connected — requesting chain status");
-                                    SyncRequest::GetStatus
-                                }
-                            };
-                            p2p.send_sync_request(&peer, request);
-                        }
-                        NetworkEvent::PeerDisconnected(peer) => {
-                            tracing::info!(%peer, "Peer disconnected");
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Run the block production loop (single-node mode, no P2P).
@@ -1329,11 +1231,6 @@ impl Chain {
             }
         }
         None
-    }
-
-    /// Get validator count.
-    pub fn get_validator_count(&self) -> usize {
-        self.inner.lock().expect("chain state mutex poisoned").validator_set.active.len()
     }
 
     /// Get P2P connected peer count.
