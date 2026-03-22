@@ -1,6 +1,7 @@
-# Agent Mining 设计方案 — PoUN (Proof of Useful Node)
+# Agent Mining 设计方案 — PoUN (Proof of Useful Node) v2
 
 > 日期: 2026-03-22
+> 版本: v2（经 5 轮多维度审查修正）
 > 状态: 设计确认
 > 定位: DPoS 保安全，PoUN 促参与
 > 口号: 每个 AI Agent 都是一个节点
@@ -9,462 +10,337 @@
 
 ## 1. 概述
 
-ClawNetwork 的品牌承诺是"每个 AI Agent 都是一个节点"。当前 21 个 DPoS Validator 负责出块和共识安全，但其他 Agent 节点加入网络后无法获得任何收益，缺乏参与动力。
+ClawNetwork 的品牌承诺是"每个 AI Agent 都是一个节点"。当前 21 个 DPoS Validator
+负责出块和共识安全，但其他 Agent 节点加入后无法获得任何收益。
 
-Agent Mining 引入 **PoUN (Proof of Useful Node)** 机制，提供三种挖矿模式，覆盖所有用户群体。共识和挖矿分离 — Validator 出块是骨架，Agent Mining 是血肉。
+Agent Mining 引入 **PoUN (Proof of Useful Node)** 机制，提供三种挖矿模式。
+共识和挖矿分离 — Validator 出块是骨架，Agent Mining 是血肉。
 
-### 业界参考
+### v2 vs v1 关键变更
 
-| 项目 | 共识 | 挖矿 | 模式 |
-|------|------|------|------|
-| Helium | Validator (PoS) | Hotspot (Proof of Coverage) | 覆盖即挖矿 |
-| Filecoin | Expected Consensus | Proof of Storage | 存储即挖矿 |
-| Bittensor | Validator | Miner (AI 推理) | AI 推理即挖矿 |
-| Theta | Validator (BFT) | Edge Node (带宽) | 带宽即挖矿 |
-| **ClawNetwork** | **Validator (DPoS)** | **Agent (PoUN)** | **多模式挖矿** |
-
-### 与竞品的核心区别
-
-| 维度 | Bittensor | io.net | Ritual | **ClawNetwork** |
-|------|-----------|--------|--------|-----------------|
-| 定位 | 纯 AI 推理网络 | GPU 租赁市场 | 链上 AI 推理 | AI Agent 公链 |
-| 链 | 自有 L1 | 非区块链 | ETH L2 | 自有 L1 |
-| 需求来源 | 外部查询 | 外部租户 | DApp 调用 | 开放市场（内外部） |
-| 挖矿模式 | 本地模型推理 | GPU 出租 | 本地模型推理 | **三模式：在线+LLM共享+算力** |
-| 独有优势 | — | — | — | **LLM 额度共享（零硬件门槛）** |
+| 项目 | v1 (原方案) | v2 (修正后) | 原因 |
+|------|-----------|-----------|------|
+| Tier 2 | 共享商业 LLM API Key | 共享本地开源模型端点 | API Key 共享违反所有供应商 ToS |
+| 排放模型 | 线性衰减 5/4/3/2/1 | 几何减半 2.5→1.25→0.625 | 原方案第 4 年耗尽 |
+| 奖励池 | Validator 25% + Mining 15% 分离 | 统一池 40% 按比例分配 | 分离池耗尽时间不同步 |
+| 安装方式 | 仅 CLI + AI Agent prompt | CLI + AI Agent prompt + GUI 桌面应用 | 非技术用户无法上手 |
+| Tier 2/3 质押 | 不需要 | 需要最低 100 CLAW | 无质押无法惩罚作弊 |
+| Heartbeat | 每 epoch 发 tx（需 gas） | 每 10 epoch 发 tx（免 gas） | gas 费可能超过收益 |
+| 推理后端 | 内置 llama.cpp | 支持 Ollama（推荐）+ llama.cpp | 不重造轮子 |
 
 ---
 
-## 2. 架构总览
+## 2. 三种挖矿模式
 
-```
-┌──────────────────────────────────────────────────────┐
-│                   ClawNetwork                         │
-│                                                       │
-│  ┌──────────────┐    ┌─────────────────────────────┐ │
-│  │  共识层 DPoS  │    │     挖矿层 PoUN             │ │
-│  │  21 Validator │    │                             │ │
-│  │  出块 + 签名  │    │  Tier 1: 在线挖矿（微量）   │ │
-│  │              │    │  Tier 2: LLM 共享（中等）    │ │
-│  │  奖励来源:    │    │  Tier 3: 算力挖矿（高）     │ │
-│  │  Validator    │    │                             │ │
-│  │  Rewards 25%  │    │  奖励来源: Agent Mining     │ │
-│  │              │    │  Pool 15%                   │ │
-│  └──────────────┘    └─────────────────────────────┘ │
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐ │
-│  │           AI 推理市场（开放）                      │ │
-│  │                                                   │ │
-│  │  需求方: ClawArena / ClawMarket / 任何外部产品    │ │
-│  │  供给方: 所有 Agent Mining 节点                   │ │
-│  │  计费: CLAW 付费调用                              │ │
-│  └─────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────┘
-```
+### 2.1 Tier 1: 在线挖矿（人人可参与）
 
----
+- **机制**: 运行全节点 + 保持同步 = 微量 CLAW 奖励
+- **门槛**: 注册 Agent（Faucet 提供 gas）+ 运行 claw-node
+- **质押**: 不需要
+- **奖励占比**: 统一池的 15%
 
-## 3. 三种挖矿模式
+### 2.2 Tier 2: 开源模型共享（有 GPU 或 CPU）
 
-### 3.1 Tier 1: 在线挖矿（人人可参与）
+> **v2 重大变更**: 不再共享商业 API Key，改为共享本地运行的开源模型。
 
-**机制**: 运行全节点 + 保持在线 + 同步区块 = 微量 CLAW 奖励
+- **机制**: 用户本地运行开源模型（Llama/DeepSeek-R1/Mistral/Phi 等），
+  通过 Ollama 或 llama.cpp 提供推理端点，接受网络分发的推理请求
+- **门槛**: 能跑 1B+ 参数模型的设备（大多数 PC 满足）
+- **质押**: 需要 100 CLAW（可通过 Tier 1 挖到）
+- **奖励占比**: 统一池的 35%
+- **合规**: 开源模型使用 Apache/MIT 许可，无 ToS 风险
 
-**目的**: 激励参与度，扩大网络节点数量
+**支持的模型示例**:
 
-**参与条件**:
-- 链上注册为 Agent（gas 费 0.001 CLAW，Faucet 提供）
-- 运行 claw-node，保持同步
-- 无质押要求，0 成本启动
+| 等级 | 模型 | 最低硬件 | 奖励权重 |
+|------|------|---------|---------|
+| S | Llama 70B, Qwen 72B, DeepSeek-R1 67B | 48GB+ VRAM | ×5.0 |
+| A | CodeLlama 34B, Yi 34B | 24GB VRAM | ×3.0 |
+| B | Llama 8B, Mistral 7B, DeepSeek-R1 8B | 8GB VRAM | ×1.5 |
+| C | Phi-3 Mini, Llama 3B, Qwen 1.5B | CPU / 4GB VRAM | ×1.0 |
 
-**奖励占比**: Agent Mining Pool 的 20%
+### 2.3 Tier 3: 专业算力挖矿（高性能节点）
 
-### 3.2 Tier 2: LLM 共享（零硬件门槛）
-
-**机制**: 用户将自己的 LLM 订阅（ChatGPT/Claude/DeepSeek 等）闲置额度
-共享到网络，按实际调用量获得 CLAW 奖励。
-
-**目的**: 利用全球 AI 用户的闲置 LLM 额度，汇聚成大规模推理能力
-
-**工作流程**:
-```
-用户配置:
-  - 选择共享的 LLM: Claude / GPT-4o / DeepSeek / Gemini
-  - 输入 API Key (加密存储在本地，不上链)
-  - 设置额度上限: 每小时 N 次请求
-  - 设置可用时段: 全天 / 仅闲时
-      ↓
-网络收到推理请求 → 调度层匹配最优节点 → 通过用户 API Key 调用 → 返回结果
-      ↓
-用户赚取 CLAW（按调用量 × 模型质量权重）
-```
-
-**LLM 共享奖励权重**:
-
-| 模型 | 质量权重 | 说明 |
-|------|---------|------|
-| GPT-4o / Claude Sonnet | ×2.0 | 顶级商业模型 |
-| GPT-4o-mini / Claude Haiku | ×1.2 | 中端模型 |
-| DeepSeek V3 | ×1.5 | 高性价比 |
-| Gemini Pro | ×1.5 | 多模态能力 |
-| 其他兼容模型 | ×0.8 | 基础奖励 |
-
-**奖励占比**: Agent Mining Pool 的 30%
-
-**安全保障**:
-- API Key 仅存储在用户本地，加密保存，不上链不外传
-- 请求通过代理层转发，不暴露调用方身份
-- 节点无法关联请求者与请求内容
-
-### 3.3 Tier 3: 算力挖矿（有 GPU 的用户）
-
-**机制**: 本地部署开源 AI 模型，为网络提供推理服务，按工作量获得 CLAW。
-
-**硬件分级与奖励**:
-
-| 等级 | 模型范围 | 最低硬件 | 奖励权重 |
-|------|---------|---------|---------|
-| S 级 | 70B+ (Llama 70B, Qwen 72B) | 48GB+ VRAM | ×5.0 |
-| A 级 | 13B-34B (CodeLlama 34B, Yi 34B) | 24GB VRAM | ×3.0 |
-| B 级 | 7B-13B (Llama 8B, Mistral 7B) | 8GB VRAM | ×1.5 |
-| C 级 | 1B-7B (Phi-3, Llama 3B) | CPU / 4GB VRAM | ×1.0 |
-
-**技术实现**:
-- claw-node 内置 llama.cpp 推理引擎
-- 启动时自动检测 GPU，推荐适合的模型
-- 支持模型热切换
-
-**奖励占比**: Agent Mining Pool 的 50%
+- **机制**: 持续提供高可用推理服务（99%+ 在线率），支持多模型并发
+- **门槛**: 专用 GPU 服务器（24GB+ VRAM）
+- **质押**: 需要 1000 CLAW
+- **奖励占比**: 统一池的 50%
+- **额外收入**: AI 推理市场 API 调用费分成
 
 ---
 
-## 4. 奖励分配机制
+## 3. 奖励经济模型（v2 修正）
 
-### 4.1 固定总量模型（参考 BTC）
+### 3.1 统一排放池
 
-每个区块的 Agent Mining 奖励总量固定，按权重分配：
-
-```
-每块 Agent Mining 奖励: 5 CLAW（第 1 年）
-
-衰减计划:
-  Year 1:    5 CLAW/block
-  Year 2:    4 CLAW/block
-  Year 3:    3 CLAW/block
-  Year 4:    2 CLAW/block
-  Year 5-10: 1 CLAW/block
-  Year 11+:  0.5 CLAW/block
-```
-
-### 4.2 权重计算
+**不再拆分** Validator 和 Mining 为两个独立池。
+从同一个 Node Incentive Pool（40% = 4 亿 CLAW）统一排放：
 
 ```
-node_reward = block_mining_reward × (node_weight / total_weight)
+每块总排放 = base_reward（随年份衰减）
 
-node_weight = tier_weight × uptime_ratio × reputation_multiplier
-
-tier_weight:
-  Tier 3 (算力): model_level_weight × inference_count
-  Tier 2 (LLM):  llm_quality_weight × call_count
-  Tier 1 (在线): 1.0 × uptime_ratio
+分配比例:
+  Validator (出块者): 65% of base_reward
+  Agent Mining:       35% of base_reward
+    ├── Tier 1 (在线): 15% × 35% = 5.25%
+    ├── Tier 2 (模型): 35% × 35% = 12.25%
+    └── Tier 3 (专业): 50% × 35% = 17.50%
 ```
 
-### 4.3 信誉乘数（Anti-Sybil）
-
-| 节点年龄 | multiplier | 说明 |
-|---------|-----------|------|
-| 0-7 天 | ×0.1 | 新节点冷启动 |
-| 7-30 天 | ×0.5 | 逐步建立信誉 |
-| 30 天+ | ×1.0 | 正常收益 |
-| 作弊记录 | ×0 | 冻结 30 天 |
-
-### 4.4 防 Sybil
-
-| 防线 | 机制 |
-|------|------|
-| 固定总量 | 更多节点 = 更少单份收益 |
-| 信誉乘数 | 新节点 7 天仅获 10% 奖励 |
-| 计算验证 | 定期下发 benchmark 任务验证真实能力 |
-| IP 多样性 | 同一 /24 网段最多奖励 3 个节点 |
-
-### 4.5 自动均衡
+### 3.2 几何减半（BTC 模型）
 
 ```
-10 个节点分 5 CLAW   → 每节点 ~0.5 CLAW/block
-1000 个节点分 5 CLAW → 每节点 ~0.005 CLAW/block
+减半周期: 每 2 年（~21,024,000 blocks）
 
-收益 < 运行成本 → 节点自然退出 → 单位收益回升
-（与 BTC 矿工经济学一致）
+Year 1-2:   base_reward = 8 CLAW/block
+Year 3-4:   base_reward = 4 CLAW/block
+Year 5-6:   base_reward = 2 CLAW/block
+Year 7-8:   base_reward = 1 CLAW/block
+Year 9-10:  base_reward = 0.5 CLAW/block
+Year 11+:   base_reward = 0.25 CLAW/block (尾部排放，永不归零)
 ```
+
+**池消耗计算**:
+
+| 年份 | CLAW/block | 年排放 | 累计 |
+|------|-----------|--------|------|
+| 1-2 | 8 | 168,192,000 | 168,192,000 |
+| 3-4 | 4 | 84,096,000 | 252,288,000 |
+| 5-6 | 2 | 42,048,000 | 294,336,000 |
+| 7-8 | 1 | 21,024,000 | 315,360,000 |
+| 9-10 | 0.5 | 10,512,000 | 325,872,000 |
+
+**池在第 10 年仍有 7400 万 CLAW 余额**（400M - 326M）。
+尾部排放 0.25 CLAW/block 可再持续 ~28 年。总续航 **38 年+**。
+
+### 3.3 Agent Mining 权重
+
+```
+node_weight = tier_weight × model_weight × uptime_ratio × reputation_multiplier
+
+Tier 1: tier_weight = 1
+Tier 2: tier_weight = 5 × model_level_weight(S/A/B/C)
+Tier 3: tier_weight = 10 × model_level_weight × availability_bonus
+
+reputation_multiplier:
+  Day 0-7:   ×0.2
+  Day 7-30:  ×0.5
+  Day 30+:   ×1.0
+  作弊记录:   ×0，冻结 30 天
+```
+
+### 3.4 防 Sybil
+
+| 防线 | Tier 1 | Tier 2 | Tier 3 |
+|------|--------|--------|--------|
+| 固定总量 | ✓ | ✓ | ✓ |
+| 信誉冷启动 | ✓ (×0.2) | ✓ (×0.2) | ✓ (×0.2) |
+| 质押要求 | — | 100 CLAW | 1000 CLAW |
+| 推理验证 | — | Benchmark 挑战 | Benchmark + 多节点共识 |
+| IP 多样性 | /24 限 3 个 | /24 限 3 个 | /24 限 3 个 |
+| Heartbeat | 每 10 epoch | 每 10 epoch | 每 epoch |
+
+### 3.5 AI 推理市场收入
+
+```
+外部用户调用 API → 按 token 付费（CLAW）
+                 │
+                 ├── 70% → 供给节点
+                 ├── 20% → 协议金库
+                 └── 10% → 燃烧（通缩）
+```
+
+**定价策略**: 比 OpenAI/DeepSeek 便宜 30-50%，竞争优势在成本。
 
 ---
 
-## 5. 数据隐私
+## 4. 数据隐私
 
-### 5.1 分级隐私
+### 分级隐私
 
-| 级别 | 机制 | 适用场景 | 加价 |
-|------|------|---------|------|
-| 标准 | TLS 加密传输，节点不留日志 | 通用问答、代码生成 | 无 |
-| 增强 | 仅路由到高信誉认证节点 | 商业数据处理 | +20% |
-| 机密 | TEE 可信执行环境（中长期） | 涉密数据 | +50% |
+| 级别 | 机制 | 适用场景 |
+|------|------|---------|
+| 标准 | TLS 传输 + 不落盘 + 质押惩罚 | 通用问答、代码生成 |
+| 增强 | 高信誉认证节点 + 审计日志 | 商业数据 |
+| 机密 | TEE 可信执行环境（中长期） | 涉密数据 |
 
-### 5.2 安全措施
-
-- 所有请求 TLS 加密传输
-- 节点签署隐私协议（链上承诺）
-- 推理数据仅在 RAM 中处理，不落盘
-- 违规节点：永久踢出 + 没收质押（如有）
-- LLM 共享模式：API Key 本地加密存储，不外传
+**坦诚声明**: 标准级别下，节点在推理过程中技术上可以读取 prompt 内容。
+这与 Bittensor、io.net 等同类网络一致。质押机制提供经济惩罚作为威慑。
 
 ---
 
-## 6. 接入方式
+## 5. 接入方式
 
-### 6.1 主推：AI Agent 一句话 Prompt 安装
+### 5.1 入口 1（主推）：AI Agent 一句话 Prompt
 
-参考 [Agent Reach](https://github.com/Panniantong/Agent-Reach) 的模式 —
-用户发给自己的 AI Agent 一句话 prompt + 一个 install.md URL，Agent 读取文档后
-自动完成全部安装。
+参考 [Agent Reach](https://github.com/Panniantong/Agent-Reach) 模式。
 
-**用户复制这句话给 AI Agent（Claude Code / OpenClaw / Codex / Cursor 等）：**
-
+**用户复制给 AI Agent**:
 ```
 帮我安装 ClawNetwork 挖矿节点：https://raw.githubusercontent.com/clawlabz/claw-miner/main/docs/install.md
 ```
 
-就这一步。Agent 会自己完成剩下的所有事情。
+install.md 是给 AI Agent 读的安装指引，Agent 自动完成全部安装。
 
-**install.md 是给 AI Agent 读的安装指引**，内容包括：
-
-```markdown
-# ClawNetwork Miner — Installation Guide
-
-## For Humans
-复制这句话给你的 AI Agent：
-帮我安装 ClawNetwork 挖矿节点：<此文件 URL>
-
-## For AI Agents
-
-### Goal
-安装 claw-miner CLI，初始化钱包，注册链上 Agent，启动挖矿。
-
-### Step 1: 检测环境
-- 检测 OS（Linux/macOS/Windows）
-- 检测 GPU（nvidia-smi / system_profiler）
-- 检测可用内存
-
-### Step 2: 安装
-pip install clawminer
-# 或
-npm install -g @clawlabz/claw-miner
-
-### Step 3: 初始化
-claw-miner init
-# 自动生成钱包、从 Faucet 获取 gas、链上注册 Agent
-
-### Step 4: 根据硬件推荐挖矿模式
-- 无 GPU → Tier 1 在线挖矿（默认）
-- 有 API Key → 建议 Tier 2 LLM 共享
-- 有 GPU ≥ 6GB → 建议 Tier 3 算力挖矿 + 推荐模型
-
-### Step 5: 启动
-claw-miner start
-
-### Boundaries
-- DO NOT run commands with sudo unless user approved
-- DO NOT modify system files outside ~/.claw-miner/
-- All config stored in ~/.claw-miner/
+**安装后在对话中操作**:
+```
+启动挖矿
+部署 Llama 8B 模型
+查看收益
+停止挖矿
 ```
 
-**安装后，用户在 AI Agent 对话中直接用自然语言操作：**
-
-```
-启动挖矿                    → claw-miner start
-查看我的收益                  → claw-miner status
-共享我的 DeepSeek API 额度    → claw-miner llm add deepseek
-部署本地 Llama 8B 模型       → claw-miner model start llama-3.1-8b
-停止挖矿                    → claw-miner stop
-查看 CLAW 余额               → claw-miner balance
-```
-
-**更新也是一句话：**
-
-```
-帮我更新 ClawNetwork 挖矿节点：https://raw.githubusercontent.com/clawlabz/claw-miner/main/docs/update.md
-```
-
-### 6.2 与 OpenClaw / AI Agent 的关系
-
-OpenClaw 是开源项目，不"内置"任何第三方组件。通过以下方式自然关联：
-
-| 方式 | 说明 |
-|------|------|
-| OpenClaw Plugin Marketplace | 发布为推荐插件，用户自主选择安装 |
-| 安装 Prompt Template | 提供 OpenClaw 专属的一句话安装 prompt |
-| Claude Code Plugin | `claude plugin add github:clawlabz/claw-miner` |
-| 文档推荐 | OpenClaw 文档中介绍 ClawNetwork 节点（非强制） |
-
-**核心原则**：不强制绑定，用户自主选择。安装后 claw-miner 是独立的 CLI 工具，
-可以在任何 AI Agent 中使用，也可以脱离 Agent 独立运行。
-
-### 6.3 兜底：命令行手动安装（不依赖 AI Agent）
+### 5.2 入口 2（兜底）：命令行
 
 ```bash
-# 一行安装
-curl -sL https://get.clawlabz.xyz/miner | sh
-
-# 或 pip
 pip install clawminer
-
-# 初始化 + 启动
 claw-miner init
 claw-miner start
 ```
 
-支持平台：Linux x86_64 / macOS ARM / Windows
+### 5.3 入口 3（面向非技术用户，中期）：GUI 桌面应用
 
-### 6.4 CLI 命令参考
+基于 Tauri 的轻量桌面应用：
+- 一键安装（.dmg / .exe）
+- 可视化 Dashboard（收益、状态、排名）
+- 鼠标操作选择模型 + 启动挖矿
+- 参考 Grass 的极简 UX
+
+### 5.4 CLI 命令参考
 
 ```bash
 # 基础
-claw-miner init                           # 初始化钱包 + 注册 Agent
-claw-miner start                          # 启动（默认在线挖矿）
+claw-miner init                           # 初始化钱包 + 注册
+claw-miner start                          # 启动在线挖矿
 claw-miner stop                           # 停止
-claw-miner status                         # 查看状态/收益/排名
-claw-miner balance                        # 查看 CLAW 余额
+claw-miner status                         # 状态/收益/排名
+claw-miner balance                        # CLAW 余额
 
-# LLM 共享（Tier 2）
-claw-miner llm add openai                 # 添加 OpenAI API Key
-claw-miner llm add deepseek               # 添加 DeepSeek API Key
-claw-miner llm add claude                 # 添加 Claude API Key
-claw-miner llm limit 50/hour              # 设置每小时请求上限
-claw-miner llm list                       # 查看已配置的 LLM
-claw-miner llm remove openai              # 移除
-
-# 算力挖矿（Tier 3）
-claw-miner model list                     # 查看可部署的模型
-claw-miner model start llama-3.1-8b       # 部署并启动模型
-claw-miner model start phi-3-mini         # 部署轻量模型
-claw-miner model stop                     # 停止本地模型
-claw-miner model benchmark                # 测试本机推理性能
+# 开源模型共享 (Tier 2)
+claw-miner model list                     # 查看可用模型
+claw-miner model start llama-3.1-8b       # 部署模型（自动下载）
+claw-miner model start --backend ollama   # 使用已有 Ollama
+claw-miner model stop                     # 停止
+claw-miner model benchmark                # 测试性能
 
 # 配置
-claw-miner config show                    # 查看当前配置
-claw-miner config wallet export           # 导出钱包
-claw-miner config wallet import <key>     # 导入已有钱包
+claw-miner config show
+claw-miner config wallet export
 ```
 
-### 6.5 接入形态总结
+### 5.5 与 OpenClaw / AI Agent 的关系
 
-| 方式 | 面向用户 | 安装方式 |
-|------|---------|---------|
-| **AI Agent 一句话安装** | OpenClaw / Claude Code / Codex / Cursor 用户 | 复制 prompt 发给 Agent |
-| **命令行安装** | 开发者 / 服务器 | `curl` 或 `pip install` |
-
-只有这两种，不做浏览器扩展（无法调用本地 GPU/CPU 算力）。
+- OpenClaw Plugin Marketplace 中推荐，用户自主选择安装
+- Claude Code Plugin: `claude plugin add github:clawlabz/claw-miner`
+- **不强制绑定**，任何 AI Agent 都能一句话安装
 
 ---
 
-## 7. AI 推理市场（开放平台）
+## 6. 推理验证
 
-### 7.1 定位
-
-ClawNetwork 算力池是**开放的 AI 推理市场**，不仅供内部产品使用：
-
-```
-需求方（付费调用）:
-  - ClawArena NPC 推理
-  - ClawMarket 任务处理
-  - 任何外部产品 / 开发者 / DApp
-
-供给方（提供算力）:
-  - Tier 2 节点（LLM 共享）
-  - Tier 3 节点（本地模型）
-```
-
-### 7.2 计费模型
-
-```
-API 调用 → 按 token 计费（CLAW）
-               │
-               ├── 70% → 供给节点
-               ├── 20% → 协议金库
-               └── 10% → 燃烧（通缩）
-```
-
-### 7.3 调用方式
-
-```bash
-# 标准 OpenAI 兼容 API
-curl https://api.clawlabz.xyz/v1/chat/completions \
-  -H "Authorization: Bearer claw_xxx" \
-  -d '{
-    "model": "llama-3.1-8b",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
-```
-
-兼容 OpenAI API 格式，任何使用 OpenAI SDK 的项目可一行代码切换：
-```python
-client = OpenAI(base_url="https://api.clawlabz.xyz/v1", api_key="claw_xxx")
-```
-
----
-
-## 8. 经济模型
-
-### 8.1 Genesis 分配调整
-
-```
-Validator Rewards:    25% (2.5 亿 CLAW) — 出块奖励
-Agent Mining Pool:    15% (1.5 亿 CLAW) — PoUN 挖矿奖励
-  ├── 在线挖矿:  20% (3000 万)
-  ├── LLM 共享:  30% (4500 万)
-  └── 算力挖矿:  50% (7500 万)
-Ecosystem Fund:       25% (2.5 亿)
-Team:                 15% (1.5 亿)
-Early Contributors:   10% (1 亿)
-Liquidity:            10% (1 亿)
-```
-
-### 8.2 收入来源
-
-| 来源 | 分配 |
-|------|------|
-| 交易 gas 费 | 50% proposer, 20% ecosystem, 30% 燃烧 |
-| AI 推理 API 费 | 70% 节点, 20% 协议金库, 10% 燃烧 |
-| 合约部署费 | 100% 燃烧 |
-
-### 8.3 通缩机制
-
-- Gas 费 30% 燃烧
-- API 调用费 10% 燃烧
-- 合约部署费 100% 燃烧
-- Mining 奖励按年衰减
-
----
-
-## 9. 实施路线
-
-| 阶段 | 内容 | 时间 | 复杂度 |
-|------|------|------|--------|
-| **Phase 1** | 在线挖矿 + claw-miner CLI + Agent 注册 | 3-4 周 | 中 |
-| **Phase 2** | LLM 共享（API Key 代理 + 调度 + 计费） | 4-6 周 | 中高 |
-| **Phase 3** | 算力挖矿（llama.cpp 集成 + 本地模型） | 6-8 周 | 高 |
-| **Phase 4** | AI 推理市场（OpenAI 兼容 API + Gateway） | 4 周 | 中 |
-| **Phase 5** | 隐私增强（TEE 支持 + 信誉系统完善） | 未来 | 高 |
-
----
-
-## 10. 已知风险与缓解
-
-| 风险 | 影响 | 缓解 |
+| 方案 | 阶段 | 机制 |
 |------|------|------|
-| LLM API Key 泄露 | 用户经济损失 | 本地加密存储 + 传输加密 + 不上链 |
-| 共享额度超限 | 用户被 LLM 供应商封号 | 严格遵守用户设置的额度上限 + 实时监控 |
-| 前期节点少，推理质量差 | 用户体验差 | 初期人工补充算力 + 质量评分门槛 |
-| Sybil 刷在线挖矿 | 奖励被稀释 | 固定总量 + 信誉乘数 + IP 限制 |
-| CLAW 无法定价 | 用户不知收益价值 | CLAW 可直接换取链上 AI 服务 |
-| 模型版权 | 法律风险 | 仅支持 Apache/MIT 协议开源模型 |
-| LLM 供应商 ToS | 共享 API Key 可能违反条款 | 研究各供应商条款，合规设计 |
+| 挑战-响应 | Phase 1 | Validator 定期发已知答案的 prompt，比对节点输出 |
+| 多节点共识 | Phase 2 | 同一请求发 2-3 节点，结果投票，异常节点扣信誉 |
+| TEE 证明 | Phase 3+ | 硬件级可信执行环境（Intel SGX / AMD SEV） |
+
+ZKML 不成熟（当前仅支持小模型，LLM 级别要到 2027+），暂不考虑。
+
+---
+
+## 7. 技术架构
+
+### 7.1 技术栈
+
+| 组件 | 语言/框架 | 理由 |
+|------|----------|------|
+| claw-miner CLI | Python | AI 生态原生，pip 分发 |
+| 推理后端 | Ollama（推荐）/ llama.cpp | 不重造轮子，成熟稳定 |
+| 桌面 GUI | Tauri (Rust + Web) | 轻量跨平台 |
+| 链上合约 | Rust (claw-node) | 已有基础设施 |
+| API Gateway | Python (FastAPI) | 中心化 MVP，后续去中心化 |
+
+### 7.2 架构图
+
+```
+┌──────────────────────────────────────────┐
+│  用户 / AI Agent                          │
+│  "帮我安装挖矿节点" / pip install          │
+└───────────────┬──────────────────────────┘
+                │
+        ┌───────▼───────┐
+        │  claw-miner   │  Python CLI
+        │  (init/start) │
+        └───┬───┬───┬───┘
+            │   │   │
+     ┌──────┘   │   └──────┐
+     ▼          ▼          ▼
+  Tier 1     Tier 2     Tier 3
+  在线同步    Ollama     GPU Farm
+             端口共享    多模型服务
+     │          │          │
+     └──────┬───┘──────────┘
+            │
+   ┌────────▼────────┐
+   │  ClawNetwork    │  Rust claw-node
+   │  (链上注册/奖励) │
+   └────────┬────────┘
+            │
+   ┌────────▼────────┐
+   │  API Gateway    │  FastAPI
+   │  (推理市场入口)  │  api.clawlabz.xyz
+   └─────────────────┘
+```
+
+---
+
+## 8. 实施路线
+
+| 阶段 | 内容 | 时间 | 前置条件 |
+|------|------|------|---------|
+| **Phase 1** | Tier 1 在线挖矿 MVP | 3-4 周 | — |
+| | claw-miner CLI (init/start/status) | | |
+| | 链上 MinerRegister + Heartbeat | | |
+| | 统一排放 + 挖矿奖励分配 | | |
+| | install.md + pip 包发布 | | |
+| **Phase 2** | Tier 2 开源模型共享 | 4-6 周 | Phase 1 |
+| | Ollama 集成 + 模型管理 | | |
+| | 推理请求路由 + 节点发现 | | |
+| | 挑战-响应验证 | | |
+| **Phase 3** | AI 推理市场 | 4 周 | Phase 2 |
+| | OpenAI 兼容 API Gateway | | |
+| | Token 计费 + 收益分配 | | |
+| | Explorer 挖矿数据展示 | | |
+| **Phase 4** | GUI 桌面应用 | 3 周 | Phase 1 |
+| | Tauri 应用 (.dmg/.exe) | | |
+| | 可视化 Dashboard | | |
+| **Phase 5** | 增强安全 + 去中心化 | 持续 | Phase 3 |
+| | TEE 支持 | | |
+| | P2P 路由替代中心化 Gateway | | |
+| | 多节点推理共识 | | |
+
+---
+
+## 9. 已知风险
+
+| 风险 | 严重度 | 缓解 |
+|------|--------|------|
+| 前期 CLAW 无市场价格 | HIGH | 先用 CLAW 换取链上 AI 服务（内循环） |
+| GPU 挖矿前期不盈利 | MEDIUM | 定位长期投资，前期靠 Tier 1 低成本获客 |
+| 推理质量不稳定 | MEDIUM | 挑战-响应验证 + 信誉系统 |
+| Prompt 隐私 | MEDIUM | 坦诚声明 + 质押惩罚 + 中期 TEE |
+| 开源模型版权 | LOW | 仅支持 Apache/MIT 许可模型 |
+
+---
+
+## 10. 审查记录
+
+本方案经过 5 轮多维度审查：
+
+| 轮次 | 角度 | 关键发现 | 修正 |
+|------|------|---------|------|
+| R1 | 竞品调研 | 10 个项目对比 | 确认三层模式独特性 |
+| R2 | 技术可行性 | LLM ToS 违规、ZKML 不成熟 | 砍掉 API Key 共享，用开源模型 |
+| R3 | 经济模型 | 池第 4 年耗尽、15.8% 年通胀 | 改几何减半、统一池 |
+| R4 | UX 体验 | 非技术用户 2/10、需求端缺失 | 增 GUI、设计需求端 |
+| R5 | 实施评估 | MVP 定义、技术栈选择 | Python + Ollama 方案 |
