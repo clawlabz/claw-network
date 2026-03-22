@@ -141,6 +141,7 @@ pub fn build_state_snapshot_response(
                 state_root: latest_state_root,
                 state_data,
                 latest_block,
+                genesis_hash: [0u8; 32], // unused — chain.rs handler provides the real genesis_hash
             })
         }
         Ok(None) => {

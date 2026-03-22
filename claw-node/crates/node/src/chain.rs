@@ -35,6 +35,8 @@ struct ChainInner {
     validator_address: [u8; 32],
     latest_block: Block,
     validator_set: ValidatorSet,
+    /// Genesis block hash — used to verify state snapshots belong to the same chain.
+    genesis_hash: [u8; 32],
     /// Slashing state: jailed validators, evidence, missed slots.
     slashing: SlashingState,
     /// Pending votes for the latest block, keyed by voter address.
@@ -60,7 +62,7 @@ impl Chain {
         let signing_key = SigningKey::from_bytes(&signing_key_bytes);
         let validator_address = signing_key.verifying_key().to_bytes();
 
-        let (mut state, latest_block, validator_stakes) = match store.get_latest_height()? {
+        let (mut state, latest_block, validator_stakes, genesis_hash) = match store.get_latest_height()? {
             Some(height) => {
                 let state_bytes = store
                     .get_state_snapshot()?
@@ -69,6 +71,11 @@ impl Chain {
                 let block = store.get_block(height)?.expect("block must exist");
                 tracing::info!(height, "Loaded chain from storage");
 
+                // Get genesis hash from block 0
+                let gen_hash = store.get_block(0)?
+                    .map(|b| b.hash)
+                    .unwrap_or([0u8; 32]);
+
                 // Use on-chain stakes (state.stakes) as the validator set source,
                 // falling back to genesis config only if state has no stakes yet.
                 let stakes: Vec<([u8; 32], u128)> = if state.stakes.is_empty() {
@@ -76,11 +83,12 @@ impl Chain {
                 } else {
                     state.stakes.iter().map(|(addr, amount)| (*addr, *amount)).collect()
                 };
-                (state, block, stakes)
+                (state, block, stakes, gen_hash)
             }
             None => {
                 let state = genesis::create_genesis_state(genesis_config)?;
                 let block = genesis::create_genesis_block(&state, genesis_config);
+                let gen_hash = block.hash;
                 store.put_block(&block)?;
                 store.put_state_snapshot(&borsh::to_vec(&state)?)?;
                 tracing::info!(
@@ -91,7 +99,7 @@ impl Chain {
                 );
 
                 let stakes = genesis::build_validator_set(genesis_config)?;
-                (state, block, stakes)
+                (state, block, stakes, gen_hash)
             }
         };
 
@@ -145,6 +153,7 @@ impl Chain {
                 validator_address,
                 latest_block,
                 validator_set,
+                genesis_hash,
                 slashing: SlashingState::new(),
                 pending_votes: std::collections::HashMap::new(),
                 fast_sync_pending: false,
@@ -1017,6 +1026,7 @@ impl Chain {
                             state_root: inner.latest_block.state_root,
                             state_data,
                             latest_block: inner.latest_block.clone(),
+                            genesis_hash: inner.genesis_hash,
                         }
                     }
                     _ => {
@@ -1096,7 +1106,7 @@ impl Chain {
                     None
                 }
             }
-            SyncResponse::StateSnapshot { height, state_root, state_data, latest_block } => {
+            SyncResponse::StateSnapshot { height, state_root, state_data, latest_block, genesis_hash } => {
                 tracing::info!(
                     snapshot_height = height,
                     state_data_size = state_data.len(),
@@ -1105,6 +1115,16 @@ impl Chain {
 
                 // Apply the snapshot: deserialize first, then verify state_root
                 let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+
+                // Verify genesis hash matches — reject snapshots from different chains
+                if *genesis_hash != inner.genesis_hash {
+                    tracing::warn!(
+                        our_genesis = %hex::encode(inner.genesis_hash),
+                        peer_genesis = %hex::encode(genesis_hash),
+                        "Rejecting state snapshot: genesis hash mismatch (different chain)"
+                    );
+                    return None;
+                }
 
                 match borsh::from_slice::<claw_state::WorldState>(state_data) {
                     Ok(state) => {

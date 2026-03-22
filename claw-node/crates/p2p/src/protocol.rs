@@ -67,5 +67,7 @@ pub enum SyncResponse {
         state_data: Vec<u8>,
         /// The latest block at snapshot height, used to re-establish chain continuity after fork recovery.
         latest_block: Block,
+        /// Genesis block hash — receiver verifies this matches its own genesis.
+        genesis_hash: [u8; 32],
     },
 }
