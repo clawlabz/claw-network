@@ -15,3 +15,6 @@ pub use protocol::{BlockVote, SyncRequest, SyncResponse, MAX_P2P_MESSAGE_SIZE, M
 
 /// Re-export ResponseChannel so the chain engine can send sync responses.
 pub use libp2p::request_response::ResponseChannel;
+
+/// Re-export PeerId so the chain engine can track connected peers.
+pub use libp2p::PeerId;

@@ -853,7 +853,25 @@ impl Chain {
         mut event_rx: mpsc::UnboundedReceiver<NetworkEvent>,
         command_tx: mpsc::UnboundedSender<P2pCommand>,
     ) {
-        while let Some(event) = event_rx.recv().await {
+        let mut sync_retry = tokio::time::interval(tokio::time::Duration::from_secs(15));
+        let mut known_peers: Vec<claw_p2p::PeerId> = Vec::new();
+
+        loop {
+            tokio::select! {
+                _ = sync_retry.tick() => {
+                    // Periodic sync: ask all known peers for their status
+                    if !known_peers.is_empty() {
+                        let our_height = self.get_block_number();
+                        for peer in &known_peers {
+                            let _ = command_tx.send(P2pCommand::SendSyncRequest {
+                                peer: *peer,
+                                request: SyncRequest::GetStatus,
+                            });
+                        }
+                        tracing::debug!(our_height, peers = known_peers.len(), "Sync retry: requesting status from all peers");
+                    }
+                }
+                Some(event) = event_rx.recv() => {
             match event {
                 NetworkEvent::NewTx(tx) => {
                     match self.submit_tx(tx) {
@@ -905,6 +923,9 @@ impl Chain {
                 }
                 NetworkEvent::PeerConnected(peer) => {
                     self.peer_connected();
+                    if !known_peers.contains(&peer) {
+                        known_peers.push(peer);
+                    }
                     let request = {
                         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                         if inner.fast_sync_pending {
@@ -930,10 +951,13 @@ impl Chain {
                 }
                 NetworkEvent::PeerDisconnected(peer) => {
                     self.peer_disconnected();
+                    known_peers.retain(|p| p != &peer);
                     tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer disconnected");
                 }
             }
-        }
+                } // close Some(event)
+            } // close select!
+        } // close loop
     }
 
     /// Handle a sync request from a peer.
