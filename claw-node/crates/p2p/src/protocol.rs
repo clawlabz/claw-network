@@ -4,16 +4,32 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use claw_types::block::Block;
 use claw_types::transaction::Transaction;
 
-/// Gossip topic names.
-pub const TOPIC_TX: &str = "claw/tx/1";
-pub const TOPIC_BLOCK: &str = "claw/block/1";
-pub const TOPIC_VOTE: &str = "claw/vote/1";
-
 /// Maximum P2P message size (1 MB).
 pub const MAX_P2P_MESSAGE_SIZE: usize = 1024 * 1024;
 
 /// Maximum number of simultaneous peer connections.
 pub const MAX_PEER_CONNECTIONS: usize = 128;
+
+/// Generate chain-id-scoped gossip topic names.
+/// This ensures mainnet and testnet nodes on the same local network
+/// do not exchange messages via gossipsub.
+pub fn topic_tx(chain_id: &str) -> String {
+    format!("claw/{}/tx/1", chain_id)
+}
+
+pub fn topic_block(chain_id: &str) -> String {
+    format!("claw/{}/block/1", chain_id)
+}
+
+pub fn topic_vote(chain_id: &str) -> String {
+    format!("claw/{}/vote/1", chain_id)
+}
+
+/// Generate chain-id-scoped sync protocol string.
+/// This ensures request_response sync only connects to same-chain peers.
+pub fn sync_protocol(chain_id: &str) -> String {
+    format!("/claw/{}/sync/1", chain_id)
+}
 
 /// A BFT vote: a validator's signature on a block hash.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]

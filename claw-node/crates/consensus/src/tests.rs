@@ -1,5 +1,7 @@
 //! Tests for the consensus engine.
 
+use std::collections::BTreeMap;
+
 use claw_crypto::ed25519_dalek::{Signer, SigningKey};
 use claw_types::state::ReputationAttestation;
 
@@ -48,55 +50,17 @@ fn quorum_values() {
 // ==================== ValidatorSet ====================
 
 #[test]
-fn stake_and_unstake() {
-    let mut vs = ValidatorSet::new();
-    let addr = make_address(1);
-
-    // Stake below minimum fails
-    assert!(vs.stake(addr, MIN_STAKE - 1, 0).is_err());
-
-    // Stake at minimum succeeds
-    assert!(vs.stake(addr, MIN_STAKE, 0).is_ok());
-    assert_eq!(vs.candidates.len(), 1);
-    assert_eq!(vs.candidates[&addr].amount, MIN_STAKE);
-
-    // Add more stake
-    assert!(vs.stake(addr, MIN_STAKE, 10).is_ok());
-    assert_eq!(vs.candidates[&addr].amount, MIN_STAKE * 2);
-
-    // Unstake partially
-    let remaining = vs.unstake(&addr, MIN_STAKE).unwrap();
-    assert_eq!(remaining, MIN_STAKE);
-
-    // Unstake below minimum removes candidate
-    let remaining = vs.unstake(&addr, MIN_STAKE).unwrap();
-    assert_eq!(remaining, 0);
-    assert!(vs.candidates.is_empty());
-}
-
-#[test]
-fn unstake_nonexistent_fails() {
-    let mut vs = ValidatorSet::new();
-    let addr = make_address(1);
-    assert!(vs.unstake(&addr, 1).is_err());
-}
-
-#[test]
 fn recalculate_active_top_n() {
-    let mut vs = ValidatorSet::new();
-
-    // Create 25 candidates (more than MAX_VALIDATORS=21)
+    // Create 25 staked validators (more than MAX_VALIDATORS=21)
+    let mut stakes = BTreeMap::new();
     for i in 0..25u8 {
         let addr = make_address(i);
         let amount = MIN_STAKE + (i as u128 * MIN_STAKE);
-        vs.candidates.insert(addr, StakeInfo {
-            address: addr,
-            amount,
-            staked_at: 0,
-        });
+        stakes.insert(addr, amount);
     }
 
-    vs.recalculate_active(&[]);
+    let mut vs = ValidatorSet::new();
+    vs.recalculate_active(&stakes, &[], None, 0);
     assert_eq!(vs.active.len(), MAX_VALIDATORS);
 
     // Active set should be sorted by weight descending
@@ -107,24 +71,14 @@ fn recalculate_active_top_n() {
 
 #[test]
 fn recalculate_with_reputation() {
-    let mut vs = ValidatorSet::new();
-
     let addr_high_stake = make_address(1);
     let addr_high_rep = make_address(2);
 
+    let mut stakes = BTreeMap::new();
     // High stake, low reputation
-    vs.candidates.insert(addr_high_stake, StakeInfo {
-        address: addr_high_stake,
-        amount: MIN_STAKE * 10,
-        staked_at: 0,
-    });
-
+    stakes.insert(addr_high_stake, MIN_STAKE * 10);
     // Low stake, high reputation
-    vs.candidates.insert(addr_high_rep, StakeInfo {
-        address: addr_high_rep,
-        amount: MIN_STAKE,
-        staked_at: 0,
-    });
+    stakes.insert(addr_high_rep, MIN_STAKE);
 
     // Give high reputation to addr_high_rep
     let attestations: Vec<ReputationAttestation> = (0..50)
@@ -139,7 +93,8 @@ fn recalculate_with_reputation() {
         })
         .collect();
 
-    vs.recalculate_active(&attestations);
+    let mut vs = ValidatorSet::new();
+    vs.recalculate_active(&stakes, &attestations, None, 0);
     assert_eq!(vs.active.len(), 2);
 
     // Both should have non-zero weight
@@ -150,13 +105,12 @@ fn recalculate_with_reputation() {
 
 #[test]
 fn with_initial_stakes() {
-    let stakes = vec![
-        (make_address(1), MIN_STAKE * 5),
-        (make_address(2), MIN_STAKE * 3),
-        (make_address(3), MIN_STAKE * 1),
-    ];
-    let vs = ValidatorSet::with_initial_stakes(stakes);
-    assert_eq!(vs.candidates.len(), 3);
+    let mut stakes = BTreeMap::new();
+    stakes.insert(make_address(1), MIN_STAKE * 5);
+    stakes.insert(make_address(2), MIN_STAKE * 3);
+    stakes.insert(make_address(3), MIN_STAKE * 1);
+
+    let vs = ValidatorSet::with_initial_stakes(&stakes);
     assert_eq!(vs.active.len(), 3);
     assert_eq!(vs.epoch, 1);
 }

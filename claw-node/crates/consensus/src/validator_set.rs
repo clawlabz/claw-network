@@ -1,4 +1,8 @@
-//! Validator set management: staking, unstaking, epoch rotation.
+//! Validator set management: active set recalculation from WorldState stakes.
+//!
+//! The ValidatorSet no longer maintains its own candidates — WorldState.stakes
+//! is the single source of truth. This struct only tracks the computed active
+//! validator set and epoch metadata.
 
 use std::collections::BTreeMap;
 
@@ -7,11 +11,9 @@ use claw_types::state::ReputationAttestation;
 use crate::slashing::SlashingState;
 use crate::types::*;
 
-/// Manages the validator candidate pool and active validator set.
+/// Manages the active validator set (computed from WorldState.stakes each epoch).
 #[derive(Debug, Clone, Default)]
 pub struct ValidatorSet {
-    /// All staked candidates: address → StakeInfo.
-    pub candidates: BTreeMap<[u8; 32], StakeInfo>,
     /// Current active validators (top N by weight, recalculated each epoch).
     pub active: Vec<ActiveValidator>,
     /// Current epoch number.
@@ -26,66 +28,19 @@ impl ValidatorSet {
         Self::default()
     }
 
-    /// Create a validator set with initial stakes (for genesis).
-    pub fn with_initial_stakes(stakes: Vec<([u8; 32], u128)>) -> Self {
+    /// Create a validator set from initial stakes (for genesis).
+    /// Reads directly from the provided stakes map (WorldState.stakes).
+    pub fn with_initial_stakes(stakes: &BTreeMap<[u8; 32], u128>) -> Self {
         let mut vs = Self::new();
-        for (addr, amount) in stakes {
-            vs.candidates.insert(addr, StakeInfo {
-                address: addr,
-                amount,
-                staked_at: 0,
-            });
-        }
-        vs.recalculate_active(&[]);
+        vs.recalculate_active(stakes, &[], None, 0);
         vs
     }
 
-    /// Add or increase stake for a validator candidate.
-    /// Returns Err if the resulting stake is below MIN_STAKE.
-    pub fn stake(&mut self, address: [u8; 32], amount: u128, block_height: u64) -> Result<(), &'static str> {
-        let current = self.candidates.get(&address).map(|s| s.amount).unwrap_or(0);
-        let new_amount = current.checked_add(amount).ok_or("stake overflow")?;
-
-        if new_amount < MIN_STAKE {
-            return Err("stake below minimum");
-        }
-
-        let entry = self.candidates.entry(address).or_insert(StakeInfo {
-            address,
-            amount: 0,
-            staked_at: block_height,
-        });
-        entry.amount = new_amount;
-        entry.staked_at = block_height;
-        Ok(())
-    }
-
-    /// Reduce or remove stake for a validator candidate.
-    pub fn unstake(&mut self, address: &[u8; 32], amount: u128) -> Result<u128, &'static str> {
-        let entry = self.candidates.get_mut(address).ok_or("not a candidate")?;
-        if amount > entry.amount {
-            return Err("unstake exceeds staked amount");
-        }
-        entry.amount -= amount;
-        let remaining = entry.amount;
-
-        // Remove candidate if below minimum
-        if remaining < MIN_STAKE {
-            self.candidates.remove(address);
-        }
-        Ok(remaining)
-    }
-
-    /// Recalculate the active validator set based on current stakes and reputation data.
+    /// Recalculate the active validator set from WorldState.stakes.
     /// Called at epoch boundaries (every EPOCH_LENGTH blocks).
-    pub fn recalculate_active(&mut self, reputation: &[ReputationAttestation]) {
-        self.recalculate_active_with_slashing(reputation, None, 0);
-    }
-
-    /// Recalculate the active validator set, filtering out jailed validators.
-    /// Called at epoch boundaries (every EPOCH_LENGTH blocks).
-    pub fn recalculate_active_with_slashing(
+    pub fn recalculate_active(
         &mut self,
+        stakes: &BTreeMap<[u8; 32], u128>,
         reputation: &[ReputationAttestation],
         slashing: Option<&SlashingState>,
         current_height: u64,
@@ -93,32 +48,29 @@ impl ValidatorSet {
         // Aggregate agent scores from reputation attestations
         let agent_scores = aggregate_agent_scores(reputation);
 
-        // Calculate weights for all candidates, filtering out jailed validators
-        let mut weighted: Vec<ActiveValidator> = self
-            .candidates
-            .values()
-            .filter(|stake_info| {
+        // Calculate weights for all staked validators, filtering out jailed ones
+        let mut weighted: Vec<ActiveValidator> = stakes
+            .iter()
+            .filter(|(_, &amount)| amount >= MIN_STAKE)
+            .filter(|(addr, _)| {
                 // Exclude jailed validators from the active set
                 match slashing {
-                    Some(s) => !s.is_jailed(&stake_info.address, current_height),
+                    Some(s) => !s.is_jailed(addr, current_height),
                     None => true,
                 }
             })
-            .map(|stake_info| {
-                let agent_score = agent_scores
-                    .get(&stake_info.address)
-                    .copied()
-                    .unwrap_or(0);
+            .map(|(addr, &amount)| {
+                let agent_score = agent_scores.get(addr).copied().unwrap_or(0);
                 let weight = compute_weight(
-                    stake_info.amount,
-                    &self.candidates,
+                    amount,
+                    stakes,
                     agent_score,
                     &agent_scores,
                     self.weight_config,
                 );
                 ActiveValidator {
-                    address: stake_info.address,
-                    stake: stake_info.amount,
+                    address: *addr,
+                    stake: amount,
                     agent_score,
                     weight,
                 }
@@ -137,12 +89,12 @@ impl ValidatorSet {
         self.active = weighted;
 
         // Ensure at least one validator remains active
-        if self.active.is_empty() && !self.candidates.is_empty() {
+        if self.active.is_empty() && !stakes.is_empty() {
             // If all were jailed, pick the one with highest stake regardless of jail status
-            if let Some((_, stake_info)) = self.candidates.iter().next_back() {
+            if let Some((addr, &amount)) = stakes.iter().rev().next() {
                 self.active.push(ActiveValidator {
-                    address: stake_info.address,
-                    stake: stake_info.amount,
+                    address: *addr,
+                    stake: amount,
                     agent_score: 0,
                     weight: 1,
                 });
@@ -151,31 +103,6 @@ impl ValidatorSet {
         }
 
         self.epoch += 1;
-    }
-
-    /// Slash a validator's stake by the given basis points (e.g., 1000 = 10%).
-    /// If the remaining stake falls below MIN_STAKE, the candidate is removed.
-    /// Returns the amount slashed.
-    pub fn slash(&mut self, address: &[u8; 32], basis_points: u64) -> u128 {
-        let stake = match self.candidates.get(address) {
-            Some(info) => info.amount,
-            None => return 0,
-        };
-
-        let slash_amount = (stake * basis_points as u128) / 10_000;
-        if slash_amount == 0 {
-            return 0;
-        }
-
-        let remaining = stake.saturating_sub(slash_amount);
-
-        if remaining < MIN_STAKE {
-            self.candidates.remove(address);
-        } else if let Some(info) = self.candidates.get_mut(address) {
-            info.amount = remaining;
-        }
-
-        slash_amount
     }
 
     /// Check if a given height is an epoch boundary.
@@ -213,11 +140,7 @@ impl ValidatorSet {
 /// DEPRECATED: This function uses the legacy ReputationAttest-based scoring.
 /// It is kept for backward compatibility during the transition to the new
 /// multi-dimensional Agent Score system (see `claw_state::score`).
-/// New scores are computed on-chain from activity stats, uptime, economics,
-/// and PlatformActivityReport data. ReputationAttest tx are no longer counted.
 fn aggregate_agent_scores(reputation: &[ReputationAttestation]) -> BTreeMap<[u8; 32], u64> {
-    // Legacy scoring: still used as fallback when no activity data exists.
-    // ReputationAttest transactions are accepted but not counted toward new scores.
     let mut scores: BTreeMap<[u8; 32], i64> = BTreeMap::new();
     for att in reputation {
         *scores.entry(att.to).or_insert(0) += att.score as i64;
@@ -232,16 +155,16 @@ fn aggregate_agent_scores(reputation: &[ReputationAttestation]) -> BTreeMap<[u8;
 ///
 /// weight = normalize(stake) × stake_bps + normalize(agent_score) × score_bps
 ///
-/// Both components are normalized relative to the full candidate pool,
+/// Both components are normalized relative to the full staked pool,
 /// producing a weight in basis points (0–10000).
 fn compute_weight(
     stake: u128,
-    all_candidates: &BTreeMap<[u8; 32], StakeInfo>,
+    all_stakes: &BTreeMap<[u8; 32], u128>,
     agent_score: u64,
     all_scores: &BTreeMap<[u8; 32], u64>,
     config: WeightConfig,
 ) -> u64 {
-    let total_stake: u128 = all_candidates.values().map(|s| s.amount).sum();
+    let total_stake: u128 = all_stakes.values().sum();
     let max_score: u64 = all_scores.values().copied().max().unwrap_or(1).max(1);
 
     // Normalized stake (0–10000 bps)

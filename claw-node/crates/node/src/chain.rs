@@ -108,7 +108,7 @@ impl Chain {
         let has_real_validators = validator_stakes.iter().any(|(addr, _)| {
             !(addr[1..].iter().all(|&b| b == 0) && addr[0] != 0)
         });
-        let stakes: Vec<([u8; 32], u128)> = if has_real_validators {
+        let stakes_vec: Vec<([u8; 32], u128)> = if has_real_validators {
             validator_stakes
                 .into_iter()
                 .filter(|(addr, _)| {
@@ -125,24 +125,30 @@ impl Chain {
         } else {
             validator_stakes
         };
-        // Write genesis stakes into WorldState so they survive epoch recalculation.
-        // ValidatorSet.recalculate_active reads from its own candidates (set via
-        // with_initial_stakes), but state.stakes must also be populated for
-        // consistency and for the staking RPC queries.
-        for (addr, amount) in &stakes {
+        // Write genesis stakes into WorldState — the single source of truth.
+        for (addr, amount) in &stakes_vec {
             state.stakes.entry(*addr).or_insert(*amount);
         }
 
         // If this node's address is not in the validator set, log a warning.
         // The node will sync blocks but cannot produce until it stakes.
-        if !stakes.iter().any(|(addr, _)| *addr == validator_address) {
+        if !state.stakes.contains_key(&validator_address) {
             tracing::warn!(
                 address = %hex::encode(validator_address),
                 "Node not in validator set — will sync only, stake to become a validator"
             );
         }
 
-        let validator_set = ValidatorSet::with_initial_stakes(stakes);
+        // ValidatorSet reads directly from WorldState.stakes (single source of truth).
+        let validator_set = ValidatorSet::with_initial_stakes(&state.stakes);
+
+        // Restore slashing state from WorldState persisted fields.
+        let slashing = SlashingState {
+            jailed: state.jailed_validators.clone(),
+            missed_slots: state.validator_missed_slots.clone(),
+            assigned_slots: state.validator_assigned_slots.clone(),
+            ..Default::default()
+        };
 
         Ok(Self {
             inner: Arc::new(Mutex::new(ChainInner {
@@ -154,7 +160,7 @@ impl Chain {
                 latest_block,
                 validator_set,
                 genesis_hash,
-                slashing: SlashingState::new(),
+                slashing,
                 pending_votes: std::collections::HashMap::new(),
                 fast_sync_pending: false,
                 bootstrap_peer_ids: Vec::new(),
@@ -288,9 +294,11 @@ impl Chain {
             if vk.verify_strict(&vote.block_hash, &sig).is_ok() {
                 inner.pending_votes.insert(vote.voter, vote.signature);
                 inner.latest_block.signatures.push((vote.voter, vote.signature));
-                // Update validator uptime: this validator signed a block
-                let uptime = inner.state.validator_uptime.entry(vote.voter).or_default();
-                uptime.signed_blocks += 1;
+                // NOTE: Do NOT update validator_uptime here. Vote-based uptime
+                // updates are non-deterministic (arrive asynchronously) and would
+                // cause state_root divergence between nodes during sync catch-up.
+                // Uptime tracking is handled deterministically in produce_block /
+                // apply_remote_block_inner based on block proposer only.
                 // Re-persist the block with updated signatures
                 if let Err(e) = inner.store.put_block(&inner.latest_block) {
                     tracing::error!(error = %e, "Failed to update block with new signature");
@@ -437,7 +445,60 @@ impl Chain {
         // Clear pending votes for the new block
         inner.pending_votes.clear();
 
-        // Persist
+        // Supply integrity check BEFORE epoch boundary processing.
+        // Slashing burns tokens, so must check before slashing runs.
+        let supply_after = inner.state.total_supply();
+        // Compute expected burn exactly as distribute_fees does to avoid rounding mismatch
+        let proposer_share = total_fees * 50 / 100;
+        let ecosystem_share = total_fees * 20 / 100;
+        let expected_burn = total_fees - proposer_share - ecosystem_share;
+        let expected_supply = supply_before - expected_burn;
+        if supply_after != expected_supply {
+            tracing::error!(
+                height = block.height,
+                before = supply_before,
+                after = supply_after,
+                expected = expected_supply,
+                diff = supply_after as i128 - expected_supply as i128,
+                total_fees,
+                "SUPPLY INTEGRITY VIOLATION in produce_block"
+            );
+        }
+
+        // Epoch boundary: slashing + validator set rotation
+        if ValidatorSet::is_epoch_boundary(new_height) {
+            // Process downtime slashing — operates directly on WorldState.stakes
+            {
+                let mut slashing = std::mem::take(&mut inner.slashing);
+                slashing.process_downtime_slashing(&mut inner.state.stakes, new_height);
+                slashing.unjail_expired(new_height);
+                inner.slashing = slashing;
+            }
+
+            // Recalculate active set after slashing
+            let stakes = inner.state.stakes.clone();
+            let rep = inner.state.reputation.clone();
+            let slashing_ref = inner.slashing.clone();
+            inner.validator_set.recalculate_active(
+                &stakes,
+                &rep,
+                Some(&slashing_ref),
+                new_height,
+            );
+            inner.slashing.reset_epoch_counters();
+            // Reset uptime counters for new epoch
+            inner.state.validator_uptime.clear();
+            tracing::info!(
+                epoch = inner.validator_set.epoch,
+                validators = inner.validator_set.active.len(),
+                "Epoch rotation"
+            );
+        }
+
+        // Persist slashing state to WorldState BEFORE writing snapshot
+        Self::sync_slashing_to_world_state(inner);
+
+        // Persist block and state snapshot (after slashing sync so snapshot is complete)
         if let Err(e) = inner.store.put_block(&block) {
             tracing::error!(error = %e, "Failed to store block");
             return None;
@@ -451,35 +512,6 @@ impl Chain {
             Err(e) => {
                 tracing::error!("State serialization failed: {e}");
             }
-        }
-
-        // Sync validator set candidates from world state stakes
-        Self::sync_validator_stakes(inner);
-
-        // Check epoch boundary for validator set rotation with slashing
-        if ValidatorSet::is_epoch_boundary(new_height) {
-            // Process downtime slashing before recalculating active set
-            {
-                let mut slashing = std::mem::take(&mut inner.slashing);
-                slashing.process_downtime_slashing(&mut inner.validator_set, new_height);
-                inner.slashing = slashing;
-            }
-            inner.slashing.unjail_expired(new_height);
-            let rep = inner.state.reputation.clone();
-            let slashing_ref = inner.slashing.clone();
-            inner.validator_set.recalculate_active_with_slashing(
-                &rep,
-                Some(&slashing_ref),
-                new_height,
-            );
-            inner.slashing.reset_epoch_counters();
-            // Reset uptime counters for new epoch
-            inner.state.validator_uptime.clear();
-            tracing::info!(
-                epoch = inner.validator_set.epoch,
-                validators = inner.validator_set.active.len(),
-                "Epoch rotation"
-            );
         }
 
         tracing::info!(
@@ -496,27 +528,6 @@ impl Chain {
         let block_time = block.timestamp.saturating_sub(inner.latest_block.timestamp);
         if block_time > 0 {
             metrics::BLOCK_TIME_SECONDS.observe(block_time as f64);
-        }
-
-        // Supply integrity check: compare before/after
-        let supply_after = inner.state.total_supply();
-        // Expected: fee burns reduce supply, everything else is zero-sum
-        // total_fees were deducted from senders. Of that:
-        //   50% to proposer (zero-sum)
-        //   20% to ecosystem (zero-sum)
-        //   30% burned (supply reduction)
-        let expected_burn = total_fees * 30 / 100;
-        let expected_supply = supply_before - expected_burn;
-        if supply_after != expected_supply {
-            tracing::error!(
-                height = block.height,
-                before = supply_before,
-                after = supply_after,
-                expected = expected_supply,
-                diff = supply_after as i128 - expected_supply as i128,
-                total_fees,
-                "SUPPLY INTEGRITY VIOLATION in produce_block"
-            );
         }
 
         inner.latest_block = block.clone();
@@ -571,11 +582,13 @@ impl Chain {
                 }
             }
 
-            // BFT quorum check: require > 2/3 signatures for finality.
-            // During sync catch-up, relax to require at least the proposer's
-            // valid signature. This handles the common case where most validators
-            // are offline and only the proposer signs blocks.
-            let required = quorum(active.len());
+            // BFT quorum check.
+            // For small networks (<7 validators), only require proposer signature
+            // to avoid liveness issues when any validator is offline.
+            // For mature networks (>=7), require strict BFT quorum (>2/3).
+            // During sync catch-up, always accept proposer-only.
+            let strict_required = quorum(active.len());
+            let required = if active.len() < 7 { 1 } else { strict_required };
             if valid_signers.len() < required {
                 let is_proposer_signed = valid_signers.contains(&block.validator);
 
@@ -676,13 +689,10 @@ impl Chain {
                 u.expected_blocks += 1;
             }
 
-            // Signers on this block get signed_blocks incremented
-            for (signer, _) in &block.signatures {
-                if *signer != proposer {
-                    let u = state_clone.validator_uptime.entry(*signer).or_default();
-                    u.signed_blocks += 1;
-                }
-            }
+            // NOTE: Do NOT increment signed_blocks for extra vote signers here.
+            // Vote signatures on stored blocks are non-deterministic (accumulated
+            // asynchronously), so including them would cause state_root divergence
+            // between live nodes and syncing nodes.
         }
 
         // Verify state root
@@ -693,6 +703,55 @@ impl Chain {
 
         // Accept the block
         inner.state = state_clone;
+
+        // Supply integrity check BEFORE epoch boundary processing.
+        // Slashing burns tokens, so we must check before slashing runs.
+        let supply_after = inner.state.total_supply();
+        let proposer_share = total_fees * 50 / 100;
+        let ecosystem_share = total_fees * 20 / 100;
+        let expected_burn = total_fees - proposer_share - ecosystem_share;
+        let expected_supply = supply_before - expected_burn;
+        if supply_after != expected_supply {
+            tracing::error!(
+                height = block.height,
+                before = supply_before,
+                after = supply_after,
+                expected = expected_supply,
+                diff = supply_after as i128 - expected_supply as i128,
+                total_fees,
+                "SUPPLY INTEGRITY VIOLATION in apply_remote_block"
+            );
+        }
+
+        // Epoch rotation check with slashing (only at epoch boundaries)
+        if ValidatorSet::is_epoch_boundary(block.height) {
+            // Process downtime slashing — operates directly on WorldState.stakes
+            {
+                let mut slashing = std::mem::take(&mut inner.slashing);
+                slashing.process_downtime_slashing(&mut inner.state.stakes, block.height);
+                slashing.unjail_expired(block.height);
+                inner.slashing = slashing;
+            }
+
+            // Recalculate active set after slashing
+            let stakes = inner.state.stakes.clone();
+            let rep = inner.state.reputation.clone();
+            let slashing_ref = inner.slashing.clone();
+            inner.validator_set.recalculate_active(
+                &stakes,
+                &rep,
+                Some(&slashing_ref),
+                block.height,
+            );
+            inner.slashing.reset_epoch_counters();
+            // Reset uptime counters for new epoch
+            inner.state.validator_uptime.clear();
+        }
+
+        // Persist slashing state to WorldState BEFORE writing snapshot
+        Self::sync_slashing_to_world_state(&mut inner);
+
+        // Store block and state snapshot (after slashing sync so snapshot is complete)
         if let Err(e) = inner.store.put_block(block) {
             return Err(format!("store block: {e}"));
         }
@@ -707,48 +766,8 @@ impl Chain {
             }
         }
 
-        // Sync validator set candidates from world state stakes
-        Self::sync_validator_stakes(&mut inner);
-
-        // Epoch rotation check with slashing
-        if ValidatorSet::is_epoch_boundary(block.height) {
-            // Process downtime slashing before recalculating active set
-            {
-                let mut slashing = std::mem::take(&mut inner.slashing);
-                slashing.process_downtime_slashing(&mut inner.validator_set, block.height);
-                inner.slashing = slashing;
-            }
-            inner.slashing.unjail_expired(block.height);
-            let rep = inner.state.reputation.clone();
-            let slashing_ref = inner.slashing.clone();
-            inner.validator_set.recalculate_active_with_slashing(
-                &rep,
-                Some(&slashing_ref),
-                block.height,
-            );
-            inner.slashing.reset_epoch_counters();
-            // Reset uptime counters for new epoch
-            inner.state.validator_uptime.clear();
-        }
-
         // Clear pending votes after accepting a remote block
         inner.pending_votes.clear();
-
-        // Supply integrity check for apply_remote_block
-        let supply_after = inner.state.total_supply();
-        let expected_burn = total_fees * 30 / 100;
-        let expected_supply = supply_before - expected_burn;
-        if supply_after != expected_supply {
-            tracing::error!(
-                height = block.height,
-                before = supply_before,
-                after = supply_after,
-                expected = expected_supply,
-                diff = supply_after as i128 - expected_supply as i128,
-                total_fees,
-                "SUPPLY INTEGRITY VIOLATION in apply_remote_block"
-            );
-        }
 
         tracing::info!(
             height = block.height,
@@ -1146,16 +1165,20 @@ impl Chain {
                         }
 
                         // Rebuild validator set from snapshot's state.stakes
-                        // so post-genesis validators are recognized for block production
-                        if !state.stakes.is_empty() {
-                            inner.validator_set = ValidatorSet::with_initial_stakes(
-                                state.stakes.iter().map(|(addr, amount)| (*addr, *amount)).collect()
-                            );
-                            tracing::info!(
-                                validators = inner.validator_set.active.len(),
-                                "Validator set rebuilt from snapshot state.stakes"
-                            );
-                        }
+                        // (WorldState.stakes is the single source of truth)
+                        inner.validator_set = ValidatorSet::with_initial_stakes(&state.stakes);
+                        tracing::info!(
+                            validators = inner.validator_set.active.len(),
+                            "Validator set rebuilt from snapshot state.stakes"
+                        );
+
+                        // Restore slashing state from WorldState persisted fields
+                        inner.slashing = SlashingState {
+                            jailed: state.jailed_validators.clone(),
+                            missed_slots: state.validator_missed_slots.clone(),
+                            assigned_slots: state.validator_assigned_slots.clone(),
+                            ..Default::default()
+                        };
 
                         inner.state = state;
                         // Update latest_block from snapshot to re-establish chain continuity
@@ -1186,11 +1209,12 @@ impl Chain {
         self.inner.lock().expect("chain state mutex poisoned").latest_block.height
     }
 
-    /// Full supply audit: enumerate all balances and stakes.
+    /// Full supply audit: enumerate all balances, stakes, and unbonding.
     pub fn get_total_supply_audit(&self) -> serde_json::Value {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
         let total_balances: u128 = inner.state.balances.values().sum();
         let total_stakes: u128 = inner.state.stakes.values().sum();
+        let total_unbonding: u128 = inner.state.unbonding_queue.iter().map(|e| e.amount).sum();
         let balances: Vec<serde_json::Value> = inner.state.balances.iter()
             .filter(|(_, b)| **b > 0)
             .map(|(addr, b)| serde_json::json!({"address": hex::encode(addr), "balance": b.to_string()}))
@@ -1202,9 +1226,11 @@ impl Chain {
         serde_json::json!({
             "totalBalances": total_balances.to_string(),
             "totalStakes": total_stakes.to_string(),
-            "totalSupply": (total_balances + total_stakes).to_string(),
+            "totalUnbonding": total_unbonding.to_string(),
+            "totalSupply": (total_balances + total_stakes + total_unbonding).to_string(),
             "numBalanceEntries": inner.state.balances.len(),
             "numStakeEntries": inner.state.stakes.len(),
+            "numUnbondingEntries": inner.state.unbonding_queue.len(),
             "balances": balances,
             "stakes": stakes,
         })
@@ -1422,54 +1448,13 @@ impl Chain {
             .map_err(|e| e.to_string())
     }
 
-    /// Synchronize the ValidatorSet candidates from WorldState stakes.
-    /// Called after block production/application to keep the consensus-layer
-    /// validator set in sync with the state-layer stake map.
-    fn sync_validator_stakes(inner: &mut ChainInner) {
-        let block_height = inner.state.block_height;
-
-        // Collect addresses that are in WorldState stakes but not in ValidatorSet
-        // or whose amounts differ.
-        let state_stakes: Vec<([u8; 32], u128)> = inner
-            .state
-            .stakes
-            .iter()
-            .map(|(addr, amount)| (*addr, *amount))
-            .collect();
-
-        // Build a set of addresses currently staked in world state
-        let staked_addrs: std::collections::HashSet<[u8; 32]> = inner
-            .state
-            .stakes
-            .keys()
-            .copied()
-            .collect();
-
-        // Remove candidates that are no longer in world state stakes
-        let to_remove: Vec<[u8; 32]> = inner
-            .validator_set
-            .candidates
-            .keys()
-            .filter(|addr| !staked_addrs.contains(*addr))
-            .copied()
-            .collect();
-        for addr in to_remove {
-            inner.validator_set.candidates.remove(&addr);
-        }
-
-        // Add or update candidates from world state
-        for (addr, amount) in state_stakes {
-            let entry = inner
-                .validator_set
-                .candidates
-                .entry(addr)
-                .or_insert(claw_consensus::StakeInfo {
-                    address: addr,
-                    amount: 0,
-                    staked_at: block_height,
-                });
-            entry.amount = amount;
-        }
+    /// Persist slashing state to WorldState fields for snapshot consistency.
+    /// Called after block production/application so that slashing state
+    /// survives node restart via the state snapshot.
+    fn sync_slashing_to_world_state(inner: &mut ChainInner) {
+        inner.state.jailed_validators = inner.slashing.jailed.clone();
+        inner.state.validator_missed_slots = inner.slashing.missed_slots.clone();
+        inner.state.validator_assigned_slots = inner.slashing.assigned_slots.clone();
     }
 
     // === Staking query methods for RPC ===

@@ -1,9 +1,11 @@
 //! Slashing: equivocation detection and downtime penalties.
+//!
+//! All slashing operations modify WorldState.stakes directly (the single source
+//! of truth). ValidatorSet is never mutated by slashing code.
 
 use std::collections::BTreeMap;
 
 use crate::types::{EPOCH_LENGTH, MIN_STAKE};
-use crate::validator_set::ValidatorSet;
 
 /// Penalty for equivocation (double-signing): 10% of stake (1000 basis points).
 const EQUIVOCATION_SLASH_BPS: u64 = 1000;
@@ -29,6 +31,10 @@ pub struct EquivocationEvidence {
 }
 
 /// Tracks slashing state: jailed validators, equivocation evidence, and missed slots.
+///
+/// This state is persisted via WorldState fields (jailed_validators,
+/// validator_missed_slots, validator_assigned_slots). The in-memory
+/// SlashingState is reconstructed from WorldState on startup.
 #[derive(Debug, Clone, Default)]
 pub struct SlashingState {
     /// Jailed validators: address -> jail_until_height (exclusive).
@@ -57,11 +63,12 @@ impl SlashingState {
 
     /// Record equivocation evidence and apply the penalty.
     ///
+    /// Slashes the validator's stake directly in `stakes` (WorldState.stakes).
     /// Returns the amount slashed, or an error if evidence is invalid.
     pub fn report_equivocation(
         &mut self,
         evidence: EquivocationEvidence,
-        validator_set: &mut ValidatorSet,
+        stakes: &mut BTreeMap<[u8; 32], u128>,
         current_height: u64,
     ) -> Result<u128, &'static str> {
         // Validate: must be two different block hashes
@@ -74,17 +81,13 @@ impl SlashingState {
             return Err("equivocation evidence has identical signatures");
         }
 
-        // Check validator is a known candidate
-        if !validator_set.candidates.contains_key(&evidence.validator) {
-            return Err("validator is not a candidate");
+        // Check validator has an active stake
+        if !stakes.contains_key(&evidence.validator) {
+            return Err("validator has no active stake");
         }
 
         // Apply slash: 10% of stake
-        let slashed = slash_stake(
-            validator_set,
-            &evidence.validator,
-            EQUIVOCATION_SLASH_BPS,
-        );
+        let slashed = slash_stake(stakes, &evidence.validator, EQUIVOCATION_SLASH_BPS);
 
         // Jail the validator for 1 epoch
         let jail_until = current_height + JAIL_DURATION;
@@ -117,12 +120,12 @@ impl SlashingState {
     /// Process downtime slashing at epoch boundary.
     ///
     /// For each validator that missed > 50% of their assigned proposal slots
-    /// in this epoch, slash 1% of their stake.
+    /// in this epoch, slash 1% of their stake directly in WorldState.stakes.
     ///
     /// Returns a list of (validator_address, slashed_amount).
     pub fn process_downtime_slashing(
         &mut self,
-        validator_set: &mut ValidatorSet,
+        stakes: &mut BTreeMap<[u8; 32], u128>,
         current_height: u64,
     ) -> Vec<([u8; 32], u128)> {
         let mut slashed_validators = Vec::new();
@@ -137,11 +140,7 @@ impl SlashingState {
             let missed_percent = (missed * 100) / assigned;
 
             if missed_percent > DOWNTIME_THRESHOLD_PERCENT {
-                let slashed = slash_stake(
-                    validator_set,
-                    validator,
-                    DOWNTIME_SLASH_BPS,
-                );
+                let slashed = slash_stake(stakes, validator, DOWNTIME_SLASH_BPS);
 
                 if slashed > 0 {
                     // Jail the validator to exclude from next epoch's active set
@@ -195,15 +194,16 @@ impl SlashingState {
 }
 
 /// Slash a validator's stake by the given basis points (e.g., 1000 = 10%).
-/// If the remaining stake falls below MIN_STAKE, the candidate is removed entirely.
-/// Returns the amount slashed.
+/// Operates directly on WorldState.stakes. If the remaining stake falls below
+/// MIN_STAKE, the stake entry is removed entirely.
+/// Returns the amount slashed (burned — not credited to anyone).
 fn slash_stake(
-    validator_set: &mut ValidatorSet,
+    stakes: &mut BTreeMap<[u8; 32], u128>,
     address: &[u8; 32],
     basis_points: u64,
 ) -> u128 {
-    let stake = match validator_set.candidates.get(address) {
-        Some(info) => info.amount,
+    let stake = match stakes.get(address) {
+        Some(&amount) => amount,
         None => return 0,
     };
 
@@ -215,13 +215,11 @@ fn slash_stake(
     let remaining = stake.saturating_sub(slash_amount);
 
     if remaining < MIN_STAKE {
-        // Remove candidate entirely
-        validator_set.candidates.remove(address);
+        // Remove stake entirely
+        stakes.remove(address);
     } else {
         // Reduce stake
-        if let Some(info) = validator_set.candidates.get_mut(address) {
-            info.amount = remaining;
-        }
+        *stakes.get_mut(address).unwrap() = remaining;
     }
 
     slash_amount
@@ -237,12 +235,12 @@ mod tests {
         sk.verifying_key().to_bytes()
     }
 
-    fn setup_validator_set() -> ValidatorSet {
-        ValidatorSet::with_initial_stakes(vec![
-            (make_address(1), MIN_STAKE * 10),
-            (make_address(2), MIN_STAKE * 5),
-            (make_address(3), MIN_STAKE * 2),
-        ])
+    fn setup_stakes() -> BTreeMap<[u8; 32], u128> {
+        let mut stakes = BTreeMap::new();
+        stakes.insert(make_address(1), MIN_STAKE * 10);
+        stakes.insert(make_address(2), MIN_STAKE * 5);
+        stakes.insert(make_address(3), MIN_STAKE * 2);
+        stakes
     }
 
     #[test]
@@ -273,10 +271,10 @@ mod tests {
 
     #[test]
     fn equivocation_slashes_10_percent() {
-        let mut vs = setup_validator_set();
+        let mut stakes = setup_stakes();
         let mut slashing = SlashingState::new();
         let addr = make_address(1);
-        let original_stake = vs.candidates[&addr].amount; // 10 * MIN_STAKE
+        let original_stake = stakes[&addr]; // 10 * MIN_STAKE
 
         let evidence = EquivocationEvidence {
             validator: addr,
@@ -287,10 +285,12 @@ mod tests {
             signature_b: vec![4, 5, 6],
         };
 
-        let slashed = slashing.report_equivocation(evidence, &mut vs, 50).unwrap();
+        let slashed = slashing
+            .report_equivocation(evidence, &mut stakes, 50)
+            .unwrap();
         let expected_slash = original_stake / 10; // 10%
         assert_eq!(slashed, expected_slash);
-        assert_eq!(vs.candidates[&addr].amount, original_stake - expected_slash);
+        assert_eq!(stakes[&addr], original_stake - expected_slash);
 
         // Validator should be jailed
         assert!(slashing.is_jailed(&addr, 50));
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn equivocation_same_hash_rejected() {
-        let mut vs = setup_validator_set();
+        let mut stakes = setup_stakes();
         let mut slashing = SlashingState::new();
 
         let evidence = EquivocationEvidence {
@@ -312,15 +312,17 @@ mod tests {
             signature_b: vec![4, 5, 6],
         };
 
-        assert!(slashing.report_equivocation(evidence, &mut vs, 50).is_err());
+        assert!(slashing
+            .report_equivocation(evidence, &mut stakes, 50)
+            .is_err());
     }
 
     #[test]
     fn downtime_slashing_over_threshold() {
-        let mut vs = setup_validator_set();
+        let mut stakes = setup_stakes();
         let mut slashing = SlashingState::new();
         let addr = make_address(2);
-        let original_stake = vs.candidates[&addr].amount;
+        let original_stake = stakes[&addr];
 
         // Assigned 10 slots, missed 6 (60% > 50%)
         for _ in 0..10 {
@@ -330,7 +332,7 @@ mod tests {
             slashing.record_missed_slot(&addr);
         }
 
-        let results = slashing.process_downtime_slashing(&mut vs, 100);
+        let results = slashing.process_downtime_slashing(&mut stakes, 100);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, addr);
 
@@ -345,7 +347,7 @@ mod tests {
 
     #[test]
     fn downtime_under_threshold_no_slash() {
-        let mut vs = setup_validator_set();
+        let mut stakes = setup_stakes();
         let mut slashing = SlashingState::new();
         let addr = make_address(2);
 
@@ -357,7 +359,7 @@ mod tests {
             slashing.record_missed_slot(&addr);
         }
 
-        let results = slashing.process_downtime_slashing(&mut vs, 100);
+        let results = slashing.process_downtime_slashing(&mut stakes, 100);
         assert!(results.is_empty());
 
         // Validator should NOT be jailed when under threshold
@@ -365,12 +367,12 @@ mod tests {
     }
 
     #[test]
-    fn slash_below_min_removes_candidate() {
-        let mut vs = ValidatorSet::with_initial_stakes(vec![
-            (make_address(1), MIN_STAKE), // exactly at minimum
-        ]);
-        let mut slashing = SlashingState::new();
+    fn slash_below_min_removes_stake() {
+        let mut stakes = BTreeMap::new();
         let addr = make_address(1);
+        stakes.insert(addr, MIN_STAKE); // exactly at minimum
+
+        let mut slashing = SlashingState::new();
 
         let evidence = EquivocationEvidence {
             validator: addr,
@@ -381,9 +383,11 @@ mod tests {
             signature_b: vec![2],
         };
 
-        slashing.report_equivocation(evidence, &mut vs, 10).unwrap();
+        slashing
+            .report_equivocation(evidence, &mut stakes, 10)
+            .unwrap();
         // After 10% slash, remaining = 90% of MIN_STAKE < MIN_STAKE
-        assert!(!vs.candidates.contains_key(&addr));
+        assert!(!stakes.contains_key(&addr));
     }
 
     #[test]

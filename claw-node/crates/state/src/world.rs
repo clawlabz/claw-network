@@ -39,11 +39,11 @@ pub const MAX_CATEGORY_LEN: usize = 64;
 
 /// The complete world state of ClawNetwork.
 ///
-/// Note: Custom `BorshDeserialize` is implemented to handle backward compatibility
-/// with state stored before the contract fields were added. If the reader has
-/// remaining bytes after `block_height`, they are parsed as contract data; otherwise
-/// the contract fields default to empty.
-#[derive(Debug, Clone, Default, BorshSerialize)]
+/// WorldState is the single source of truth for all on-chain state including
+/// staking, slashing, and validator management. After the staking refactor,
+/// ValidatorSet no longer maintains its own candidates — it reads from
+/// WorldState.stakes directly.
+#[derive(Debug, Clone, Default, BorshSerialize, BorshDeserialize)]
 pub struct WorldState {
     /// Native CLW balances.
     pub balances: BTreeMap<[u8; 32], u128>,
@@ -87,141 +87,13 @@ pub struct WorldState {
     pub stake_commissions: BTreeMap<[u8; 32], u16>,
     /// Token allowances: (owner, spender, token_id) → approved amount.
     pub token_allowances: BTreeMap<([u8; 32], [u8; 32], [u8; 32]), u128>,
-}
-
-impl BorshDeserialize for WorldState {
-    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        let mut buf = Vec::new();
-        reader.read_to_end(&mut buf)?;
-        let mut cursor = std::io::Cursor::new(&buf);
-
-        let balances = BTreeMap::<[u8; 32], u128>::deserialize_reader(&mut cursor)?;
-        let token_balances =
-            BTreeMap::<([u8; 32], [u8; 32]), u128>::deserialize_reader(&mut cursor)?;
-        let nonces = BTreeMap::<[u8; 32], u64>::deserialize_reader(&mut cursor)?;
-        let agents = BTreeMap::<[u8; 32], AgentIdentity>::deserialize_reader(&mut cursor)?;
-        let tokens = BTreeMap::<[u8; 32], TokenDef>::deserialize_reader(&mut cursor)?;
-        let reputation = Vec::<ReputationAttestation>::deserialize_reader(&mut cursor)?;
-        let services =
-            BTreeMap::<([u8; 32], String), ServiceEntry>::deserialize_reader(&mut cursor)?;
-        let block_height = u64::deserialize_reader(&mut cursor)?;
-
-        // New fields — default to empty if no more bytes remain (backward compat)
-        let has_more = (cursor.position() as usize) < buf.len();
-        let contracts = if has_more {
-            BTreeMap::<[u8; 32], claw_vm::ContractInstance>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-        let has_more = (cursor.position() as usize) < buf.len();
-        let contract_storage = if has_more {
-            BTreeMap::<([u8; 32], Vec<u8>), Vec<u8>>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-        let has_more = (cursor.position() as usize) < buf.len();
-        let contract_code = if has_more {
-            BTreeMap::<[u8; 32], Vec<u8>>::deserialize_reader(&mut cursor).unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let stakes = if has_more {
-            BTreeMap::<[u8; 32], u128>::deserialize_reader(&mut cursor).unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let unbonding_queue = if has_more {
-            Vec::<claw_types::state::UnbondingEntry>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let activity_stats = if has_more {
-            BTreeMap::<[u8; 32], claw_types::state::ActivityStats>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let validator_uptime = if has_more {
-            BTreeMap::<[u8; 32], claw_types::state::ValidatorUptime>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let platform_activity = if has_more {
-            BTreeMap::<[u8; 32], claw_types::state::PlatformActivityAgg>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let platform_report_tracker = if has_more {
-            BTreeMap::<([u8; 32], u64), bool>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let stake_delegations = if has_more {
-            BTreeMap::<[u8; 32], [u8; 32]>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let stake_commissions = if has_more {
-            BTreeMap::<[u8; 32], u16>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let has_more = (cursor.position() as usize) < buf.len();
-        let token_allowances = if has_more {
-            BTreeMap::<([u8; 32], [u8; 32], [u8; 32]), u128>::deserialize_reader(&mut cursor)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        Ok(WorldState {
-            balances,
-            token_balances,
-            nonces,
-            agents,
-            tokens,
-            reputation,
-            services,
-            block_height,
-            contracts,
-            contract_storage,
-            contract_code,
-            stakes,
-            unbonding_queue,
-            activity_stats,
-            validator_uptime,
-            platform_activity,
-            platform_report_tracker,
-            stake_delegations,
-            stake_commissions,
-            token_allowances,
-        })
-    }
+    /// Jailed validators: address → jail_until_height.
+    /// Persisted from SlashingState for state snapshot consistency.
+    pub jailed_validators: BTreeMap<[u8; 32], u64>,
+    /// Missed proposal slots per validator in the current epoch.
+    pub validator_missed_slots: BTreeMap<[u8; 32], u64>,
+    /// Total proposal slots assigned per validator in the current epoch.
+    pub validator_assigned_slots: BTreeMap<[u8; 32], u64>,
 }
 
 impl WorldState {
@@ -473,16 +345,44 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
+        // Jailed validators
+        for (addr, jail_until) in &self.jailed_validators {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"jailed:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&jail_until.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Validator missed slots
+        for (addr, missed) in &self.validator_missed_slots {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"missed:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&missed.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Validator assigned slots
+        for (addr, assigned) in &self.validator_assigned_slots {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"assigned:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&assigned.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
         leaves.sort();
         merkle_root(&leaves)
     }
 
-    /// Calculate total supply: sum of all balances + all stakes.
+    /// Calculate total supply: sum of all balances + all stakes + unbonding.
     /// Used for supply integrity auditing.
     pub fn total_supply(&self) -> u128 {
         let total_balances: u128 = self.balances.values().sum();
         let total_stakes: u128 = self.stakes.values().sum();
-        total_balances + total_stakes
+        let total_unbonding: u128 = self.unbonding_queue.iter().map(|e| e.amount).sum();
+        total_balances + total_stakes + total_unbonding
     }
 
     /// Get CLW balance for an address.

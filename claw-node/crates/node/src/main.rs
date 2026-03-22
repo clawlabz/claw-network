@@ -499,7 +499,7 @@ async fn main() -> Result<()> {
                     tracing::warn!("No bootstrap peers configured — running as solo node. Use --bootstrap to connect.");
                 }
 
-                match claw_p2p::P2pNetwork::new(&data_dir, resolved_p2p_port, bootstrap_addrs) {
+                match claw_p2p::P2pNetwork::new(&data_dir, resolved_p2p_port, bootstrap_addrs, net_cfg.chain_id) {
                     Ok((mut p2p, event_rx, command_tx)) => {
                         tracing::info!(port = resolved_p2p_port, peers = all_bootstrap.len(), "P2P network started");
 

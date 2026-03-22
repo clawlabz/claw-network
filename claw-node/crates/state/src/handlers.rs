@@ -795,16 +795,19 @@ pub fn handle_change_delegation(state: &mut WorldState, tx: &Transaction) -> Res
         ));
     }
 
-    // Authorization: sender must be the current delegator or the validator itself
+    // Authorization: only the current delegator can change delegation.
+    // For self-stake (delegator == validator), the validator itself can change.
+    // Validators CANNOT unilaterally redirect external delegations.
     let current_delegator = state
         .stake_delegations
         .get(&payload.validator)
         .copied()
         .unwrap_or(payload.validator); // no delegation record = self-stake
 
-    if tx.from != current_delegator && tx.from != payload.validator {
+    let is_self_stake = current_delegator == payload.validator;
+    if tx.from != current_delegator && !(is_self_stake && tx.from == payload.validator) {
         return Err(StateError::StakeError(
-            "not authorized: sender is neither the current delegator nor the validator".into(),
+            "not authorized: only the current delegator can change delegation".into(),
         ));
     }
 

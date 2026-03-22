@@ -91,7 +91,12 @@ impl request_response::Codec for SyncCodec {
 }
 
 impl ClawBehaviour {
-    pub fn new(local_key: &libp2p::identity::Keypair) -> Result<Self, Box<dyn std::error::Error>> {
+    /// Create a new ClawBehaviour with chain_id-scoped protocols.
+    ///
+    /// The `chain_id` is used to scope gossipsub topics and request_response
+    /// protocols so that different chains (mainnet/testnet) on the same
+    /// network do not exchange messages.
+    pub fn new(local_key: &libp2p::identity::Keypair, chain_id: &str) -> Result<Self, Box<dyn std::error::Error>> {
         // Gossipsub config
         let gossipsub_config = gossipsub::ConfigBuilder::default()
             .heartbeat_interval(Duration::from_secs(1))
@@ -106,12 +111,12 @@ impl ClawBehaviour {
         )
         .map_err(|e| format!("gossipsub: {e}"))?;
 
-        // Request-response for sync (raw bytes codec)
+        // Request-response for sync — chain_id scoped protocol
+        let sync_proto_str = crate::protocol::sync_protocol(chain_id);
+        let sync_proto = StreamProtocol::try_from_owned(sync_proto_str)
+            .map_err(|e| format!("invalid sync protocol: {e}"))?;
         let request_response = request_response::Behaviour::new(
-            [(
-                StreamProtocol::new("/claw/sync/1"),
-                ProtocolSupport::Full,
-            )],
+            [(sync_proto, ProtocolSupport::Full)],
             request_response::Config::default()
                 .with_request_timeout(Duration::from_secs(30)),
         );

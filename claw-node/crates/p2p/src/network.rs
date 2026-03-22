@@ -108,22 +108,24 @@ fn load_or_generate_keypair(data_dir: &Path) -> Result<identity::Keypair, Box<dy
 }
 
 impl P2pNetwork {
-    /// Create a new P2P network.
+    /// Create a new P2P network with chain_id-scoped protocols.
     /// Returns (network, event_receiver, command_sender).
     ///
     /// The `data_dir` is used to persist the P2P keypair so the peer ID
-    /// remains stable across restarts.
+    /// remains stable across restarts. The `chain_id` scopes gossipsub
+    /// topics and sync protocol to prevent cross-chain message leakage.
     pub fn new(
         data_dir: &Path,
         p2p_port: u16,
         bootstrap_addrs: Vec<Multiaddr>,
+        chain_id: &str,
     ) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>, mpsc::UnboundedSender<P2pCommand>), Box<dyn std::error::Error>> {
         let local_key = load_or_generate_keypair(data_dir)?;
         let local_peer_id = local_key.public().to_peer_id();
 
-        tracing::info!(%local_peer_id, "P2P identity created");
+        tracing::info!(%local_peer_id, %chain_id, "P2P identity created");
 
-        let behaviour = ClawBehaviour::new(&local_key)?;
+        let behaviour = ClawBehaviour::new(&local_key, chain_id)?;
 
         let mut swarm = SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
@@ -141,10 +143,10 @@ impl P2pNetwork {
             })
             .build();
 
-        // Subscribe to gossip topics
-        let tx_topic = gossipsub::IdentTopic::new(TOPIC_TX);
-        let block_topic = gossipsub::IdentTopic::new(TOPIC_BLOCK);
-        let vote_topic = gossipsub::IdentTopic::new(TOPIC_VOTE);
+        // Subscribe to chain_id-scoped gossip topics
+        let tx_topic = gossipsub::IdentTopic::new(protocol::topic_tx(chain_id));
+        let block_topic = gossipsub::IdentTopic::new(protocol::topic_block(chain_id));
+        let vote_topic = gossipsub::IdentTopic::new(protocol::topic_vote(chain_id));
         swarm.behaviour_mut().gossipsub.subscribe(&tx_topic)?;
         swarm.behaviour_mut().gossipsub.subscribe(&block_topic)?;
         swarm.behaviour_mut().gossipsub.subscribe(&vote_topic)?;
