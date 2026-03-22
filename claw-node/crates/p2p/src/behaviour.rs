@@ -100,7 +100,7 @@ impl ClawBehaviour {
         // Gossipsub config
         let gossipsub_config = gossipsub::ConfigBuilder::default()
             .heartbeat_interval(Duration::from_secs(1))
-            .validation_mode(gossipsub::ValidationMode::Permissive)
+            .validation_mode(gossipsub::ValidationMode::Strict)
             .max_transmit_size(MAX_P2P_MESSAGE_SIZE)
             .build()
             .map_err(|e| format!("gossipsub config: {e}"))?;

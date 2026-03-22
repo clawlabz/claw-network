@@ -7,6 +7,10 @@ use crate::constants::*;
 use crate::error::VmError;
 use crate::types::ExecutionContext;
 
+/// Maximum buffer size for guest-provided lengths in host functions (64 KB).
+/// Prevents a malicious contract from requesting an unbounded allocation.
+const MAX_HOST_BUFFER_SIZE: usize = 65536;
+
 /// Shared environment accessible by host functions.
 #[derive(Clone)]
 pub struct HostEnv {
@@ -63,6 +67,12 @@ impl HostEnv {
 // ---------------------------------------------------------------------------
 
 fn read_bytes(env: &FunctionEnvMut<HostEnv>, ptr: u32, len: u32) -> Result<Vec<u8>, VmError> {
+    if len as usize > MAX_HOST_BUFFER_SIZE {
+        return Err(VmError::MemoryError(format!(
+            "guest requested {} bytes, max is {}",
+            len, MAX_HOST_BUFFER_SIZE
+        )));
+    }
     let env_data = env.data();
     let memory = env_data
         .memory
@@ -92,6 +102,12 @@ fn write_bytes(env: &FunctionEnvMut<HostEnv>, ptr: u32, data: &[u8]) -> Result<(
 }
 
 /// Helper to deduct fuel inside a host function. Panics (traps) on exhaustion.
+/// Deduct fuel for a host function call.
+///
+/// Panics on fuel exhaustion. This is intentional — wasmer catches Rust panics
+/// from host functions and converts them to `RuntimeError`, which is then
+/// returned from `Instance::call()` as an error. The caller (`execute_with_timeout`)
+/// handles this via `thread::scope` + `recv_timeout`.
 fn deduct_fuel(env: &FunctionEnvMut<HostEnv>, cost: u64) {
     let data = env.data();
     if let Err(msg) = HostEnv::consume_fuel(
@@ -100,7 +116,7 @@ fn deduct_fuel(env: &FunctionEnvMut<HostEnv>, cost: u64) {
         cost,
         data.fuel_limit,
     ) {
-        panic!("fuel: {msg}");
+        panic!("out of fuel: {msg}");
     }
 }
 

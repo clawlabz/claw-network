@@ -1,6 +1,6 @@
 //! WorldState: the complete on-chain state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use claw_crypto::merkle::merkle_root;
@@ -94,6 +94,9 @@ pub struct WorldState {
     pub validator_missed_slots: BTreeMap<[u8; 32], u64>,
     /// Total proposal slots assigned per validator in the current epoch.
     pub validator_assigned_slots: BTreeMap<[u8; 32], u64>,
+    /// Permanently tracked equivocation evidence hashes (blake3 fingerprints).
+    /// Prevents replay of the same evidence across restarts.
+    pub processed_evidence: BTreeSet<[u8; 32]>,
 }
 
 impl WorldState {
@@ -387,6 +390,14 @@ impl WorldState {
             entry.extend_from_slice(b"assigned:");
             entry.extend_from_slice(addr);
             entry.extend_from_slice(&assigned.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Processed equivocation evidence (permanent dedup)
+        for hash in &self.processed_evidence {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"evidence:");
+            entry.extend_from_slice(hash);
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 

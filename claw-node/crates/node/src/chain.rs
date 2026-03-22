@@ -153,6 +153,7 @@ impl Chain {
             jailed: state.jailed_validators.clone(),
             missed_slots: state.validator_missed_slots.clone(),
             assigned_slots: state.validator_assigned_slots.clone(),
+            processed_evidence: state.processed_evidence.clone(),
             ..Default::default()
         };
 
@@ -434,6 +435,9 @@ impl Chain {
             .unwrap()
             .as_secs();
 
+        // Sync slashing state to WorldState BEFORE computing state_root
+        // so the root commits to current slashing data
+        Self::sync_slashing_to_world_state(inner);
         let state_root = inner.state.state_root();
 
         let mut block = Block {
@@ -717,6 +721,12 @@ impl Chain {
             // asynchronously), so including them would cause state_root divergence
             // between live nodes and syncing nodes.
         }
+
+        // Sync slashing state to state_clone BEFORE computing state_root
+        state_clone.jailed_validators = inner.slashing.jailed.clone();
+        state_clone.validator_missed_slots = inner.slashing.missed_slots.clone();
+        state_clone.validator_assigned_slots = inner.slashing.assigned_slots.clone();
+        state_clone.processed_evidence = inner.slashing.processed_evidence.clone();
 
         // Verify state root
         let computed_root = state_clone.state_root();
@@ -1151,6 +1161,7 @@ impl Chain {
                             jailed: state.jailed_validators.clone(),
                             missed_slots: state.validator_missed_slots.clone(),
                             assigned_slots: state.validator_assigned_slots.clone(),
+                            processed_evidence: state.processed_evidence.clone(),
                             ..Default::default()
                         };
 
@@ -1425,6 +1436,7 @@ impl Chain {
         inner.state.jailed_validators = inner.slashing.jailed.clone();
         inner.state.validator_missed_slots = inner.slashing.missed_slots.clone();
         inner.state.validator_assigned_slots = inner.slashing.assigned_slots.clone();
+        inner.state.processed_evidence = inner.slashing.processed_evidence.clone();
     }
 
     // === Staking query methods for RPC ===
