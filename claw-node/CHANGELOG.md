@@ -7,7 +7,7 @@
 - **PlatformActivityReport** transaction type (tx=11): Third-party platforms can report agent activity on-chain (requires >= 50,000 CLAW stake)
 - **Activity Statistics**: Per-epoch automatic tracking of transaction counts, contract deployments, gas consumed per address
 - **Validator Uptime Tracking**: Sliding window signed-blocks tracking for validator reliability scoring
-- **`clw_getAgentScore` RPC**: Query per-address Agent Score with dimension breakdown
+- **`claw_getAgentScore` RPC**: Query per-address Agent Score with dimension breakdown
 
 ### Changed
 - Agent Score calculation: from attestation-based (subjective) to on-chain behavior-based (automated)

@@ -63,7 +63,7 @@ Agent Score is a multi-dimensional, fully automated reputation system. It replac
 
 ```bash
 curl -H "Content-Type: application/json" http://localhost:9710 \
-  -d '{"jsonrpc":"2.0","method":"clw_getAgentScore","params":["<address>"],"id":1}'
+  -d '{"jsonrpc":"2.0","method":"claw_getAgentScore","params":["<address>"],"id":1}'
 ```
 
 Returns:
@@ -109,33 +109,33 @@ All JSON-RPC calls use `POST /` with `Content-Type: application/json`.
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `clw_blockNumber` | `[]` | Latest block height |
-| `clw_getBlockByNumber` | `[height]` | Block object or null |
-| `clw_getBalance` | `["<address>"]` | Balance string (9 decimals) |
-| `clw_getNonce` | `["<address>"]` | Current nonce |
-| `clw_getAgent` | `["<address>"]` | Agent identity or null |
-| `clw_getAgentScore` | `["<address>"]` | Agent Score with dimension breakdown |
-| `clw_getReputation` | `["<address>"]` | Array of attestations _(legacy)_ |
-| `clw_getServices` | `["<type>?"]` | Array of service entries |
-| `clw_getTokenBalance` | `["<address>", "<tokenId>"]` | Custom token balance |
-| `clw_getTokenInfo` | `["<tokenId>"]` | Token definition or null |
-| `clw_getTransactionReceipt` | `["<txHash>"]` | `{blockHeight, transactionIndex}` or null |
-| `clw_getTransactionByHash` | `["<txHash>"]` | Full transaction or null |
-| `clw_getTransactionsByAddress` | `["<address>", limit?, offset?]` | Transaction history |
-| `clw_getStake` | `["<address>"]` | Staked amount |
-| `clw_getUnbonding` | `["<address>"]` | Unbonding entries |
-| `clw_getValidators` | `[]` | Active validator set |
-| `clw_getContractInfo` | `["<address>"]` | Contract metadata |
-| `clw_getContractStorage` | `["<address>", "<key>"]` | Storage value |
-| `clw_getContractCode` | `["<address>"]` | Contract Wasm bytecode |
-| `clw_callContractView` | `["<address>", "<method>", "<argsHex>"]` | Read-only contract call |
+| `claw_blockNumber` | `[]` | Latest block height |
+| `claw_getBlockByNumber` | `[height]` | Block object or null |
+| `claw_getBalance` | `["<address>"]` | Balance string (9 decimals) |
+| `claw_getNonce` | `["<address>"]` | Current nonce |
+| `claw_getAgent` | `["<address>"]` | Agent identity or null |
+| `claw_getAgentScore` | `["<address>"]` | Agent Score with dimension breakdown |
+| `claw_getReputation` | `["<address>"]` | Array of attestations _(legacy)_ |
+| `claw_getServices` | `["<type>?"]` | Array of service entries |
+| `claw_getTokenBalance` | `["<address>", "<tokenId>"]` | Custom token balance |
+| `claw_getTokenInfo` | `["<tokenId>"]` | Token definition or null |
+| `claw_getTransactionReceipt` | `["<txHash>"]` | `{blockHeight, transactionIndex}` or null |
+| `claw_getTransactionByHash` | `["<txHash>"]` | Full transaction or null |
+| `claw_getTransactionsByAddress` | `["<address>", limit?, offset?]` | Transaction history |
+| `claw_getStake` | `["<address>"]` | Staked amount |
+| `claw_getUnbonding` | `["<address>"]` | Unbonding entries |
+| `claw_getValidators` | `[]` | Active validator set |
+| `claw_getContractInfo` | `["<address>"]` | Contract metadata |
+| `claw_getContractStorage` | `["<address>", "<key>"]` | Storage value |
+| `claw_getContractCode` | `["<address>"]` | Contract Wasm bytecode |
+| `claw_callContractView` | `["<address>", "<method>", "<argsHex>"]` | Read-only contract call |
 
 ### Transaction Methods
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `clw_sendTransaction` | `["<hexEncodedSignedTx>"]` | Transaction hash |
-| `clw_faucet` | `["<address>"]` | `{address, amount, newBalance}` (testnet only) |
+| `claw_sendTransaction` | `["<hexEncodedSignedTx>"]` | Transaction hash |
+| `claw_faucet` | `["<address>"]` | `{address, amount, newBalance}` (testnet only) |
 
 ### HTTP Endpoints
 

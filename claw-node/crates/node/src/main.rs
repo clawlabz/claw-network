@@ -631,7 +631,7 @@ async fn main() -> Result<()> {
 }
 
 /// Parse a CLAW amount string (supports decimals, e.g. "10000" or "0.5") into raw u128 (9 decimals).
-fn parse_clw_amount(s: &str) -> Result<u128> {
+fn parse_claw_amount(s: &str) -> Result<u128> {
     let s = s.trim();
     let (whole, frac) = if let Some(dot) = s.find('.') {
         let whole: u128 = s[..dot].parse().map_err(|e| anyhow::anyhow!("invalid amount: {e}"))?;
@@ -674,7 +674,7 @@ async fn submit_tx(
     let from = cfg.address;
 
     // Get current nonce
-    let nonce_result = rpc_call(rpc, "clw_getNonce", vec![serde_json::json!(hex::encode(from))]).await?;
+    let nonce_result = rpc_call(rpc, "claw_getNonce", vec![serde_json::json!(hex::encode(from))]).await?;
     let current_nonce: u64 = nonce_result.as_u64().unwrap_or(0);
     let nonce = current_nonce + 1;
 
@@ -695,7 +695,7 @@ async fn submit_tx(
     let tx_hex = hex::encode(borsh::to_vec(&tx)?);
 
     // Submit
-    let result = rpc_call(rpc, "clw_sendTransaction", vec![serde_json::json!(tx_hex)]).await?;
+    let result = rpc_call(rpc, "claw_sendTransaction", vec![serde_json::json!(tx_hex)]).await?;
     let tx_hash = result.as_str().unwrap_or("unknown").to_string();
 
     Ok(tx_hash)
@@ -705,13 +705,13 @@ async fn handle_transfer_cli(data_dir: &std::path::Path, to: &str, amount: &str,
     use claw_types::transaction::{TokenTransferPayload, TxType};
 
     let to_addr = parse_hex_address(to)?;
-    let raw_amount = parse_clw_amount(amount)?;
+    let raw_amount = parse_claw_amount(amount)?;
 
     let cfg = config::load_config(data_dir)?;
     let from_hex = hex::encode(cfg.address);
 
     // Check balance
-    let balance_result = rpc_call(rpc, "clw_getBalance", vec![serde_json::json!(&from_hex)]).await?;
+    let balance_result = rpc_call(rpc, "claw_getBalance", vec![serde_json::json!(&from_hex)]).await?;
     let balance: u128 = balance_result.as_str()
         .and_then(|s| s.parse().ok())
         .or_else(|| balance_result.as_u64().map(|v| v as u128))
@@ -743,7 +743,7 @@ async fn handle_transfer_cli(data_dir: &std::path::Path, to: &str, amount: &str,
 async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_key: Option<&str>, commission: u16, rpc: &str) -> Result<()> {
     use claw_types::transaction::{StakeDepositPayload, TxType};
 
-    let raw_amount = parse_clw_amount(amount)?;
+    let raw_amount = parse_claw_amount(amount)?;
 
     if commission > 10000 {
         anyhow::bail!("commission must be 0-10000 basis points, got {}", commission);
@@ -753,7 +753,7 @@ async fn handle_stake_cli(data_dir: &std::path::Path, amount: &str, validator_ke
     let from_hex = hex::encode(cfg.address);
 
     // Check balance
-    let balance_result = rpc_call(rpc, "clw_getBalance", vec![serde_json::json!(&from_hex)]).await?;
+    let balance_result = rpc_call(rpc, "claw_getBalance", vec![serde_json::json!(&from_hex)]).await?;
     let balance: u128 = balance_result.as_str()
         .and_then(|s| s.parse().ok())
         .or_else(|| balance_result.as_u64().map(|v| v as u128))
@@ -854,7 +854,7 @@ async fn rpc_call(url: &str, method: &str, params: Vec<serde_json::Value>) -> Re
 async fn handle_unstake_cli(data_dir: &std::path::Path, amount: &str, validator_key: Option<&str>, rpc: &str) -> Result<()> {
     use claw_types::transaction::{StakeWithdrawPayload, TxType};
 
-    let raw_amount = parse_clw_amount(amount)?;
+    let raw_amount = parse_claw_amount(amount)?;
 
     let cfg = config::load_config(data_dir)?;
     let from_hex = hex::encode(cfg.address);
@@ -893,7 +893,7 @@ async fn handle_claim_stake_cli(data_dir: &std::path::Path, rpc: &str) -> Result
     let from_hex = hex::encode(cfg.address);
 
     // Query unbonding entries
-    let unbonding = rpc_call(rpc, "clw_getUnbonding", vec![serde_json::json!(&from_hex)]).await?;
+    let unbonding = rpc_call(rpc, "claw_getUnbonding", vec![serde_json::json!(&from_hex)]).await?;
     if unbonding.is_null() || unbonding.as_array().map_or(true, |a| a.is_empty()) {
         println!("No unbonding entries found for {}", from_hex);
         return Ok(());
@@ -1165,7 +1165,7 @@ async fn handle_call_contract_cli(
     } else {
         hex::decode(args).map_err(|e| anyhow::anyhow!("invalid hex args: {e}"))?
     };
-    let raw_value = parse_clw_amount(value)?;
+    let raw_value = parse_claw_amount(value)?;
 
     let cfg = config::load_config(data_dir)?;
     let from_hex = hex::encode(cfg.address);
@@ -1203,7 +1203,7 @@ async fn handle_register_service_cli(
 ) -> Result<()> {
     use claw_types::transaction::{ServiceRegisterPayload, TxType};
 
-    let price_amount = parse_clw_amount(price)?;
+    let price_amount = parse_claw_amount(price)?;
     let price_token = [0u8; 32]; // native CLAW token
 
     let cfg = config::load_config(data_dir)?;
@@ -1238,7 +1238,7 @@ async fn handle_register_service_cli(
 async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()> {
     match action {
         ContractAction::Info { address } => {
-            let result = rpc_call(rpc_url, "clw_getContractInfo", vec![address.into()]).await?;
+            let result = rpc_call(rpc_url, "claw_getContractInfo", vec![address.into()]).await?;
             if result.is_null() {
                 println!("Contract not found");
             } else {
@@ -1246,7 +1246,7 @@ async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()
             }
         }
         ContractAction::Storage { address, key } => {
-            let result = rpc_call(rpc_url, "clw_getContractStorage", vec![address.into(), key.into()]).await?;
+            let result = rpc_call(rpc_url, "claw_getContractStorage", vec![address.into(), key.into()]).await?;
             if result.is_null() {
                 println!("Storage key not found");
             } else {
@@ -1254,7 +1254,7 @@ async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()
             }
         }
         ContractAction::Code { address } => {
-            let result = rpc_call(rpc_url, "clw_getContractCode", vec![address.into()]).await?;
+            let result = rpc_call(rpc_url, "claw_getContractCode", vec![address.into()]).await?;
             if result.is_null() {
                 println!("Contract not found");
             } else {
@@ -1274,7 +1274,7 @@ async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()
             let args_param = if args.is_empty() { "" } else { &args };
             let result = rpc_call(
                 rpc_url,
-                "clw_callContractView",
+                "claw_callContractView",
                 vec![address.into(), method.into(), args_param.into()],
             )
             .await?;

@@ -89,11 +89,11 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
     }
 
     let result = match req.method.as_str() {
-        "clw_blockNumber" => {
+        "claw_blockNumber" => {
             let height = chain.get_block_number();
             Ok(serde_json::json!(height))
         }
-        "clw_getBlockByNumber" => {
+        "claw_getBlockByNumber" => {
             let height = req.params.get(0)
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
@@ -119,14 +119,14 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 None => Ok(Value::Null),
             }
         }
-        "clw_getBalance" => {
+        "claw_getBalance" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => Ok(serde_json::json!(chain.get_balance(&a).to_string())),
                 Err(e) => Err(e),
             }
         }
-        "clw_getTokenBalance" => {
+        "claw_getTokenBalance" => {
             let addr = parse_address(&req.params, 0);
             let token = parse_address(&req.params, 1);
             match (addr, token) {
@@ -134,7 +134,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 _ => Err("invalid params".into()),
             }
         }
-        "clw_getAgent" => {
+        "claw_getAgent" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => match chain.get_agent(&a) {
@@ -145,7 +145,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getReputation" => {
+        "claw_getReputation" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => serde_json::to_value(chain.get_reputation(&a))
@@ -153,12 +153,12 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getServices" => {
+        "claw_getServices" => {
             let stype = req.params.get(0).and_then(|v| v.as_str());
             serde_json::to_value(chain.get_services(stype))
                 .map_err(|e| format!("Serialization error: {e}"))
         }
-        "clw_getTransactionReceipt" => {
+        "claw_getTransactionReceipt" => {
             let hash = parse_address(&req.params, 0);
             match hash {
                 Ok(h) => match chain.get_tx_receipt(&h) {
@@ -171,7 +171,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getTransactionByHash" => {
+        "claw_getTransactionByHash" => {
             let hash = parse_address(&req.params, 0);
             match hash {
                 Ok(h) => match chain.get_tx_by_hash(&h) {
@@ -197,7 +197,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_sendTransaction" => {
+        "claw_sendTransaction" => {
             let hex_str = req.params.get(0).and_then(|v| v.as_str());
             match hex_str {
                 Some(h) => {
@@ -217,14 +217,14 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 None => Err("missing tx hex param".into()),
             }
         }
-        "clw_getNonce" => {
+        "claw_getNonce" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => Ok(serde_json::json!(chain.get_nonce(&a))),
                 Err(e) => Err(e),
             }
         }
-        "clw_getTokenInfo" => {
+        "claw_getTokenInfo" => {
             let token = parse_address(&req.params, 0);
             match token {
                 Ok(t) => match chain.get_token_info(&t) {
@@ -235,7 +235,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getTransactionsByAddress" => {
+        "claw_getTransactionsByAddress" => {
             let addr = parse_address(&req.params, 0);
             let limit = req.params.get(1)
                 .and_then(|v| v.as_u64())
@@ -265,7 +265,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getContractInfo" => {
+        "claw_getContractInfo" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => match chain.get_contract_info(&a) {
@@ -280,7 +280,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getContractStorage" => {
+        "claw_getContractStorage" => {
             let addr = parse_address(&req.params, 0);
             let key_hex = req.params.get(1).and_then(|v| v.as_str()).unwrap_or("");
             let key_bytes = hex::decode(key_hex).map_err(|e| format!("invalid key hex: {e}"));
@@ -292,7 +292,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         }
-        "clw_getContractCode" => {
+        "claw_getContractCode" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => match chain.get_contract_code(&a) {
@@ -305,7 +305,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_callContractView" => {
+        "claw_callContractView" => {
             let addr = parse_address(&req.params, 0);
             let method = req.params.get(1).and_then(|v| v.as_str()).unwrap_or("");
             let args_hex = req.params.get(2).and_then(|v| v.as_str()).unwrap_or("");
@@ -322,7 +322,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         }
-        "clw_getBlockRewards" => {
+        "claw_getBlockRewards" => {
             let height = req.params.get(0)
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| "missing or invalid height param".to_string());
@@ -347,14 +347,14 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getStake" => {
+        "claw_getStake" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => Ok(serde_json::json!(chain.get_stake(&a).to_string())),
                 Err(e) => Err(e),
             }
         }
-        "clw_getUnbonding" => {
+        "claw_getUnbonding" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => {
@@ -374,7 +374,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getAgentScore" => {
+        "claw_getAgentScore" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => {
@@ -392,7 +392,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getStakeDelegation" => {
+        "claw_getStakeDelegation" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => {
@@ -402,10 +402,10 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_getValidators" => {
+        "claw_getValidators" => {
             Ok(serde_json::json!(chain.get_validators()))
         }
-        "clw_getValidatorDetail" => {
+        "claw_getValidatorDetail" => {
             let addr = parse_address(&req.params, 0);
             match addr {
                 Ok(a) => match chain.get_validator_detail(&a) {
@@ -415,10 +415,10 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 Err(e) => Err(e),
             }
         }
-        "clw_totalSupply" => {
+        "claw_totalSupply" => {
             Ok(serde_json::json!(chain.get_total_supply_audit()))
         }
-        "clw_faucet" => {
+        "claw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())
             } else {
@@ -453,7 +453,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 }
             }
         }
-        "clw_estimateFee" => {
+        "claw_estimateFee" => {
             // Gas fee is currently fixed per transaction.
             // Returns the fee in base units (9 decimals).
             Ok(serde_json::json!({
@@ -462,7 +462,7 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 "description": "Fixed fee per transaction",
             }))
         }
-        "clw_getTokenAllowance" => {
+        "claw_getTokenAllowance" => {
             let owner = parse_address(&req.params, 0);
             let spender = parse_address(&req.params, 1);
             let token = parse_address(&req.params, 2);

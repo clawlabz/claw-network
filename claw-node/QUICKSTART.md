@@ -130,11 +130,11 @@ curl http://localhost:9710/health
 
 # Get block height
 curl -H "Content-Type: application/json" http://localhost:9710 \
-  -d '{"jsonrpc":"2.0","method":"clw_blockNumber","params":[],"id":1}'
+  -d '{"jsonrpc":"2.0","method":"claw_blockNumber","params":[],"id":1}'
 
 # Get testnet CLAW from faucet
 curl -H "Content-Type: application/json" http://localhost:9710 \
-  -d '{"jsonrpc":"2.0","method":"clw_faucet","params":["<YOUR_ADDRESS>"],"id":1}'
+  -d '{"jsonrpc":"2.0","method":"claw_faucet","params":["<YOUR_ADDRESS>"],"id":1}'
 ```
 
 ## Node management
@@ -174,23 +174,23 @@ All JSON-RPC calls use `POST /` with `Content-Type: application/json`.
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `clw_blockNumber` | `[]` | Latest block height (number) |
-| `clw_getBlockByNumber` | `[height]` | Block object or null |
-| `clw_getBalance` | `["<address>"]` | Balance string (9 decimals) |
-| `clw_getNonce` | `["<address>"]` | Current nonce (number) |
-| `clw_getAgent` | `["<address>"]` | Agent identity or null |
-| `clw_getReputation` | `["<address>"]` | Array of attestations |
-| `clw_getServices` | `["<type>?"]` | Array of service entries |
-| `clw_getTokenBalance` | `["<address>", "<tokenId>"]` | Custom token balance |
-| `clw_getTokenInfo` | `["<tokenId>"]` | Token definition or null |
-| `clw_getTransactionReceipt` | `["<txHash>"]` | `{blockHeight, transactionIndex}` or null |
+| `claw_blockNumber` | `[]` | Latest block height (number) |
+| `claw_getBlockByNumber` | `[height]` | Block object or null |
+| `claw_getBalance` | `["<address>"]` | Balance string (9 decimals) |
+| `claw_getNonce` | `["<address>"]` | Current nonce (number) |
+| `claw_getAgent` | `["<address>"]` | Agent identity or null |
+| `claw_getReputation` | `["<address>"]` | Array of attestations |
+| `claw_getServices` | `["<type>?"]` | Array of service entries |
+| `claw_getTokenBalance` | `["<address>", "<tokenId>"]` | Custom token balance |
+| `claw_getTokenInfo` | `["<tokenId>"]` | Token definition or null |
+| `claw_getTransactionReceipt` | `["<txHash>"]` | `{blockHeight, transactionIndex}` or null |
 
 ### Transaction methods
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `clw_sendTransaction` | `["<hexEncodedSignedTx>"]` | Transaction hash |
-| `clw_faucet` | `["<address>"]` | `{address, amount, newBalance}` (testnet only) |
+| `claw_sendTransaction` | `["<hexEncodedSignedTx>"]` | Transaction hash |
+| `claw_faucet` | `["<address>"]` | `{address, amount, newBalance}` (testnet only) |
 
 ### HTTP endpoints
 
@@ -382,7 +382,7 @@ curl http://localhost:9710/metrics
 
 # Check block height
 curl -s -H "Content-Type: application/json" http://localhost:9710 \
-  -d '{"jsonrpc":"2.0","method":"clw_blockNumber","params":[],"id":1}'
+  -d '{"jsonrpc":"2.0","method":"claw_blockNumber","params":[],"id":1}'
 ```
 
 ## Troubleshooting
