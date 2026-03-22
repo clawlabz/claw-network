@@ -353,14 +353,35 @@ impl P2pNetwork {
                         }
                     }
                     request_response::Message::Response { response, .. } => {
-                        if let Ok(resp) = SyncResponse::try_from_slice(&response) {
-                            let _ = self.event_tx.send(NetworkEvent::SyncResponse {
-                                peer,
-                                response: resp,
-                            });
+                        match SyncResponse::try_from_slice(&response) {
+                            Ok(resp) => {
+                                tracing::debug!(%peer, response_size = response.len(), "Received sync response");
+                                let _ = self.event_tx.send(NetworkEvent::SyncResponse {
+                                    peer,
+                                    response: resp,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!(%peer, response_size = response.len(), error = %e, "Failed to deserialize sync response");
+                            }
                         }
                     }
                 },
+                SwarmEvent::Behaviour(ClawBehaviourEvent::RequestResponse(
+                    request_response::Event::OutboundFailure { peer, error, .. },
+                )) => {
+                    tracing::warn!(%peer, ?error, "Sync request outbound failure");
+                }
+                SwarmEvent::Behaviour(ClawBehaviourEvent::RequestResponse(
+                    request_response::Event::InboundFailure { peer, error, .. },
+                )) => {
+                    tracing::warn!(%peer, ?error, "Sync request inbound failure");
+                }
+                SwarmEvent::Behaviour(ClawBehaviourEvent::RequestResponse(
+                    request_response::Event::ResponseSent { peer, .. },
+                )) => {
+                    tracing::debug!(%peer, "Sync response sent successfully");
+                }
                 SwarmEvent::Behaviour(ClawBehaviourEvent::Mdns(mdns::Event::Discovered(
                     peers,
                 ))) => {

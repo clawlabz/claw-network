@@ -514,8 +514,17 @@ impl Chain {
         Some(block)
     }
 
-    /// Apply a block received from the network.
+    /// Apply a block received from the network (gossipsub — strict BFT).
     pub fn apply_remote_block(&self, block: &Block) -> Result<(), String> {
+        self.apply_remote_block_inner(block, false)
+    }
+
+    /// Apply a block received via sync catch-up (relaxed signature check).
+    pub fn apply_synced_block(&self, block: &Block) -> Result<(), String> {
+        self.apply_remote_block_inner(block, true)
+    }
+
+    fn apply_remote_block_inner(&self, block: &Block, is_sync: bool) -> Result<(), String> {
         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
         let supply_before = inner.state.total_supply();
 
@@ -553,14 +562,29 @@ impl Chain {
                 }
             }
 
-            // Always require proper BFT quorum (> 2/3)
+            // BFT quorum check: require > 2/3 signatures for finality.
+            // During sync catch-up, relax to require at least the proposer's
+            // valid signature. This handles the common case where most validators
+            // are offline and only the proposer signs blocks.
             let required = quorum(active.len());
             if valid_signers.len() < required {
-                return Err(format!(
-                    "Insufficient signatures: {} of {} required",
-                    valid_signers.len(),
-                    required
-                ));
+                let is_proposer_signed = valid_signers.contains(&block.validator);
+
+                if is_sync && is_proposer_signed {
+                    // Sync catch-up: accept with proposer signature only
+                    tracing::debug!(
+                        height = block.height,
+                        signatures = valid_signers.len(),
+                        required,
+                        "Accepting under-signed block during sync catch-up"
+                    );
+                } else {
+                    return Err(format!(
+                        "Insufficient signatures: {} of {} required",
+                        valid_signers.len(),
+                        required
+                    ));
+                }
             }
         }
 
@@ -1016,7 +1040,7 @@ impl Chain {
                 let batch_count = blocks.len();
                 let mut applied = 0;
                 for block in blocks {
-                    match self.apply_remote_block(block) {
+                    match self.apply_synced_block(block) {
                         Ok(()) => { applied += 1; }
                         Err(e) => {
                             // Fork detection: if the very first block fails with prev_hash mismatch,

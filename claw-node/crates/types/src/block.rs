@@ -53,33 +53,20 @@ pub struct Block {
 
 impl BorshDeserialize for Block {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        // Read all remaining bytes so we can detect old vs new format
-        let mut buf = Vec::new();
-        reader.read_to_end(&mut buf)?;
-        let mut cursor = std::io::Cursor::new(&buf);
+        let height = u64::deserialize_reader(reader)?;
+        let prev_hash = <[u8; 32]>::deserialize_reader(reader)?;
+        let timestamp = u64::deserialize_reader(reader)?;
+        let validator = <[u8; 32]>::deserialize_reader(reader)?;
+        let transactions = Vec::<Transaction>::deserialize_reader(reader)?;
+        let state_root = <[u8; 32]>::deserialize_reader(reader)?;
+        let hash = <[u8; 32]>::deserialize_reader(reader)?;
 
-        let height = u64::deserialize_reader(&mut cursor)?;
-        let prev_hash = <[u8; 32]>::deserialize_reader(&mut cursor)?;
-        let timestamp = u64::deserialize_reader(&mut cursor)?;
-        let validator = <[u8; 32]>::deserialize_reader(&mut cursor)?;
-        let transactions = Vec::<Transaction>::deserialize_reader(&mut cursor)?;
-        let state_root = <[u8; 32]>::deserialize_reader(&mut cursor)?;
-        let hash = <[u8; 32]>::deserialize_reader(&mut cursor)?;
-
-        // Try to read signatures; if no bytes remain, default to empty vec
-        let signatures = if (cursor.position() as usize) < buf.len() {
-            Vec::<([u8; 32], [u8; 64])>::deserialize_reader(&mut cursor).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        // Try to read events; if no bytes remain, default to empty vec
-        // (backward compat with blocks stored before events field was added)
-        let events = if (cursor.position() as usize) < buf.len() {
-            Vec::<BlockEvent>::deserialize_reader(&mut cursor).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Backward-compatible: try to read optional trailing fields.
+        // If deserialization fails (old format without these fields), default to empty.
+        let signatures = Vec::<([u8; 32], [u8; 64])>::deserialize_reader(reader)
+            .unwrap_or_default();
+        let events = Vec::<BlockEvent>::deserialize_reader(reader)
+            .unwrap_or_default();
 
         Ok(Block {
             height,
