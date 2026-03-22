@@ -221,69 +221,148 @@ tier_weight:
 
 ## 6. 接入方式
 
-### 6.1 主推：AI Agent 一句话安装
+### 6.1 主推：AI Agent 一句话 Prompt 安装
 
-用户发给自己的 AI Agent（OpenClaw / Claude Code / Codex 等）一句话 prompt：
+参考 [Agent Reach](https://github.com/Panniantong/Agent-Reach) 的模式 —
+用户发给自己的 AI Agent 一句话 prompt + 一个 install.md URL，Agent 读取文档后
+自动完成全部安装。
+
+**用户复制这句话给 AI Agent（Claude Code / OpenClaw / Codex / Cursor 等）：**
 
 ```
-安装 ClawNetwork 挖矿节点并启动
+帮我安装 ClawNetwork 挖矿节点：https://raw.githubusercontent.com/clawlabz/claw-miner/main/docs/install.md
 ```
 
-Agent 自动执行：
-```bash
-# 1. 安装 SDK
+就这一步。Agent 会自己完成剩下的所有事情。
+
+**install.md 是给 AI Agent 读的安装指引**，内容包括：
+
+```markdown
+# ClawNetwork Miner — Installation Guide
+
+## For Humans
+复制这句话给你的 AI Agent：
+帮我安装 ClawNetwork 挖矿节点：<此文件 URL>
+
+## For AI Agents
+
+### Goal
+安装 claw-miner CLI，初始化钱包，注册链上 Agent，启动挖矿。
+
+### Step 1: 检测环境
+- 检测 OS（Linux/macOS/Windows）
+- 检测 GPU（nvidia-smi / system_profiler）
+- 检测可用内存
+
+### Step 2: 安装
+pip install clawminer
+# 或
 npm install -g @clawlabz/claw-miner
 
-# 2. 初始化（自动生成钱包、注册 Agent）
+### Step 3: 初始化
 claw-miner init
+# 自动生成钱包、从 Faucet 获取 gas、链上注册 Agent
 
-# 3. 启动挖矿（默认 Tier 1 在线模式）
+### Step 4: 根据硬件推荐挖矿模式
+- 无 GPU → Tier 1 在线挖矿（默认）
+- 有 API Key → 建议 Tier 2 LLM 共享
+- 有 GPU ≥ 6GB → 建议 Tier 3 算力挖矿 + 推荐模型
+
+### Step 5: 启动
+claw-miner start
+
+### Boundaries
+- DO NOT run commands with sudo unless user approved
+- DO NOT modify system files outside ~/.claw-miner/
+- All config stored in ~/.claw-miner/
+```
+
+**安装后，用户在 AI Agent 对话中直接用自然语言操作：**
+
+```
+启动挖矿                    → claw-miner start
+查看我的收益                  → claw-miner status
+共享我的 DeepSeek API 额度    → claw-miner llm add deepseek
+部署本地 Llama 8B 模型       → claw-miner model start llama-3.1-8b
+停止挖矿                    → claw-miner stop
+查看 CLAW 余额               → claw-miner balance
+```
+
+**更新也是一句话：**
+
+```
+帮我更新 ClawNetwork 挖矿节点：https://raw.githubusercontent.com/clawlabz/claw-miner/main/docs/update.md
+```
+
+### 6.2 与 OpenClaw / AI Agent 的关系
+
+OpenClaw 是开源项目，不"内置"任何第三方组件。通过以下方式自然关联：
+
+| 方式 | 说明 |
+|------|------|
+| OpenClaw Plugin Marketplace | 发布为推荐插件，用户自主选择安装 |
+| 安装 Prompt Template | 提供 OpenClaw 专属的一句话安装 prompt |
+| Claude Code Plugin | `claude plugin add github:clawlabz/claw-miner` |
+| 文档推荐 | OpenClaw 文档中介绍 ClawNetwork 节点（非强制） |
+
+**核心原则**：不强制绑定，用户自主选择。安装后 claw-miner 是独立的 CLI 工具，
+可以在任何 AI Agent 中使用，也可以脱离 Agent 独立运行。
+
+### 6.3 兜底：命令行手动安装（不依赖 AI Agent）
+
+```bash
+# 一行安装
+curl -sL https://get.clawlabz.xyz/miner | sh
+
+# 或 pip
+pip install clawminer
+
+# 初始化 + 启动
+claw-miner init
 claw-miner start
 ```
 
-### 6.2 在 AI Agent 中使用命令
+支持平台：Linux x86_64 / macOS ARM / Windows
 
-安装后，用户可在 AI Agent 对话中使用命令：
-
-```
-claw-miner start                          # 启动在线挖矿
-claw-miner start --llm openai             # 共享 OpenAI 额度
-claw-miner start --model llama-3.1-8b     # 部署本地模型
-claw-miner status                         # 查看挖矿状态/收益
-claw-miner stop                           # 停止挖矿
-claw-miner balance                        # 查看 CLAW 余额
-claw-miner config llm add deepseek        # 添加 LLM 共享
-claw-miner config llm limit 50/hour       # 设置额度上限
-```
-
-### 6.3 OpenClaw 集成
-
-OpenClaw 是开源项目，不能"内置"。通过以下方式自然集成：
-
-- 发布为 OpenClaw 官方推荐插件（plugin marketplace）
-- 提供 OpenClaw 专属安装 prompt template
-- OpenClaw 文档中推荐 ClawNetwork 节点
-- 用户主动选择安装，不强制绑定
-
-### 6.4 手动安装（不依赖 AI Agent）
+### 6.4 CLI 命令参考
 
 ```bash
-# 下载独立可执行文件
-curl -sL https://get.clawlabz.xyz/miner | sh
+# 基础
+claw-miner init                           # 初始化钱包 + 注册 Agent
+claw-miner start                          # 启动（默认在线挖矿）
+claw-miner stop                           # 停止
+claw-miner status                         # 查看状态/收益/排名
+claw-miner balance                        # 查看 CLAW 余额
 
-# 或从 GitHub Release 下载
-# 支持 Linux x86_64 / macOS ARM / Windows
+# LLM 共享（Tier 2）
+claw-miner llm add openai                 # 添加 OpenAI API Key
+claw-miner llm add deepseek               # 添加 DeepSeek API Key
+claw-miner llm add claude                 # 添加 Claude API Key
+claw-miner llm limit 50/hour              # 设置每小时请求上限
+claw-miner llm list                       # 查看已配置的 LLM
+claw-miner llm remove openai              # 移除
+
+# 算力挖矿（Tier 3）
+claw-miner model list                     # 查看可部署的模型
+claw-miner model start llama-3.1-8b       # 部署并启动模型
+claw-miner model start phi-3-mini         # 部署轻量模型
+claw-miner model stop                     # 停止本地模型
+claw-miner model benchmark                # 测试本机推理性能
+
+# 配置
+claw-miner config show                    # 查看当前配置
+claw-miner config wallet export           # 导出钱包
+claw-miner config wallet import <key>     # 导入已有钱包
 ```
 
 ### 6.5 接入形态总结
 
-| 方式 | 面向用户 | 安装复杂度 |
-|------|---------|-----------|
-| AI Agent prompt 一句话安装 | OpenClaw / Claude Code / Codex 用户 | 最低 |
-| npm install 全局包 | Node.js 开发者 | 低 |
-| pip install | Python 开发者 | 低 |
-| 独立可执行文件 | 非开发者 | 低 |
-| Docker | 服务器运维 | 中 |
+| 方式 | 面向用户 | 安装方式 |
+|------|---------|---------|
+| **AI Agent 一句话安装** | OpenClaw / Claude Code / Codex / Cursor 用户 | 复制 prompt 发给 Agent |
+| **命令行安装** | 开发者 / 服务器 | `curl` 或 `pip install` |
+
+只有这两种，不做浏览器扩展（无法调用本地 GPU/CPU 算力）。
 
 ---
 
