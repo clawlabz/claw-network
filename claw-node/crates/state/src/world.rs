@@ -270,6 +270,15 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
+        // Contract code (hash the bytecode to keep leaf size uniform)
+        for (addr, code) in &self.contract_code {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"ccode:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(blake3::hash(code).as_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
         // Stakes
         for (addr, amount) in &self.stakes {
             let mut entry = Vec::new();
@@ -313,6 +322,15 @@ impl WorldState {
             entry.extend_from_slice(b"platact:");
             entry.extend_from_slice(addr);
             entry.extend_from_slice(&borsh::to_vec(agg).expect("borsh serialization of PlatformActivityAgg should never fail"));
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Platform report tracker (prevents double-submission per epoch)
+        for ((reporter, epoch), _) in &self.platform_report_tracker {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"plattrack:");
+            entry.extend_from_slice(reporter);
+            entry.extend_from_slice(&epoch.to_le_bytes());
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 

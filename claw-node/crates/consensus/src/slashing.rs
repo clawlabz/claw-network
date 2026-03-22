@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use claw_crypto::ed25519_dalek::{Signature, VerifyingKey};
 use crate::types::{EPOCH_LENGTH, MIN_STAKE};
 
 /// Penalty for equivocation (double-signing): 10% of stake (1000 basis points).
@@ -83,6 +84,21 @@ impl SlashingState {
         if !stakes.contains_key(&evidence.validator) {
             return Err("validator has no active stake");
         }
+
+        // Verify Ed25519 signatures to prevent fabricated evidence.
+        // Both signatures must be valid for the claimed validator's public key.
+        let vk = VerifyingKey::from_bytes(&evidence.validator)
+            .map_err(|_| "invalid validator public key")?;
+
+        let sig_a = Signature::from_slice(&evidence.signature_a)
+            .map_err(|_| "invalid signature_a format")?;
+        vk.verify_strict(&evidence.block_hash_a, &sig_a)
+            .map_err(|_| "signature_a verification failed")?;
+
+        let sig_b = Signature::from_slice(&evidence.signature_b)
+            .map_err(|_| "invalid signature_b format")?;
+        vk.verify_strict(&evidence.block_hash_b, &sig_b)
+            .map_err(|_| "signature_b verification failed")?;
 
         // Apply slash: 10% of stake
         let slashed = slash_stake(stakes, &evidence.validator, EQUIVOCATION_SLASH_BPS);
@@ -218,11 +234,28 @@ fn slash_stake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claw_crypto::ed25519_dalek::SigningKey;
+    use claw_crypto::ed25519_dalek::{Signer, SigningKey};
+
+    fn make_signing_key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
 
     fn make_address(seed: u8) -> [u8; 32] {
-        let sk = SigningKey::from_bytes(&[seed; 32]);
-        sk.verifying_key().to_bytes()
+        make_signing_key(seed).verifying_key().to_bytes()
+    }
+
+    /// Create a valid equivocation evidence with real Ed25519 signatures.
+    fn make_equivocation(seed: u8, hash_a: [u8; 32], hash_b: [u8; 32], height: u64) -> EquivocationEvidence {
+        let sk = make_signing_key(seed);
+        let addr = sk.verifying_key().to_bytes();
+        EquivocationEvidence {
+            validator: addr,
+            height,
+            block_hash_a: hash_a,
+            signature_a: sk.sign(&hash_a).to_vec(),
+            block_hash_b: hash_b,
+            signature_b: sk.sign(&hash_b).to_vec(),
+        }
     }
 
     fn setup_stakes() -> BTreeMap<[u8; 32], u128> {
@@ -266,14 +299,7 @@ mod tests {
         let addr = make_address(1);
         let original_stake = stakes[&addr]; // 10 * MIN_STAKE
 
-        let evidence = EquivocationEvidence {
-            validator: addr,
-            height: 42,
-            block_hash_a: [1u8; 32],
-            signature_a: vec![1, 2, 3],
-            block_hash_b: [2u8; 32],
-            signature_b: vec![4, 5, 6],
-        };
+        let evidence = make_equivocation(1, [1u8; 32], [2u8; 32], 42);
 
         let slashed = slashing
             .report_equivocation(evidence, &mut stakes, 50)
@@ -293,13 +319,27 @@ mod tests {
         let mut stakes = setup_stakes();
         let mut slashing = SlashingState::new();
 
+        // Same hash → rejected before signature check
+        let evidence = make_equivocation(1, [1u8; 32], [1u8; 32], 42);
+
+        assert!(slashing
+            .report_equivocation(evidence, &mut stakes, 50)
+            .is_err());
+    }
+
+    #[test]
+    fn equivocation_fake_signature_rejected() {
+        let mut stakes = setup_stakes();
+        let mut slashing = SlashingState::new();
+
+        // Fabricated evidence: valid hashes but garbage signatures
         let evidence = EquivocationEvidence {
             validator: make_address(1),
             height: 42,
             block_hash_a: [1u8; 32],
-            signature_a: vec![1, 2, 3],
-            block_hash_b: [1u8; 32], // same hash
-            signature_b: vec![4, 5, 6],
+            signature_a: vec![0u8; 64], // fake
+            block_hash_b: [2u8; 32],
+            signature_b: vec![1u8; 64], // fake
         };
 
         assert!(slashing
@@ -357,15 +397,7 @@ mod tests {
         stakes.insert(addr, MIN_STAKE); // exactly at minimum
 
         let mut slashing = SlashingState::new();
-
-        let evidence = EquivocationEvidence {
-            validator: addr,
-            height: 1,
-            block_hash_a: [1u8; 32],
-            signature_a: vec![1],
-            block_hash_b: [2u8; 32],
-            signature_b: vec![2],
-        };
+        let evidence = make_equivocation(1, [1u8; 32], [2u8; 32], 1);
 
         slashing
             .report_equivocation(evidence, &mut stakes, 10)
@@ -381,14 +413,7 @@ mod tests {
 
         slashing.record_assigned_slot(&addr);
         slashing.record_missed_slot(&addr);
-        slashing.evidence.push(EquivocationEvidence {
-            validator: addr,
-            height: 1,
-            block_hash_a: [1u8; 32],
-            signature_a: vec![1],
-            block_hash_b: [2u8; 32],
-            signature_b: vec![2],
-        });
+        slashing.evidence.push(make_equivocation(1, [1u8; 32], [2u8; 32], 1));
 
         slashing.reset_epoch_counters();
         assert!(slashing.missed_slots.is_empty());
