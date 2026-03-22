@@ -1145,6 +1145,18 @@ impl Chain {
                             return None;
                         }
 
+                        // Rebuild validator set from snapshot's state.stakes
+                        // so post-genesis validators are recognized for block production
+                        if !state.stakes.is_empty() {
+                            inner.validator_set = ValidatorSet::with_initial_stakes(
+                                state.stakes.iter().map(|(addr, amount)| (*addr, *amount)).collect()
+                            );
+                            tracing::info!(
+                                validators = inner.validator_set.active.len(),
+                                "Validator set rebuilt from snapshot state.stakes"
+                            );
+                        }
+
                         inner.state = state;
                         // Update latest_block from snapshot to re-establish chain continuity
                         inner.latest_block = latest_block.clone();
