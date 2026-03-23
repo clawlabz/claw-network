@@ -52,6 +52,8 @@ pub enum P2pCommand {
         channel: request_response::ResponseChannel<Vec<u8>>,
         response: SyncResponse,
     },
+    /// Broadcast a newly produced block to the network.
+    BroadcastBlock(claw_types::block::Block),
     /// Broadcast a BFT vote to the network.
     BroadcastVote(BlockVote),
 }
@@ -322,6 +324,9 @@ impl P2pNetwork {
                         }
                         P2pCommand::SendSyncResponse { channel, response } => {
                             self.send_sync_response(channel, response);
+                        }
+                        P2pCommand::BroadcastBlock(block) => {
+                            self.broadcast_block(&block);
                         }
                         P2pCommand::BroadcastVote(vote) => {
                             self.broadcast_vote(&vote);

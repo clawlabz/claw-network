@@ -883,13 +883,26 @@ impl Chain {
         Ok(())
     }
 
-    /// Run the block production loop (single-node mode, no P2P).
-    pub async fn run_block_loop(&self) {
+    /// Run the block production loop.
+    /// When `command_tx` is provided, produced blocks are broadcast via P2P gossipsub
+    /// and the proposer's own vote is also broadcast.
+    pub async fn run_block_loop(
+        &self,
+        command_tx: Option<mpsc::UnboundedSender<P2pCommand>>,
+    ) {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
         loop {
             interval.tick().await;
             let mut inner = self.inner.lock().expect("chain state mutex poisoned");
-            Self::produce_block(&mut inner);
+            if let Some(block) = Self::produce_block(&mut inner) {
+                if let Some(ref tx) = command_tx {
+                    let _ = tx.send(P2pCommand::BroadcastBlock(block.clone()));
+                    // Also broadcast our own vote for the block we just produced
+                    if let Some(vote) = Self::create_vote_for_block(&inner, &block) {
+                        let _ = tx.send(P2pCommand::BroadcastVote(vote));
+                    }
+                }
+            }
         }
     }
 
@@ -1164,23 +1177,41 @@ impl Chain {
                     return None;
                 }
 
-                // 3. Verify the proposer's signature on the block
+                // 3. Verify ALL signatures on the block and enforce BFT quorum
                 {
-                    let has_valid_proposer_sig = if let Ok(vk) = VerifyingKey::from_bytes(&latest_block.validator) {
-                        latest_block.signatures.iter().any(|(addr, sig_bytes)| {
-                            *addr == latest_block.validator && {
+                    let active = &inner.validator_set.active;
+                    let mut valid_signers = std::collections::HashSet::new();
+                    for (addr, sig_bytes) in &latest_block.signatures {
+                        if active.iter().any(|v| v.address == *addr) {
+                            if let Ok(vk) = VerifyingKey::from_bytes(addr) {
                                 let sig = Signature::from_bytes(sig_bytes);
-                                vk.verify_strict(&latest_block.hash, &sig).is_ok()
+                                if vk.verify_strict(&latest_block.hash, &sig).is_ok() {
+                                    valid_signers.insert(*addr);
+                                }
                             }
-                        })
-                    } else {
-                        false
-                    };
+                        }
+                    }
 
-                    if !has_valid_proposer_sig {
+                    // Proposer must have signed
+                    if !valid_signers.contains(&latest_block.validator) {
                         tracing::warn!(
                             proposer = %hex::encode(latest_block.validator),
                             "Snapshot rejected: proposer signature missing or invalid"
+                        );
+                        return None;
+                    }
+
+                    // BFT quorum: same rules as apply_remote_block_inner.
+                    // Small networks (<7): proposer signature sufficient.
+                    // Large networks (>=7): require >2/3 quorum.
+                    let strict_required = quorum(active.len());
+                    let required = if active.len() < 7 { 1 } else { strict_required };
+                    if valid_signers.len() < required {
+                        tracing::warn!(
+                            height = latest_block.height,
+                            valid_sigs = valid_signers.len(),
+                            required,
+                            "Snapshot rejected: insufficient BFT quorum on latest block"
                         );
                         return None;
                     }

@@ -459,7 +459,7 @@ async fn main() -> Result<()> {
 
             if run_single {
                 tracing::info!("Running in single-node mode (no P2P)");
-                chain.run_block_loop().await;
+                chain.run_block_loop(None).await;
             } else {
                 // Merge preset bootstrap + config.toml bootstrap + CLI bootstrap
                 let mut all_bootstrap: Vec<String> = net_cfg
@@ -509,19 +509,20 @@ async fn main() -> Result<()> {
 
                         tracing::info!("Running with P2P networking");
 
+                        let block_command_tx = command_tx.clone();
                         let chain_clone = chain.clone();
                         let event_handle = tokio::spawn(async move {
                             chain_clone.run_p2p_events(event_rx, command_tx).await;
                         });
 
-                        chain.run_block_loop().await;
+                        chain.run_block_loop(Some(block_command_tx)).await;
 
                         p2p_handle.abort();
                         event_handle.abort();
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to start P2P, falling back to single-node");
-                        chain.run_block_loop().await;
+                        chain.run_block_loop(None).await;
                     }
                 }
             }
