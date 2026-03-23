@@ -51,6 +51,8 @@ pub enum TxType {
     TokenApprove = 12,
     TokenBurn = 13,
     ChangeDelegation = 14,
+    MinerRegister = 15,
+    MinerHeartbeat = 16,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -221,6 +223,26 @@ pub struct ActivityEntry {
 pub struct PlatformActivityReportPayload {
     /// Activity entries for agents on this platform.
     pub reports: Vec<ActivityEntry>,
+}
+
+/// Payload for registering as a miner on ClawNetwork.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct MinerRegisterPayload {
+    /// Miner tier (maps to MinerTier enum value).
+    pub tier: u8,
+    /// IP address bytes (4 bytes for IPv4, 16 for IPv6).
+    pub ip_addr: Vec<u8>,
+    /// Human-readable miner name.
+    pub name: String,
+}
+
+/// Payload for submitting a miner heartbeat.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct MinerHeartbeatPayload {
+    /// Hash of the latest block the miner has synced.
+    pub latest_block_hash: [u8; 32],
+    /// Height of the latest block the miner has synced.
+    pub latest_height: u64,
 }
 
 impl Transaction {

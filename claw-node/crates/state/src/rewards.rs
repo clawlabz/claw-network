@@ -4,6 +4,7 @@
 //! and follow a decay schedule over 10+ years.
 
 use claw_types::block::BlockEvent;
+use claw_types::state::{MINER_GRACE_BLOCKS};
 use crate::WorldState;
 
 /// Blocks per year assuming 3-second block time: 365.25 * 86400 / 3.
@@ -15,6 +16,20 @@ pub const NODE_INCENTIVE_POOL_INDEX: u8 = 1;
 /// Genesis address index for the Ecosystem Fund (25% of total supply).
 pub const ECOSYSTEM_FUND_INDEX: u8 = 2;
 
+/// Block height at which the mining upgrade activates.
+/// Before this height, validators get 100% of block rewards (legacy schedule).
+/// After this height, rewards split: 65% validators, 35% miners.
+pub const MINING_UPGRADE_HEIGHT: u64 = 2_000;
+
+/// Validator share of block rewards after mining upgrade, in basis points.
+pub const VALIDATOR_REWARD_BPS: u128 = 6_500;
+
+/// Mining share of block rewards after mining upgrade, in basis points.
+pub const MINING_REWARD_BPS: u128 = 3_500;
+
+/// Halving period for the new reward schedule (2 years of blocks).
+pub const HALVING_PERIOD: u64 = 2 * BLOCKS_PER_YEAR; // 21_024_000
+
 /// Derive a genesis address from its allocation index.
 /// Must match the derivation in `crate::genesis`.
 fn genesis_address(index: u8) -> [u8; 32] {
@@ -23,24 +38,43 @@ fn genesis_address(index: u8) -> [u8; 32] {
     addr
 }
 
+/// Public version of genesis_address for use in tests.
+pub fn genesis_address_pub(index: u8) -> [u8; 32] {
+    genesis_address(index)
+}
+
 /// Calculate the block reward (in base units, 9 decimals) for a given height.
 ///
-/// Decay schedule:
-/// - Year 1  (blocks 0 ..  10_511_999): 10 CLAW = 10_000_000_000
-/// - Year 2  (blocks 10_512_000 ..  21_023_999):  8 CLAW =  8_000_000_000
-/// - Year 3  (blocks 21_024_000 ..  31_535_999):  6 CLAW =  6_000_000_000
-/// - Year 4  (blocks 31_536_000 ..  42_047_999):  4 CLAW =  4_000_000_000
-/// - Year 5-10 (blocks 42_048_000 .. 105_119_999): 2 CLAW =  2_000_000_000
-/// - Year 11+  (blocks 105_120_000 ..):            1 CLAW =  1_000_000_000
+/// **Legacy schedule** (before MINING_UPGRADE_HEIGHT):
+/// - Year 1: 10 CLAW, Year 2: 8, Year 3: 6, Year 4: 4, Year 5-10: 2, Year 11+: 1
+///
+/// **New schedule** (after MINING_UPGRADE_HEIGHT):
+/// Geometric halving every 2 years starting from 8 CLAW:
+/// - Period 0: 8 CLAW, Period 1: 4, Period 2: 2, Period 3: 1, Period 4: 0.5, Period 5+: 0.25 (floor)
 pub fn reward_per_block(height: u64) -> u128 {
-    let year = height / BLOCKS_PER_YEAR;
-    match year {
-        0 => 10_000_000_000,
-        1 => 8_000_000_000,
-        2 => 6_000_000_000,
-        3 => 4_000_000_000,
-        4..=9 => 2_000_000_000,
-        _ => 1_000_000_000,
+    if height < MINING_UPGRADE_HEIGHT {
+        // Legacy schedule
+        let year = height / BLOCKS_PER_YEAR;
+        match year {
+            0 => 10_000_000_000,
+            1 => 8_000_000_000,
+            2 => 6_000_000_000,
+            3 => 4_000_000_000,
+            4..=9 => 2_000_000_000,
+            _ => 1_000_000_000,
+        }
+    } else {
+        // New geometric halving schedule from upgrade point
+        let adjusted = height - MINING_UPGRADE_HEIGHT;
+        let period = adjusted / HALVING_PERIOD;
+        match period {
+            0 => 8_000_000_000,   // 8 CLAW
+            1 => 4_000_000_000,   // 4 CLAW
+            2 => 2_000_000_000,   // 2 CLAW
+            3 => 1_000_000_000,   // 1 CLAW
+            4 => 500_000_000,     // 0.5 CLAW
+            _ => 250_000_000,     // 0.25 CLAW (floor)
+        }
     }
 }
 
@@ -71,9 +105,15 @@ pub fn distribute_block_reward(
         return events;
     }
 
-    let raw_reward = reward_per_block(height);
+    let base_reward = reward_per_block(height);
+    // After mining upgrade, validators only get 65% of the base reward
+    let validator_reward = if height >= MINING_UPGRADE_HEIGHT {
+        base_reward * VALIDATOR_REWARD_BPS / 10000
+    } else {
+        base_reward
+    };
     // Cap at remaining pool balance
-    let reward = raw_reward.min(pool_balance);
+    let reward = validator_reward.min(pool_balance);
     if reward == 0 {
         return events;
     }
@@ -216,33 +256,117 @@ pub fn distribute_fees(
     events
 }
 
+/// Distribute the mining portion (35%) of block rewards to active miners.
+///
+/// Only active after MINING_UPGRADE_HEIGHT. Each active miner receives a share
+/// proportional to `tier_weight * reputation_bps`. The reward is deducted from
+/// the Node Incentive Pool.
+///
+/// Returns a list of `BlockEvent::RewardDistributed` events.
+pub fn distribute_mining_rewards(
+    world: &mut WorldState,
+    height: u64,
+) -> Vec<BlockEvent> {
+    let mut events = Vec::new();
+
+    if height < MINING_UPGRADE_HEIGHT {
+        return events;
+    }
+
+    let pool_addr = genesis_address(NODE_INCENTIVE_POOL_INDEX);
+    let pool_balance = world.balances.get(&pool_addr).copied().unwrap_or(0);
+    if pool_balance == 0 {
+        return events;
+    }
+
+    // Collect active miners with their weights
+    let active_miners: Vec<([u8; 32], u128)> = world
+        .miners
+        .iter()
+        .filter(|(_, m)| m.active)
+        .map(|(addr, m)| {
+            let tier_weight: u128 = match m.tier {
+                claw_types::state::MinerTier::Online => 1,
+            };
+            let weight = tier_weight * (m.reputation_bps as u128);
+            (*addr, weight)
+        })
+        .collect();
+
+    if active_miners.is_empty() {
+        return events;
+    }
+
+    let base_reward = reward_per_block(height);
+    let mining_reward = base_reward * MINING_REWARD_BPS / 10000;
+    let reward = mining_reward.min(pool_balance);
+    if reward == 0 {
+        return events;
+    }
+
+    let total_weight: u128 = active_miners.iter().map(|(_, w)| *w).sum();
+    if total_weight == 0 {
+        return events;
+    }
+
+    // Deduct from pool
+    *world.balances.entry(pool_addr).or_insert(0) -= reward;
+
+    // Distribute proportionally
+    let mut distributed: u128 = 0;
+    let miner_count = active_miners.len();
+
+    for (i, (addr, weight)) in active_miners.iter().enumerate() {
+        let share = if i == miner_count - 1 {
+            reward - distributed
+        } else {
+            reward * weight / total_weight
+        };
+        if share > 0 {
+            *world.balances.entry(*addr).or_insert(0) += share;
+            events.push(BlockEvent::RewardDistributed {
+                recipient: *addr,
+                amount: share,
+                reward_type: "mining_reward".into(),
+            });
+            distributed += share;
+        }
+    }
+
+    events
+}
+
+/// Mark miners as inactive if they haven't sent a heartbeat within the grace period.
+pub fn update_miner_activity(world: &mut WorldState, current_height: u64) {
+    for miner in world.miners.values_mut() {
+        if miner.active && miner.last_heartbeat + MINER_GRACE_BLOCKS < current_height {
+            miner.active = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_reward_schedule() {
-        // Year 1
+    fn test_reward_schedule_legacy() {
+        // Legacy schedule applies before MINING_UPGRADE_HEIGHT
         assert_eq!(reward_per_block(0), 10_000_000_000);
-        assert_eq!(reward_per_block(BLOCKS_PER_YEAR - 1), 10_000_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT - 1), 10_000_000_000);
+    }
 
-        // Year 2
-        assert_eq!(reward_per_block(BLOCKS_PER_YEAR), 8_000_000_000);
-        assert_eq!(reward_per_block(2 * BLOCKS_PER_YEAR - 1), 8_000_000_000);
-
-        // Year 3
-        assert_eq!(reward_per_block(2 * BLOCKS_PER_YEAR), 6_000_000_000);
-
-        // Year 4
-        assert_eq!(reward_per_block(3 * BLOCKS_PER_YEAR), 4_000_000_000);
-
-        // Year 5-10
-        assert_eq!(reward_per_block(4 * BLOCKS_PER_YEAR), 2_000_000_000);
-        assert_eq!(reward_per_block(9 * BLOCKS_PER_YEAR), 2_000_000_000);
-
-        // Year 11+
-        assert_eq!(reward_per_block(10 * BLOCKS_PER_YEAR), 1_000_000_000);
-        assert_eq!(reward_per_block(100 * BLOCKS_PER_YEAR), 1_000_000_000);
+    #[test]
+    fn test_reward_schedule_new() {
+        // New geometric halving schedule after MINING_UPGRADE_HEIGHT
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT), 8_000_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + HALVING_PERIOD - 1), 8_000_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + HALVING_PERIOD), 4_000_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + 2 * HALVING_PERIOD), 2_000_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + 3 * HALVING_PERIOD), 1_000_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + 4 * HALVING_PERIOD), 500_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + 5 * HALVING_PERIOD), 250_000_000);
+        assert_eq!(reward_per_block(MINING_UPGRADE_HEIGHT + 6 * HALVING_PERIOD), 250_000_000);
     }
 
     #[test]

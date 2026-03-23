@@ -1089,3 +1089,121 @@ pub fn handle_stake_claim(state: &mut WorldState, tx: &Transaction) -> Result<()
 
     Ok(())
 }
+
+/// MinerRegister: register a new miner on the network.
+///
+/// Validates tier, IP address length, name length, subnet sybil limits,
+/// and creates the MinerInfo entry in state.
+pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    let payload = MinerRegisterPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Must not already be registered
+    if state.miners.contains_key(&tx.from) {
+        return Err(StateError::MinerAlreadyRegistered);
+    }
+
+    // Only tier 1 (Online) is supported in Phase 1
+    if payload.tier != 1 {
+        return Err(StateError::InvalidMinerTier(payload.tier));
+    }
+
+    // Validate name length
+    if payload.name.is_empty() || payload.name.len() > MAX_NAME_LEN {
+        return Err(StateError::MinerNameTooLong {
+            len: payload.name.len(),
+            max: MAX_NAME_LEN,
+        });
+    }
+
+    // Validate IP address length (4 for IPv4, 16 for IPv6)
+    if payload.ip_addr.len() != 4 && payload.ip_addr.len() != 16 {
+        return Err(StateError::InvalidIpLength(payload.ip_addr.len()));
+    }
+
+    // Extract /24 prefix (first 3 bytes) for sybil protection
+    let ip_prefix = payload.ip_addr[..3].to_vec();
+
+    // Count active miners in the same /24 subnet
+    let same_subnet_count = state
+        .miners
+        .values()
+        .filter(|m| m.active && m.ip_prefix == ip_prefix)
+        .count();
+    if same_subnet_count >= MAX_MINERS_PER_SUBNET {
+        return Err(StateError::SubnetLimitReached {
+            max: MAX_MINERS_PER_SUBNET,
+        });
+    }
+
+    state.miners.insert(
+        tx.from,
+        MinerInfo {
+            address: tx.from,
+            tier: MinerTier::Online,
+            name: payload.name,
+            registered_at: state.block_height,
+            last_heartbeat: state.block_height,
+            ip_prefix,
+            active: true,
+            reputation_bps: REPUTATION_NEWCOMER_BPS,
+        },
+    );
+
+    Ok(())
+}
+
+/// MinerHeartbeat: submit a periodic heartbeat to prove liveness.
+///
+/// Gas-free. Updates last_heartbeat, deduplicates by interval window,
+/// and upgrades reputation based on miner age.
+pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    let _payload = MinerHeartbeatPayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Must be a registered miner
+    let miner = state
+        .miners
+        .get(&tx.from)
+        .ok_or(StateError::MinerNotRegistered)?;
+
+    // Enforce heartbeat interval
+    let next_allowed = miner.last_heartbeat + MINER_HEARTBEAT_INTERVAL;
+    if state.block_height < next_allowed {
+        return Err(StateError::HeartbeatTooEarly {
+            next_allowed,
+            current: state.block_height,
+        });
+    }
+
+    // Deduplicate: one heartbeat per interval window
+    let window = state.block_height / MINER_HEARTBEAT_INTERVAL;
+    if state.miner_heartbeat_tracker.contains_key(&(tx.from, window)) {
+        return Err(StateError::HeartbeatTooEarly {
+            next_allowed,
+            current: state.block_height,
+        });
+    }
+
+    // Compute reputation upgrade based on miner age
+    let registered_at = miner.registered_at;
+    let age = state.block_height.saturating_sub(registered_at);
+    let new_reputation = if age >= BLOCKS_30_DAYS {
+        REPUTATION_VETERAN_BPS
+    } else if age >= BLOCKS_7_DAYS {
+        REPUTATION_ESTABLISHED_BPS
+    } else {
+        REPUTATION_NEWCOMER_BPS
+    };
+
+    // Update miner state
+    let miner = state.miners.get_mut(&tx.from).unwrap();
+    miner.last_heartbeat = state.block_height;
+    miner.active = true;
+    miner.reputation_bps = new_reputation;
+
+    // Record heartbeat in tracker
+    state.miner_heartbeat_tracker.insert((tx.from, window), true);
+
+    Ok(())
+}

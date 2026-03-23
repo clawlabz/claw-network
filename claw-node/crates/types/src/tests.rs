@@ -220,6 +220,52 @@ mod tests {
     }
 
     #[test]
+    fn tx_type_discriminant_values() {
+        assert_eq!(TxType::MinerRegister as u8, 15);
+        assert_eq!(TxType::MinerHeartbeat as u8, 16);
+    }
+
+    #[test]
+    fn miner_register_payload_roundtrip() {
+        let payload = MinerRegisterPayload {
+            tier: 1,
+            ip_addr: vec![192, 168, 1, 100],
+            name: "my-miner".to_string(),
+        };
+        roundtrip(&payload);
+    }
+
+    #[test]
+    fn miner_heartbeat_payload_roundtrip() {
+        let payload = MinerHeartbeatPayload {
+            latest_block_hash: [0xab; 32],
+            latest_height: 12345,
+        };
+        roundtrip(&payload);
+    }
+
+    #[test]
+    fn miner_tier_roundtrip() {
+        let tier = MinerTier::Online;
+        roundtrip(&tier);
+    }
+
+    #[test]
+    fn miner_info_roundtrip() {
+        let info = MinerInfo {
+            address: [1u8; 32],
+            tier: MinerTier::Online,
+            name: "test-miner".to_string(),
+            registered_at: 100,
+            last_heartbeat: 200,
+            ip_prefix: vec![192, 168, 1],
+            active: true,
+            reputation_bps: 2000,
+        };
+        roundtrip(&info);
+    }
+
+    #[test]
     fn signable_bytes_excludes_signature() {
         let tx1 = Transaction {
             tx_type: TxType::TokenTransfer,

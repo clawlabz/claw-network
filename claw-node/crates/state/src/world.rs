@@ -97,6 +97,10 @@ pub struct WorldState {
     /// Permanently tracked equivocation evidence hashes (blake3 fingerprints).
     /// Prevents replay of the same evidence across restarts.
     pub processed_evidence: BTreeSet<[u8; 32]>,
+    /// Registered miners: address → MinerInfo.
+    pub miners: BTreeMap<[u8; 32], claw_types::state::MinerInfo>,
+    /// Miner heartbeat deduplication tracker: (address, interval_window) → true.
+    pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
 }
 
 impl WorldState {
@@ -127,15 +131,18 @@ impl WorldState {
             });
         }
 
-        // 3. Deduct gas
-        let balance = self.balances.get(&tx.from).copied().unwrap_or(0);
-        if balance < GAS_FEE {
-            return Err(StateError::InsufficientBalance {
-                need: GAS_FEE,
-                have: balance,
-            });
+        // 3. Deduct gas (MinerHeartbeat is gas-free to encourage liveness)
+        let gas_free = matches!(tx.tx_type, TxType::MinerHeartbeat);
+        if !gas_free {
+            let balance = self.balances.get(&tx.from).copied().unwrap_or(0);
+            if balance < GAS_FEE {
+                return Err(StateError::InsufficientBalance {
+                    need: GAS_FEE,
+                    have: balance,
+                });
+            }
+            *self.balances.entry(tx.from).or_insert(0) -= GAS_FEE;
         }
-        *self.balances.entry(tx.from).or_insert(0) -= GAS_FEE;
         // Fee is deducted but not credited — caller distributes via rewards::distribute_fees
 
         // 4. Dispatch to handler
@@ -155,7 +162,11 @@ impl WorldState {
             TxType::TokenApprove => handlers::handle_token_approve(self, tx),
             TxType::TokenBurn => handlers::handle_token_burn(self, tx),
             TxType::ChangeDelegation => handlers::handle_change_delegation(self, tx),
+            TxType::MinerRegister => handlers::handle_miner_register(self, tx),
+            TxType::MinerHeartbeat => handlers::handle_miner_heartbeat(self, tx),
         };
+
+        let actual_fee = if gas_free { 0 } else { GAS_FEE };
 
         if result.is_ok() {
             // 5. Update nonce on success
@@ -164,7 +175,7 @@ impl WorldState {
             // 6. Update per-epoch activity stats for the sender
             let stats = self.activity_stats.entry(tx.from).or_default();
             stats.tx_count += 1;
-            stats.gas_consumed += GAS_FEE as u64;
+            stats.gas_consumed += actual_fee as u64;
             match tx.tx_type {
                 TxType::ContractDeploy => stats.contract_deploys += 1,
                 TxType::ContractCall => stats.contract_calls += 1,
@@ -173,10 +184,12 @@ impl WorldState {
                 _ => {}
             }
 
-            Ok(GAS_FEE)
+            Ok(actual_fee)
         } else {
             // Rollback gas on failure (gas is only charged on success)
-            *self.balances.entry(tx.from).or_insert(0) += GAS_FEE;
+            if !gas_free {
+                *self.balances.entry(tx.from).or_insert(0) += GAS_FEE;
+            }
             result.map(|()| 0)
         }
     }
@@ -398,6 +411,24 @@ impl WorldState {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"evidence:");
             entry.extend_from_slice(hash);
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Miners
+        for (addr, miner) in &self.miners {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"miner:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&borsh::to_vec(miner).expect("borsh serialization of MinerInfo should never fail"));
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Miner heartbeat tracker
+        for ((addr, window), _) in &self.miner_heartbeat_tracker {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"minerbeat:");
+            entry.extend_from_slice(addr);
+            entry.extend_from_slice(&window.to_le_bytes());
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 

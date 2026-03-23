@@ -471,6 +471,25 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
                 _ => Err("invalid params: expected (owner, spender, tokenId)".into()),
             }
         }
+        "claw_getMinerInfo" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => match chain.get_miner_info(&a) {
+                    Some(miner) => serde_json::to_value(miner).map_err(|e| format!("{e}")),
+                    None => Ok(Value::Null),
+                },
+                Err(e) => Err(e),
+            }
+        }
+        "claw_getMiners" => {
+            let active = req.params.get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+            let limit = req.params.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(500) as usize;
+            let offset = req.params.get(2).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            serde_json::to_value(chain.get_miners(active, limit, offset)).map_err(|e| format!("{e}"))
+        }
+        "claw_getMiningStats" => {
+            Ok(chain.get_mining_stats())
+        }
         _ => Err(format!("method not found: {}", req.method)),
     };
 
@@ -546,7 +565,7 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
                 Err(_) => (None, None),
             }
         }
-        TxType::ChangeDelegation => (None, None),
+        TxType::ChangeDelegation | TxType::MinerRegister | TxType::MinerHeartbeat => (None, None),
     }
 }
 
@@ -568,6 +587,8 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::TokenApprove => "TokenApprove",
         claw_types::TxType::TokenBurn => "TokenBurn",
         claw_types::TxType::ChangeDelegation => "ChangeDelegation",
+        claw_types::TxType::MinerRegister => "MinerRegister",
+        claw_types::TxType::MinerHeartbeat => "MinerHeartbeat",
     }
 }
 
@@ -615,7 +636,9 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         | claw_types::TxType::PlatformActivityReport
         | claw_types::TxType::TokenApprove
         | claw_types::TxType::TokenBurn
-        | claw_types::TxType::ChangeDelegation => (None, None),
+        | claw_types::TxType::ChangeDelegation
+        | claw_types::TxType::MinerRegister
+        | claw_types::TxType::MinerHeartbeat => (None, None),
         claw_types::TxType::ContractCall => {
             // payload starts with [contract: 32 bytes]
             if tx.payload.len() >= 32 {

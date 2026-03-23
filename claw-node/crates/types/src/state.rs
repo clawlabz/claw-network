@@ -149,3 +149,59 @@ pub const CLAW_TOTAL_SUPPLY: u128 = 1_000_000_000_000_000_000;
 
 /// Native token symbol.
 pub const NATIVE_TOKEN_SYMBOL: &str = "CLAW";
+
+// --- Agent Mining types and constants ---
+
+/// Miner tier classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum MinerTier {
+    /// Basic online miner.
+    Online = 1,
+}
+
+/// On-chain state for a registered miner.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct MinerInfo {
+    /// Miner's Ed25519 public key / address.
+    pub address: [u8; 32],
+    /// Miner tier.
+    pub tier: MinerTier,
+    /// Human-readable name.
+    pub name: String,
+    /// Block height at which the miner was registered.
+    pub registered_at: u64,
+    /// Block height of the last heartbeat.
+    pub last_heartbeat: u64,
+    /// IP address prefix (first 3 bytes for /24 subnet check).
+    pub ip_prefix: Vec<u8>,
+    /// Whether the miner is currently active.
+    pub active: bool,
+    /// Reputation score in basis points (0-10000).
+    pub reputation_bps: u16,
+}
+
+/// Heartbeat interval in blocks. Miners must send a heartbeat at least this often.
+pub const MINER_HEARTBEAT_INTERVAL: u64 = 1_000;
+
+/// Maximum number of miners allowed per /24 subnet.
+pub const MAX_MINERS_PER_SUBNET: usize = 3;
+
+/// Grace period in blocks before an inactive miner is deactivated.
+pub const MINER_GRACE_BLOCKS: u64 = 2_000;
+
+/// Reputation: newcomer tier (0-7 days), 20% reward weight.
+pub const REPUTATION_NEWCOMER_BPS: u16 = 2_000;
+
+/// Reputation: established tier (7-30 days), 50% reward weight.
+pub const REPUTATION_ESTABLISHED_BPS: u16 = 5_000;
+
+/// Reputation: veteran tier (30+ days), 100% reward weight.
+pub const REPUTATION_VETERAN_BPS: u16 = 10_000;
+
+/// Number of blocks in 7 days at 3-second block time (7 * 24 * 3600 / 3).
+pub const BLOCKS_7_DAYS: u64 = 201_600;
+
+/// Number of blocks in 30 days at 3-second block time (30 * 24 * 3600 / 3).
+pub const BLOCKS_30_DAYS: u64 = 864_000;

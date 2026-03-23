@@ -114,4 +114,25 @@ pub enum StateError {
 
     #[error("burn amount {burn} exceeds total supply {supply}")]
     BurnExceedsSupply { burn: u128, supply: u128 },
+
+    #[error("miner already registered")]
+    MinerAlreadyRegistered,
+
+    #[error("miner not registered")]
+    MinerNotRegistered,
+
+    #[error("miner name too long: {len} bytes (max {max})")]
+    MinerNameTooLong { len: usize, max: usize },
+
+    #[error("subnet limit reached: maximum {max} miners per /24 subnet")]
+    SubnetLimitReached { max: usize },
+
+    #[error("heartbeat too early: next allowed at block {next_allowed}, current {current}")]
+    HeartbeatTooEarly { next_allowed: u64, current: u64 },
+
+    #[error("invalid miner tier: {0}")]
+    InvalidMinerTier(u8),
+
+    #[error("invalid IP address length: {0} bytes (expected 4 or 16)")]
+    InvalidIpLength(usize),
 }

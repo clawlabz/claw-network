@@ -431,6 +431,12 @@ impl Chain {
             new_height,
         );
 
+        // Distribute mining rewards (35% to active miners after upgrade height)
+        let mining_events = claw_state::rewards::distribute_mining_rewards(
+            &mut inner.state,
+            new_height,
+        );
+
         // Distribute accumulated transaction fees
         let fee_events = claw_state::rewards::distribute_fees(
             &mut inner.state,
@@ -439,7 +445,7 @@ impl Chain {
         );
 
         // Collect all block events
-        let block_events = [reward_events, fee_events].concat();
+        let block_events = [reward_events, mining_events, fee_events].concat();
 
         // Update validator uptime tracking (B3):
         // - The block proposer gets a produced_blocks increment
@@ -534,6 +540,9 @@ impl Chain {
             inner.offline_validators = inner.slashing.process_downtime_penalties();
 
             inner.slashing.unjail_expired(new_height);
+
+            // Update miner activity — deactivate miners who missed heartbeats
+            claw_state::rewards::update_miner_activity(&mut inner.state, new_height);
 
             // Recalculate active set
             let stakes = inner.state.stakes.clone();
@@ -735,6 +744,12 @@ impl Chain {
             block.height,
         );
 
+        // Distribute mining rewards (35% to active miners after upgrade height)
+        let _ = claw_state::rewards::distribute_mining_rewards(
+            &mut state_clone,
+            block.height,
+        );
+
         // Distribute accumulated transaction fees
         let _ = claw_state::rewards::distribute_fees(
             &mut state_clone,
@@ -817,6 +832,9 @@ impl Chain {
         if ValidatorSet::is_epoch_boundary(block.height) {
             inner.offline_validators = inner.slashing.process_downtime_penalties();
             inner.slashing.unjail_expired(block.height);
+
+            // Update miner activity — deactivate miners who missed heartbeats
+            claw_state::rewards::update_miner_activity(&mut inner.state, block.height);
 
             // Recalculate active set
             let stakes = inner.state.stakes.clone();
@@ -1592,6 +1610,38 @@ impl Chain {
             "uptime": uptime,
             "jailed": jailed,
         }))
+    }
+
+    // === Mining query methods for RPC ===
+
+    /// Get miner info for a given address.
+    pub fn get_miner_info(&self, addr: &[u8; 32]) -> Option<claw_types::state::MinerInfo> {
+        self.inner.lock().expect("chain state mutex poisoned").state.miners.get(addr).cloned()
+    }
+
+    /// Get a paginated list of miners, optionally filtered to active only.
+    pub fn get_miners(&self, active_only: bool, limit: usize, offset: usize) -> Vec<claw_types::state::MinerInfo> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.state.miners.values()
+            .filter(|m| !active_only || m.active)
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    /// Get aggregate mining statistics.
+    pub fn get_mining_stats(&self) -> serde_json::Value {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let total = inner.state.miners.len();
+        let active = inner.state.miners.values().filter(|m| m.active).count();
+        serde_json::json!({
+            "totalMiners": total,
+            "activeMiners": active,
+            "currentBlockReward": claw_state::rewards::reward_per_block(inner.state.block_height).to_string(),
+            "miningUpgradeHeight": claw_state::rewards::MINING_UPGRADE_HEIGHT,
+            "upgraded": inner.state.block_height >= claw_state::rewards::MINING_UPGRADE_HEIGHT,
+        })
     }
 
     /// Testnet faucet: build a real TokenTransfer transaction from the node's
