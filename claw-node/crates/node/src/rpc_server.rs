@@ -339,6 +339,31 @@ async fn handle_rpc(
                 Err(e) => Err(e),
             }
         }
+        "claw_getContractEvents" => {
+            // params: [contract_hex, from_block?, to_block?]
+            let addr = parse_address(&req.params, 0);
+            let from_block = req.params.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
+            let to_block = req.params.get(2).and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+            match addr {
+                Ok(a) => {
+                    let events = chain.get_contract_events(&a, from_block, to_block);
+                    let json_events: Vec<serde_json::Value> = events.iter().filter_map(|e| {
+                        if let claw_types::block::BlockEvent::ContractEvent { contract, tx_index, topic, data } = e {
+                            Some(serde_json::json!({
+                                "contract": hex::encode(contract),
+                                "txIndex": tx_index,
+                                "topic": topic,
+                                "data": hex::encode(data),
+                            }))
+                        } else {
+                            None
+                        }
+                    }).collect();
+                    Ok(serde_json::json!(json_events))
+                }
+                Err(e) => Err(e),
+            }
+        }
         "claw_callContractView" => {
             if !check_contract_view_rate(peer.ip()) {
                 return Json(RpcResponse::err(
@@ -379,6 +404,7 @@ async fn handle_rpc(
                                         "rewardType": reward_type,
                                     }))
                                 }
+                                _ => None, // Skip contract events in block rewards query
                             }
                         }).collect();
                         Ok(serde_json::json!(rewards))

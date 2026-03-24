@@ -48,7 +48,7 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
-        assert!(state.apply_tx(&tx).is_ok());
+        assert!(state.apply_tx(&tx, 0).is_ok());
         assert_eq!(state.agents.get(&addr).unwrap().name, "test-agent");
         assert_eq!(state.get_nonce(&addr), 1);
     }
@@ -61,11 +61,11 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let tx1 = make_tx(&sk, 1, TxType::AgentRegister, &payload);
-        state.apply_tx(&tx1).unwrap();
+        state.apply_tx(&tx1, 0).unwrap();
 
         let tx2 = make_tx(&sk, 2, TxType::AgentRegister, &payload);
         assert_eq!(
-            state.apply_tx(&tx2),
+            state.apply_tx(&tx2, 0).map(|(_, _)| ()),
             Err(StateError::AgentAlreadyRegistered)
         );
     }
@@ -78,7 +78,7 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
-        assert!(matches!(state.apply_tx(&tx), Err(StateError::NameTooLong { .. })));
+        assert!(matches!(state.apply_tx(&tx, 0), Err(StateError::NameTooLong { .. })));
     }
 
     // === Token Transfer ===
@@ -95,7 +95,7 @@ mod tests {
         };
         let tx = make_tx(&sk, 1, TxType::TokenTransfer, &payload);
         let initial = state.get_balance(&addr);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         assert_eq!(state.get_balance(&addr2), 500_000_000);
         assert_eq!(
@@ -114,7 +114,7 @@ mod tests {
         };
         let tx = make_tx(&sk, 1, TxType::TokenTransfer, &payload);
         assert!(matches!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0),
             Err(StateError::InsufficientBalance { .. })
         ));
     }
@@ -128,7 +128,7 @@ mod tests {
             amount: 0,
         };
         let tx = make_tx(&sk, 1, TxType::TokenTransfer, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::ZeroAmount));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::ZeroAmount));
     }
 
     // === Nonce ===
@@ -142,7 +142,7 @@ mod tests {
         };
         let tx = make_tx(&sk, 5, TxType::AgentRegister, &payload); // should be 1
         assert_eq!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0).map(|(_, _)| ()),
             Err(StateError::InvalidNonce {
                 expected: 1,
                 got: 5,
@@ -165,7 +165,7 @@ mod tests {
         };
         let tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
         assert!(matches!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0),
             Err(StateError::InsufficientBalance { .. })
         ));
     }
@@ -179,7 +179,7 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
         assert_eq!(state.get_balance(&addr), initial - GAS_FEE);
     }
 
@@ -192,13 +192,13 @@ mod tests {
             metadata: BTreeMap::new(),
         };
         let tx1 = make_tx(&sk, 1, TxType::AgentRegister, &payload);
-        state.apply_tx(&tx1).unwrap();
+        state.apply_tx(&tx1, 0).unwrap();
 
         let balance_after_first = state.get_balance(&addr);
 
         // Try duplicate register — should fail, gas refunded
         let tx2 = make_tx(&sk, 2, TxType::AgentRegister, &payload);
-        assert!(state.apply_tx(&tx2).is_err());
+        assert!(state.apply_tx(&tx2, 0).is_err());
         assert_eq!(state.get_balance(&addr), balance_after_first);
     }
 
@@ -212,7 +212,7 @@ mod tests {
             name: "agent".into(),
             metadata: BTreeMap::new(),
         };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
 
         let payload = TokenCreatePayload {
             name: "TestCoin".into(),
@@ -221,7 +221,7 @@ mod tests {
             total_supply: 1_000_000,
         };
         let tx = make_tx(&sk, 2, TxType::TokenCreate, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         // Find the created token
         assert_eq!(state.tokens.len(), 1);
@@ -244,7 +244,7 @@ mod tests {
             total_supply: 1_000_000,
         };
         let tx = make_tx(&sk, 1, TxType::TokenCreate, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::AgentNotRegistered));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::AgentNotRegistered));
     }
 
     // === Token Mint Transfer ===
@@ -257,16 +257,16 @@ mod tests {
 
         // Register + create token
         let reg = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
         let create = TokenCreatePayload {
             name: "Coin".into(), symbol: "C".into(), decimals: 0, total_supply: 100,
         };
-        state.apply_tx(&make_tx(&sk, 2, TxType::TokenCreate, &create)).unwrap();
+        state.apply_tx(&make_tx(&sk, 2, TxType::TokenCreate, &create), 0).unwrap();
         let token_id = *state.tokens.keys().next().unwrap();
 
         // Transfer custom token
         let payload = TokenMintTransferPayload { token_id, to: addr2, amount: 30 };
-        state.apply_tx(&make_tx(&sk, 3, TxType::TokenMintTransfer, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 3, TxType::TokenMintTransfer, &payload), 0).unwrap();
 
         assert_eq!(state.get_token_balance(&addr, &token_id), 70);
         assert_eq!(state.get_token_balance(&addr2, &token_id), 30);
@@ -276,7 +276,7 @@ mod tests {
     fn token_mint_transfer_native_id_fails() {
         let (mut state, sk, _) = setup();
         let reg = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
 
         let payload = TokenMintTransferPayload {
             token_id: NATIVE_TOKEN_ID,
@@ -284,7 +284,7 @@ mod tests {
             amount: 10,
         };
         let tx = make_tx(&sk, 2, TxType::TokenMintTransfer, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::NativeTokenIdForCustom));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::NativeTokenIdForCustom));
     }
 
     // === Reputation Attest ===
@@ -298,9 +298,9 @@ mod tests {
 
         // Register both
         let reg1 = AgentRegisterPayload { name: "a1".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1)).unwrap();
+        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1), 0).unwrap();
         let reg2 = AgentRegisterPayload { name: "a2".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2)).unwrap();
+        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2), 0).unwrap();
 
         let payload = ReputationAttestPayload {
             to: addr2,
@@ -310,7 +310,7 @@ mod tests {
             memo: "good player".into(),
         };
         // ReputationAttest is deprecated — all submissions are rejected.
-        let result = state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload));
+        let result = state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload), 0);
         assert!(result.is_err(), "deprecated ReputationAttest must be rejected");
         assert_eq!(state.reputation.len(), 0);
     }
@@ -319,7 +319,7 @@ mod tests {
     fn reputation_self_attest_fails() {
         let (mut state, sk, addr) = setup();
         let reg = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
 
         let payload = ReputationAttestPayload {
             to: addr,
@@ -330,7 +330,7 @@ mod tests {
         };
         let tx = make_tx(&sk, 2, TxType::ReputationAttest, &payload);
         // ReputationAttest is deprecated — rejected before self-attest check.
-        assert!(state.apply_tx(&tx).is_err());
+        assert!(state.apply_tx(&tx, 0).is_err());
     }
 
     #[test]
@@ -341,16 +341,16 @@ mod tests {
         state.balances.insert(addr2, 100 * GAS_FEE);
 
         let reg1 = AgentRegisterPayload { name: "a1".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1)).unwrap();
+        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1), 0).unwrap();
         let reg2 = AgentRegisterPayload { name: "a2".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2)).unwrap();
+        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2), 0).unwrap();
 
         let payload = ReputationAttestPayload {
             to: addr2, category: "x".into(), score: 101, platform: "p".into(), memo: "".into(),
         };
         // ReputationAttest is deprecated — rejected before score validation.
         assert!(
-            state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload)).is_err()
+            state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload), 0).is_err()
         );
     }
 
@@ -360,7 +360,7 @@ mod tests {
     fn service_register_success() {
         let (mut state, sk, addr) = setup();
         let reg = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
 
         let payload = ServiceRegisterPayload {
             service_type: "translation".into(),
@@ -370,7 +370,7 @@ mod tests {
             endpoint: "https://example.com/translate".into(),
             active: true,
         };
-        state.apply_tx(&make_tx(&sk, 2, TxType::ServiceRegister, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 2, TxType::ServiceRegister, &payload), 0).unwrap();
 
         let svc = state.services.get(&(addr, "translation".to_string())).unwrap();
         assert_eq!(svc.endpoint, "https://example.com/translate");
@@ -381,7 +381,7 @@ mod tests {
     fn service_register_upsert() {
         let (mut state, sk, addr) = setup();
         let reg = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
 
         let payload1 = ServiceRegisterPayload {
             service_type: "review".into(),
@@ -391,7 +391,7 @@ mod tests {
             endpoint: "https://v1.com".into(),
             active: true,
         };
-        state.apply_tx(&make_tx(&sk, 2, TxType::ServiceRegister, &payload1)).unwrap();
+        state.apply_tx(&make_tx(&sk, 2, TxType::ServiceRegister, &payload1), 0).unwrap();
 
         // Update same service type
         let payload2 = ServiceRegisterPayload {
@@ -402,7 +402,7 @@ mod tests {
             endpoint: "https://v2.com".into(),
             active: false,
         };
-        state.apply_tx(&make_tx(&sk, 3, TxType::ServiceRegister, &payload2)).unwrap();
+        state.apply_tx(&make_tx(&sk, 3, TxType::ServiceRegister, &payload2), 0).unwrap();
 
         let svc = state.services.get(&(addr, "review".to_string())).unwrap();
         assert_eq!(svc.description, "v2");
@@ -416,7 +416,7 @@ mod tests {
     fn state_root_deterministic() {
         let (mut state, sk, _) = setup();
         let payload = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &payload), 0).unwrap();
 
         let root1 = state.state_root();
         let root2 = state.state_root();
@@ -430,7 +430,7 @@ mod tests {
         let root_before = state.state_root();
 
         let payload = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &payload), 0).unwrap();
 
         let root_after = state.state_root();
         assert_ne!(root_before, root_after);
@@ -444,7 +444,7 @@ mod tests {
         let payload = AgentRegisterPayload { name: "a".into(), metadata: BTreeMap::new() };
         let mut tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
         tx.signature[0] ^= 0xFF; // corrupt signature
-        assert_eq!(state.apply_tx(&tx), Err(StateError::InvalidSignature));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::InvalidSignature));
     }
 
     // === PlatformActivityReport ===
@@ -464,13 +464,13 @@ mod tests {
 
         // Register both
         let reg1 = AgentRegisterPayload { name: "platform1".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1)).unwrap();
+        state.apply_tx(&make_tx(&sk1, 1, TxType::AgentRegister, &reg1), 0).unwrap();
         let reg2 = AgentRegisterPayload { name: "agent2".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2)).unwrap();
+        state.apply_tx(&make_tx(&sk2, 1, TxType::AgentRegister, &reg2), 0).unwrap();
 
         // Stake 50k CLAW for addr1 (Platform Agent threshold)
         let stake = claw_types::transaction::StakeDepositPayload { amount: 50_000_000_000_000, validator: [0u8; 32], commission_bps: 10000 };
-        state.apply_tx(&make_tx(&sk1, 2, TxType::StakeDeposit, &stake)).unwrap();
+        state.apply_tx(&make_tx(&sk1, 2, TxType::StakeDeposit, &stake), 0).unwrap();
 
         (state, sk1, addr1, sk2, addr2)
     }
@@ -487,7 +487,7 @@ mod tests {
             }],
         };
         let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         // Check platform activity was recorded
         let agg = state.platform_activity.get(&addr2).unwrap();
@@ -509,7 +509,7 @@ mod tests {
         };
         let tx = make_tx(&sk2, 2, TxType::PlatformActivityReport, &payload);
         assert!(matches!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0),
             Err(StateError::PlatformStakeTooLow { .. })
         ));
     }
@@ -527,12 +527,12 @@ mod tests {
         };
 
         // First report succeeds
-        state.apply_tx(&make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload), 0).unwrap();
 
         // Second report in same epoch fails
         let tx2 = make_tx(&sk1, 4, TxType::PlatformActivityReport, &payload);
         assert_eq!(
-            state.apply_tx(&tx2),
+            state.apply_tx(&tx2, 0).map(|(_, _)| ()),
             Err(StateError::PlatformReportAlreadySubmitted)
         );
     }
@@ -550,7 +550,7 @@ mod tests {
         };
         let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
         assert!(matches!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0),
             Err(StateError::ActionTypeTooLong { .. })
         ));
     }
@@ -568,7 +568,7 @@ mod tests {
         };
         let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
         assert_eq!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0).map(|(_, _)| ()),
             Err(StateError::AgentNotRegistered)
         );
     }
@@ -586,7 +586,7 @@ mod tests {
         };
         let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
         assert!(matches!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0),
             Err(StateError::ActionCountTooHigh { .. })
         ));
     }
@@ -603,7 +603,7 @@ mod tests {
             }],
         };
         let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         let agg = state.platform_activity.get(&addr2).unwrap();
         assert_eq!(agg.total_actions, 10_000);
@@ -621,7 +621,7 @@ mod tests {
             }],
         };
         let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         let agg = state.platform_activity.get(&addr2).unwrap();
         assert_eq!(agg.total_actions, 0);
@@ -636,9 +636,10 @@ mod tests {
 
         // Register agent (should increment tx_count)
         let reg = AgentRegisterPayload { name: "agent".into(), metadata: BTreeMap::new() };
-        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
 
         let stats = state.activity_stats.get(&addr).unwrap();
+
         assert_eq!(stats.tx_count, 1);
         assert!(stats.gas_consumed > 0);
 
@@ -649,7 +650,7 @@ mod tests {
             decimals: 0,
             total_supply: 100,
         };
-        state.apply_tx(&make_tx(&sk, 2, TxType::TokenCreate, &create)).unwrap();
+        state.apply_tx(&make_tx(&sk, 2, TxType::TokenCreate, &create), 0).unwrap();
 
         let stats = state.activity_stats.get(&addr).unwrap();
         assert_eq!(stats.tx_count, 2);
@@ -667,7 +668,7 @@ mod tests {
             name: "my-miner".into(),
         };
         let tx = make_tx(&sk, 1, TxType::MinerRegister, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         let miner = state.miners.get(&addr).expect("miner should be registered");
         assert_eq!(miner.name, "my-miner");
@@ -685,10 +686,10 @@ mod tests {
             ip_addr: vec![10, 0, 0, 1],
             name: "miner1".into(),
         };
-        state.apply_tx(&make_tx(&sk, 1, TxType::MinerRegister, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::MinerRegister, &payload), 0).unwrap();
 
         let tx2 = make_tx(&sk, 2, TxType::MinerRegister, &payload);
-        assert_eq!(state.apply_tx(&tx2), Err(StateError::MinerAlreadyRegistered));
+        assert_eq!(state.apply_tx(&tx2, 0).map(|(_, _)| ()), Err(StateError::MinerAlreadyRegistered));
     }
 
     #[test]
@@ -700,7 +701,7 @@ mod tests {
             name: "miner".into(),
         };
         let tx = make_tx(&sk, 1, TxType::MinerRegister, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::InvalidMinerTier(5)));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::InvalidMinerTier(5)));
     }
 
     #[test]
@@ -722,7 +723,7 @@ mod tests {
                 name: format!("miner-{}", i),
             };
             let tx = make_tx(&keys[i].0, 1, TxType::MinerRegister, &payload);
-            state.apply_tx(&tx).unwrap();
+            state.apply_tx(&tx, 0).unwrap();
         }
 
         // 4th miner on same subnet should fail
@@ -733,7 +734,7 @@ mod tests {
         };
         let tx = make_tx(&keys[3].0, 1, TxType::MinerRegister, &payload);
         assert_eq!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0).map(|(_, _)| ()),
             Err(StateError::SubnetLimitReached { max: MAX_MINERS_PER_SUBNET })
         );
     }
@@ -747,7 +748,7 @@ mod tests {
             name: "miner".into(),
         };
         let tx = make_tx(&sk, 1, TxType::MinerRegister, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::InvalidIpLength(2)));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::InvalidIpLength(2)));
     }
 
     // === Miner Heartbeat ===
@@ -760,7 +761,7 @@ mod tests {
             ip_addr: vec![10, 0, 0, 1],
             name: "test-miner".into(),
         };
-        state.apply_tx(&make_tx(&sk, 1, TxType::MinerRegister, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::MinerRegister, &payload), 0).unwrap();
         (state, sk, addr)
     }
 
@@ -775,7 +776,7 @@ mod tests {
             latest_height: state.block_height,
         };
         let tx = make_tx(&sk, 2, TxType::MinerHeartbeat, &payload);
-        state.apply_tx(&tx).unwrap();
+        state.apply_tx(&tx, 0).unwrap();
 
         let miner = state.miners.get(&addr).unwrap();
         assert_eq!(miner.last_heartbeat, MINER_HEARTBEAT_INTERVAL + 1);
@@ -791,7 +792,7 @@ mod tests {
             latest_height: 5000,
         };
         let tx = make_tx(&sk, 1, TxType::MinerHeartbeat, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::MinerNotRegistered));
+        assert_eq!(state.apply_tx(&tx, 0).map(|(_, _)| ()), Err(StateError::MinerNotRegistered));
     }
 
     #[test]
@@ -806,7 +807,7 @@ mod tests {
         };
         let tx = make_tx(&sk, 2, TxType::MinerHeartbeat, &payload);
         assert!(matches!(
-            state.apply_tx(&tx),
+            state.apply_tx(&tx, 0),
             Err(StateError::HeartbeatTooEarly { .. })
         ));
     }
@@ -822,7 +823,7 @@ mod tests {
             latest_height: state.block_height,
         };
         let tx = make_tx(&sk, 2, TxType::MinerHeartbeat, &payload);
-        let fee = state.apply_tx(&tx).unwrap();
+        let (fee, _) = state.apply_tx(&tx, 0).unwrap();
 
         // Gas should be 0
         assert_eq!(fee, 0);
@@ -840,7 +841,7 @@ mod tests {
             latest_block_hash: [0u8; 32],
             latest_height: state.block_height,
         };
-        state.apply_tx(&make_tx(&sk, 2, TxType::MinerHeartbeat, &hb)).unwrap();
+        state.apply_tx(&make_tx(&sk, 2, TxType::MinerHeartbeat, &hb), 0).unwrap();
         assert_eq!(state.miners.get(&addr).unwrap().reputation_bps, REPUTATION_NEWCOMER_BPS);
 
         // Advance to established stage (>= 7 days from registration)
@@ -849,7 +850,7 @@ mod tests {
             latest_block_hash: [0u8; 32],
             latest_height: state.block_height,
         };
-        state.apply_tx(&make_tx(&sk, 3, TxType::MinerHeartbeat, &hb2)).unwrap();
+        state.apply_tx(&make_tx(&sk, 3, TxType::MinerHeartbeat, &hb2), 0).unwrap();
         assert_eq!(state.miners.get(&addr).unwrap().reputation_bps, REPUTATION_ESTABLISHED_BPS);
 
         // Advance to veteran stage (>= 30 days from registration)
@@ -858,7 +859,7 @@ mod tests {
             latest_block_hash: [0u8; 32],
             latest_height: state.block_height,
         };
-        state.apply_tx(&make_tx(&sk, 4, TxType::MinerHeartbeat, &hb3)).unwrap();
+        state.apply_tx(&make_tx(&sk, 4, TxType::MinerHeartbeat, &hb3), 0).unwrap();
         assert_eq!(state.miners.get(&addr).unwrap().reputation_bps, REPUTATION_VETERAN_BPS);
     }
 
@@ -1060,7 +1061,7 @@ mod tests {
             ip_addr: vec![10, 0, 0, 1],
             name: "miner".into(),
         };
-        state.apply_tx(&make_tx(&sk, 1, TxType::MinerRegister, &payload)).unwrap();
+        state.apply_tx(&make_tx(&sk, 1, TxType::MinerRegister, &payload), 0).unwrap();
 
         let root_after = state.state_root();
         assert_ne!(root_before, root_after);
@@ -1136,7 +1137,7 @@ mod tests {
             init_args: vec![],
         };
         let deploy_tx = make_tx(&sk, 1, TxType::ContractDeploy, &deploy_payload);
-        state.apply_tx(&deploy_tx).expect("deploy failed");
+        state.apply_tx(&deploy_tx, 0).expect("deploy failed");
 
         // Derive the contract address the same way the handler does.
         // nonce was 0 before the deploy transaction consumed it.
@@ -1151,7 +1152,7 @@ mod tests {
             value: 0,
         };
         let call_tx = make_tx(&sk, 2, TxType::ContractCall, &call_payload);
-        state.apply_tx(&call_tx).expect("contract call failed");
+        state.apply_tx(&call_tx, 0).expect("contract call failed");
 
         // Read the stored value: must equal the timestamp we set, NOT zero.
         let stored = state
@@ -1189,7 +1190,7 @@ mod tests {
             init_args: vec![],
         };
         let deploy_tx = make_tx(&sk, 1, TxType::ContractDeploy, &deploy_payload);
-        state.apply_tx(&deploy_tx).expect("deploy with constructor failed");
+        state.apply_tx(&deploy_tx, 0).expect("deploy with constructor failed");
 
         let contract_addr = claw_vm::VmEngine::derive_contract_address(&addr, 0);
 

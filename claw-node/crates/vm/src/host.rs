@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use wasmer::{AsStoreRef, FunctionEnvMut, Memory};
+use wasmer::{AsStoreRef, FunctionEnvMut, Memory, RuntimeError};
 
 use crate::constants::*;
 use crate::error::VmError;
-use crate::types::ExecutionContext;
+use crate::types::{ContractEvent, ExecutionContext};
 
 /// Maximum buffer size for guest-provided lengths in host functions (64 KB).
 /// Prevents a malicious contract from requesting an unbounded allocation.
@@ -25,6 +25,8 @@ pub struct HostEnv {
     pub transfers: Arc<Mutex<Vec<([u8; 32], u128)>>>,
     /// Return data set by the contract.
     pub return_data: Arc<Mutex<Vec<u8>>>,
+    /// Events emitted by the contract via `emit_event`.
+    pub events: Arc<Mutex<Vec<ContractEvent>>>,
     /// Chain state snapshots for read-only queries.
     pub balances: Arc<BTreeMap<[u8; 32], u128>>,
     pub agent_scores: Arc<BTreeMap<[u8; 32], u64>>,
@@ -101,19 +103,21 @@ fn write_bytes(env: &FunctionEnvMut<HostEnv>, ptr: u32, data: &[u8]) -> Result<(
     Ok(())
 }
 
-/// Deducts fuel from the execution budget.
-/// # Panics
-/// Intentionally panics on fuel exhaustion — Wasmer's catch_unwind converts this to a trap.
-fn consume_fuel_or_trap(env: &FunctionEnvMut<HostEnv>, cost: u64) {
+/// Checks the fuel budget and returns a `RuntimeError` if exhausted.
+///
+/// Each host function calls this with `?` so Wasmer receives an `Err` and
+/// terminates execution cleanly — no Rust panics cross the coroutine boundary.
+/// The error message is prefixed with `"out of fuel: "` so `engine.rs` can
+/// map it to `VmError::OutOfFuel { used, limit }`.
+fn check_fuel(env: &FunctionEnvMut<HostEnv>, cost: u64) -> Result<(), RuntimeError> {
     let data = env.data();
-    if let Err(msg) = HostEnv::consume_fuel(
+    HostEnv::consume_fuel(
         &data.fuel_remaining,
         &data.fuel_consumed,
         cost,
         data.fuel_limit,
-    ) {
-        panic!("out of fuel: {msg}");
-    }
+    )
+    .map_err(|msg| RuntimeError::new(format!("out of fuel: {msg}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -128,11 +132,11 @@ pub fn host_storage_read(
     key_ptr: u32,
     key_len: u32,
     val_ptr: u32,
-) -> i32 {
-    consume_fuel_or_trap(&env, STORAGE_READ_FUEL);
+) -> Result<i32, RuntimeError> {
+    check_fuel(&env, STORAGE_READ_FUEL)?;
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
-        Err(_) => return -1,
+        Err(_) => return Ok(-1),
     };
     let storage = env.data().storage.lock().unwrap();
     match storage.get(&key) {
@@ -140,12 +144,12 @@ pub fn host_storage_read(
             let len = val.len() as i32;
             let val_clone = val.clone();
             drop(storage);
-            if let Err(_) = write_bytes(&env, val_ptr, &val_clone) {
-                return -1;
+            if write_bytes(&env, val_ptr, &val_clone).is_err() {
+                return Ok(-1);
             }
-            len
+            Ok(len)
         }
-        None => -1,
+        None => Ok(-1),
     }
 }
 
@@ -156,15 +160,20 @@ pub fn host_storage_write(
     key_len: u32,
     val_ptr: u32,
     val_len: u32,
-) {
-    consume_fuel_or_trap(&env, STORAGE_WRITE_FUEL);
+) -> Result<(), RuntimeError> {
+    check_fuel(&env, STORAGE_WRITE_FUEL)?;
+    if env.data().context.read_only {
+        return Err(RuntimeError::new(
+            "write operation not allowed in read-only (view) call",
+        ));
+    }
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let val = match read_bytes(&env, val_ptr, val_len) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let data = env.data();
     data.storage.lock().unwrap().insert(key.clone(), val.clone());
@@ -172,33 +181,48 @@ pub fn host_storage_write(
         .lock()
         .unwrap()
         .push((key, Some(val)));
+    Ok(())
 }
 
 /// Check whether a key exists in contract storage. Returns 1 if yes, 0 if no.
-pub fn host_storage_has(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: u32) -> i32 {
-    consume_fuel_or_trap(&env, STORAGE_READ_FUEL);
+pub fn host_storage_has(
+    env: FunctionEnvMut<HostEnv>,
+    key_ptr: u32,
+    key_len: u32,
+) -> Result<i32, RuntimeError> {
+    check_fuel(&env, STORAGE_READ_FUEL)?;
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
-        Err(_) => return 0,
+        Err(_) => return Ok(0),
     };
     let storage = env.data().storage.lock().unwrap();
     if storage.contains_key(&key) {
-        1
+        Ok(1)
     } else {
-        0
+        Ok(0)
     }
 }
 
 /// Delete a key from contract storage.
-pub fn host_storage_delete(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: u32) {
-    consume_fuel_or_trap(&env, STORAGE_DELETE_FUEL);
+pub fn host_storage_delete(
+    env: FunctionEnvMut<HostEnv>,
+    key_ptr: u32,
+    key_len: u32,
+) -> Result<(), RuntimeError> {
+    check_fuel(&env, STORAGE_DELETE_FUEL)?;
+    if env.data().context.read_only {
+        return Err(RuntimeError::new(
+            "write operation not allowed in read-only (view) call",
+        ));
+    }
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let data = env.data();
     data.storage.lock().unwrap().remove(&key);
     data.storage_changes.lock().unwrap().push((key, None));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -206,41 +230,46 @@ pub fn host_storage_delete(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: 
 // ---------------------------------------------------------------------------
 
 /// Write the 32-byte caller address to guest memory at `out_ptr`.
-pub fn host_caller(env: FunctionEnvMut<HostEnv>, out_ptr: u32) {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+pub fn host_caller(env: FunctionEnvMut<HostEnv>, out_ptr: u32) -> Result<(), RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
     let caller = env.data().context.caller;
     let _ = write_bytes(&env, out_ptr, &caller);
+    Ok(())
 }
 
 /// Return the current block height.
-pub fn host_block_height(env: FunctionEnvMut<HostEnv>) -> i64 {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
-    env.data().context.block_height as i64
+pub fn host_block_height(env: FunctionEnvMut<HostEnv>) -> Result<i64, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
+    Ok(env.data().context.block_height as i64)
 }
 
 /// Return the current block timestamp.
-pub fn host_block_timestamp(env: FunctionEnvMut<HostEnv>) -> i64 {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
-    env.data().context.block_timestamp as i64
+pub fn host_block_timestamp(env: FunctionEnvMut<HostEnv>) -> Result<i64, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
+    Ok(env.data().context.block_timestamp as i64)
 }
 
 /// Write the 32-byte contract address to guest memory at `out_ptr`.
-pub fn host_contract_address(env: FunctionEnvMut<HostEnv>, out_ptr: u32) {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+pub fn host_contract_address(
+    env: FunctionEnvMut<HostEnv>,
+    out_ptr: u32,
+) -> Result<(), RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
     let addr = env.data().context.contract_address;
     let _ = write_bytes(&env, out_ptr, &addr);
+    Ok(())
 }
 
 /// Return the low 64 bits of the transferred value.
-pub fn host_value_lo(env: FunctionEnvMut<HostEnv>) -> i64 {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
-    (env.data().context.value & 0xFFFF_FFFF_FFFF_FFFF) as i64
+pub fn host_value_lo(env: FunctionEnvMut<HostEnv>) -> Result<i64, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
+    Ok((env.data().context.value & 0xFFFF_FFFF_FFFF_FFFF) as i64)
 }
 
 /// Return the high 64 bits of the transferred value.
-pub fn host_value_hi(env: FunctionEnvMut<HostEnv>) -> i64 {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
-    (env.data().context.value >> 64) as i64
+pub fn host_value_hi(env: FunctionEnvMut<HostEnv>) -> Result<i64, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
+    Ok((env.data().context.value >> 64) as i64)
 }
 
 // ---------------------------------------------------------------------------
@@ -248,31 +277,37 @@ pub fn host_value_hi(env: FunctionEnvMut<HostEnv>) -> i64 {
 // ---------------------------------------------------------------------------
 
 /// Get the reputation score of an agent by address.
-pub fn host_agent_get_score(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 {
-    consume_fuel_or_trap(&env, AGENT_QUERY_FUEL);
+pub fn host_agent_get_score(
+    env: FunctionEnvMut<HostEnv>,
+    addr_ptr: u32,
+) -> Result<i64, RuntimeError> {
+    check_fuel(&env, AGENT_QUERY_FUEL)?;
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
-        Err(_) => return 0,
+        Err(_) => return Ok(0),
     };
     let mut addr = [0u8; 32];
     addr.copy_from_slice(&addr_bytes);
     let scores = &env.data().agent_scores;
-    scores.get(&addr).copied().unwrap_or(0) as i64
+    Ok(scores.get(&addr).copied().unwrap_or(0) as i64)
 }
 
 /// Check whether an agent is registered. Returns 1 if yes, 0 if no.
-pub fn host_agent_is_registered(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i32 {
-    consume_fuel_or_trap(&env, AGENT_QUERY_FUEL);
+pub fn host_agent_is_registered(
+    env: FunctionEnvMut<HostEnv>,
+    addr_ptr: u32,
+) -> Result<i32, RuntimeError> {
+    check_fuel(&env, AGENT_QUERY_FUEL)?;
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
-        Err(_) => return 0,
+        Err(_) => return Ok(0),
     };
     let mut addr = [0u8; 32];
     addr.copy_from_slice(&addr_bytes);
     if env.data().registered_agents.contains(&addr) {
-        1
+        Ok(1)
     } else {
-        0
+        Ok(0)
     }
 }
 
@@ -281,17 +316,20 @@ pub fn host_agent_is_registered(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> 
 // ---------------------------------------------------------------------------
 
 /// Return the low 64 bits of an address's token balance.
-pub fn host_token_balance(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+pub fn host_token_balance(
+    env: FunctionEnvMut<HostEnv>,
+    addr_ptr: u32,
+) -> Result<i64, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
-        Err(_) => return 0,
+        Err(_) => return Ok(0),
     };
     let mut addr = [0u8; 32];
     addr.copy_from_slice(&addr_bytes);
     let balances = &env.data().balances;
     let balance = balances.get(&addr).copied().unwrap_or(0);
-    (balance & 0xFFFF_FFFF_FFFF_FFFF) as i64
+    Ok((balance & 0xFFFF_FFFF_FFFF_FFFF) as i64)
 }
 
 /// Transfer tokens to `to_ptr` address. Returns 0 on success, -1 on failure.
@@ -300,20 +338,25 @@ pub fn host_token_transfer(
     to_ptr: u32,
     amount_lo: i64,
     amount_hi: i64,
-) -> i32 {
-    consume_fuel_or_trap(&env, TOKEN_TRANSFER_FUEL);
+) -> Result<i32, RuntimeError> {
+    check_fuel(&env, TOKEN_TRANSFER_FUEL)?;
+    if env.data().context.read_only {
+        return Err(RuntimeError::new(
+            "write operation not allowed in read-only (view) call",
+        ));
+    }
     let to_bytes = match read_bytes(&env, to_ptr, 32) {
         Ok(b) => b,
-        Err(_) => return -1,
+        Err(_) => return Ok(-1),
     };
     let mut to = [0u8; 32];
     to.copy_from_slice(&to_bytes);
     let amount = (amount_lo as u64 as u128) | ((amount_hi as u64 as u128) << 64);
     if amount == 0 {
-        return -1;
+        return Ok(-1);
     }
     env.data().transfers.lock().unwrap().push((to, amount));
-    0
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -321,30 +364,36 @@ pub fn host_token_transfer(
 // ---------------------------------------------------------------------------
 
 /// Log a message from the contract.
-pub fn host_log(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+pub fn host_log(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) -> Result<(), RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
     let bytes = match read_bytes(&env, ptr, len) {
         Ok(b) => b,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let msg = String::from_utf8_lossy(&bytes).to_string();
     tracing::info!(target: "claw_vm", "contract log: {}", msg);
     const MAX_LOG_ENTRIES: usize = 100;
     let mut logs = env.data().logs.lock().unwrap();
     if logs.len() >= MAX_LOG_ENTRIES {
-        return; // silently drop excess log entries
+        return Ok(()); // silently drop excess log entries
     }
     logs.push(msg);
+    Ok(())
 }
 
 /// Set the return data for the execution result.
-pub fn host_return_data(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+pub fn host_return_data(
+    env: FunctionEnvMut<HostEnv>,
+    ptr: u32,
+    len: u32,
+) -> Result<(), RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
     let bytes = match read_bytes(&env, ptr, len) {
         Ok(b) => b,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     *env.data().return_data.lock().unwrap() = bytes;
+    Ok(())
 }
 
 /// Return the high 64 bits (bits 64–127) of an address's token balance.
@@ -352,27 +401,109 @@ pub fn host_return_data(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
 /// Contracts that need the full u128 balance call both `token_balance` (lo)
 /// and `token_balance_hi` (hi) and combine them:
 ///   balance = (hi as u128) << 64 | (lo as u128)
-pub fn host_token_balance_hi(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 {
-    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+pub fn host_token_balance_hi(
+    env: FunctionEnvMut<HostEnv>,
+    addr_ptr: u32,
+) -> Result<i64, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
-        Err(_) => return 0,
+        Err(_) => return Ok(0),
     };
     let mut addr = [0u8; 32];
     addr.copy_from_slice(&addr_bytes);
     let balances = &env.data().balances;
     let balance = balances.get(&addr).copied().unwrap_or(0);
-    (balance >> 64) as i64
+    Ok((balance >> 64) as i64)
 }
 
 /// Abort execution with an error message.
 ///
-/// Panics to trap execution. Wasmer catches the panic from host functions
-/// and converts it into a `RuntimeError` returned from `Instance::call()`.
-pub fn host_abort(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
+/// Returns `Err(RuntimeError)` with the message prefixed by `"contract abort: "`.
+/// Wasmer surfaces this as `Err` from `func.call()`, which `engine.rs` maps to
+/// `VmError::ContractAbort { reason, fuel_consumed }`.
+///
+/// Using `Err` instead of `panic!` avoids panics crossing Wasmer's coroutine
+/// boundary, which causes unexpected re-panics on some platforms (macOS arm64).
+pub fn host_abort(
+    env: FunctionEnvMut<HostEnv>,
+    ptr: u32,
+    len: u32,
+) -> Result<(), RuntimeError> {
     let bytes = read_bytes(&env, ptr, len).unwrap_or_default();
     let msg = String::from_utf8_lossy(&bytes).to_string();
-    panic!("contract abort: {msg}");
+    Err(RuntimeError::new(format!("contract abort: {msg}")))
+}
+
+// ---------------------------------------------------------------------------
+// Event host functions
+// ---------------------------------------------------------------------------
+
+/// Emit a structured event from a contract.
+///
+/// - `topic_ptr` / `topic_len`: UTF-8 topic string in guest memory (1–256 bytes).
+/// - `data_ptr` / `data_len`: raw event payload bytes (0–4096 bytes).
+///
+/// Returns `Err(RuntimeError)` if:
+/// - topic is empty
+/// - topic exceeds 256 bytes
+/// - data exceeds MAX_EVENT_DATA_SIZE (4096 bytes)
+/// - the execution would exceed MAX_EVENTS_PER_EXECUTION (50 events)
+pub fn host_emit_event(
+    env: FunctionEnvMut<HostEnv>,
+    topic_ptr: u32,
+    topic_len: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> Result<(), RuntimeError> {
+    check_fuel(&env, EVENT_EMIT_FUEL)?;
+
+    // Validate topic length
+    if topic_len == 0 {
+        return Err(RuntimeError::new("emit_event: topic must not be empty"));
+    }
+    if topic_len as usize > 256 {
+        return Err(RuntimeError::new(format!(
+            "emit_event: topic length {} exceeds 256 byte limit",
+            topic_len
+        )));
+    }
+
+    // Validate data length before reading
+    if data_len as usize > MAX_EVENT_DATA_SIZE {
+        return Err(RuntimeError::new(format!(
+            "emit_event: data length {} exceeds {} byte limit",
+            data_len, MAX_EVENT_DATA_SIZE
+        )));
+    }
+
+    // Read topic bytes from guest memory
+    let topic_bytes = read_bytes(&env, topic_ptr, topic_len)
+        .map_err(|e| RuntimeError::new(format!("emit_event: failed to read topic: {e}")))?;
+
+    // Validate topic is valid UTF-8
+    let topic = String::from_utf8(topic_bytes)
+        .map_err(|_| RuntimeError::new("emit_event: topic is not valid UTF-8"))?;
+
+    // Read data bytes from guest memory (empty data is allowed)
+    let data = if data_len == 0 {
+        Vec::new()
+    } else {
+        read_bytes(&env, data_ptr, data_len)
+            .map_err(|e| RuntimeError::new(format!("emit_event: failed to read data: {e}")))?
+    };
+
+    // Enforce event cap — trap on overflow, not silent drop
+    let mut events = env.data().events.lock().unwrap();
+    if events.len() >= MAX_EVENTS_PER_EXECUTION {
+        return Err(RuntimeError::new(format!(
+            "emit_event: max event limit ({}) exceeded",
+            MAX_EVENTS_PER_EXECUTION
+        )));
+    }
+
+    events.push(ContractEvent { topic, data });
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use claw_crypto::merkle::merkle_root;
 use claw_crypto::signer::verify_transaction;
+use claw_types::block::BlockEvent;
 use claw_types::state::*;
 use claw_types::transaction::{Transaction, TxType};
 
@@ -106,12 +107,22 @@ pub struct WorldState {
 }
 
 impl WorldState {
-    /// Apply a transaction to the state. Returns the gas fee charged on success.
+    /// Apply a transaction to the state.
     ///
-    /// The fee is deducted from the sender but NOT credited to anyone yet.
-    /// Callers should accumulate fees per block and then call
-    /// [`crate::rewards::distribute_fees`] at block finalization.
-    pub fn apply_tx(&mut self, tx: &Transaction) -> Result<u128, StateError> {
+    /// Returns `(gas_fee, contract_events)` on success:
+    /// - `gas_fee`: the fee charged to the sender (deducted but NOT yet credited).
+    ///   Callers accumulate fees per block and call `rewards::distribute_fees`.
+    /// - `contract_events`: `BlockEvent::ContractEvent` entries produced during this tx
+    ///   (empty for non-contract transactions). Callers append these to the block's
+    ///   event list along with reward events.
+    ///
+    /// The `tx_index` parameter is the 0-based position of this transaction
+    /// within the current block, used to populate `BlockEvent::ContractEvent.tx_index`.
+    pub fn apply_tx(
+        &mut self,
+        tx: &Transaction,
+        tx_index: u32,
+    ) -> Result<(u128, Vec<BlockEvent>), StateError> {
         // 0. Check payload size limit
         if tx.payload.len() > MAX_TX_PAYLOAD_SIZE {
             return Err(StateError::PayloadTooLarge {
@@ -147,26 +158,49 @@ impl WorldState {
         }
         // Fee is deducted but not credited — caller distributes via rewards::distribute_fees
 
-        // 4. Dispatch to handler
-        let result = match tx.tx_type {
-            TxType::AgentRegister => handlers::handle_agent_register(self, tx),
-            TxType::TokenTransfer => handlers::handle_token_transfer(self, tx),
-            TxType::TokenCreate => handlers::handle_token_create(self, tx),
-            TxType::TokenMintTransfer => handlers::handle_token_mint_transfer(self, tx),
-            TxType::ReputationAttest => handlers::handle_reputation_attest(self, tx),
-            TxType::ServiceRegister => handlers::handle_service_register(self, tx),
-            TxType::ContractDeploy => handlers::handle_contract_deploy(self, tx),
-            TxType::ContractCall => handlers::handle_contract_call(self, tx),
-            TxType::StakeDeposit => handlers::handle_stake_deposit(self, tx),
-            TxType::StakeWithdraw => handlers::handle_stake_withdraw(self, tx),
-            TxType::StakeClaim => handlers::handle_stake_claim(self, tx),
-            TxType::PlatformActivityReport => handlers::handle_platform_activity_report(self, tx),
-            TxType::TokenApprove => handlers::handle_token_approve(self, tx),
-            TxType::TokenBurn => handlers::handle_token_burn(self, tx),
-            TxType::ChangeDelegation => handlers::handle_change_delegation(self, tx),
-            TxType::MinerRegister => handlers::handle_miner_register(self, tx),
-            TxType::MinerHeartbeat => handlers::handle_miner_heartbeat(self, tx),
-        };
+        // 4. Dispatch to handler.
+        // Contract handlers return `Vec<BlockEvent>` on success; other handlers return `()`.
+        // We normalise to `(Vec<BlockEvent>, Result<(), StateError>)` for uniform post-processing.
+        let (contract_events, result): (Vec<BlockEvent>, Result<(), StateError>) =
+            match tx.tx_type {
+                TxType::ContractDeploy => {
+                    match handlers::handle_contract_deploy(self, tx, tx_index) {
+                        Ok(events) => (events, Ok(())),
+                        Err(e) => (Vec::new(), Err(e)),
+                    }
+                }
+                TxType::ContractCall => {
+                    match handlers::handle_contract_call(self, tx, tx_index) {
+                        Ok(events) => (events, Ok(())),
+                        Err(e) => (Vec::new(), Err(e)),
+                    }
+                }
+                TxType::AgentRegister => (Vec::new(), handlers::handle_agent_register(self, tx)),
+                TxType::TokenTransfer => (Vec::new(), handlers::handle_token_transfer(self, tx)),
+                TxType::TokenCreate => (Vec::new(), handlers::handle_token_create(self, tx)),
+                TxType::TokenMintTransfer => {
+                    (Vec::new(), handlers::handle_token_mint_transfer(self, tx))
+                }
+                TxType::ReputationAttest => {
+                    (Vec::new(), handlers::handle_reputation_attest(self, tx))
+                }
+                TxType::ServiceRegister => {
+                    (Vec::new(), handlers::handle_service_register(self, tx))
+                }
+                TxType::StakeDeposit => (Vec::new(), handlers::handle_stake_deposit(self, tx)),
+                TxType::StakeWithdraw => (Vec::new(), handlers::handle_stake_withdraw(self, tx)),
+                TxType::StakeClaim => (Vec::new(), handlers::handle_stake_claim(self, tx)),
+                TxType::PlatformActivityReport => {
+                    (Vec::new(), handlers::handle_platform_activity_report(self, tx))
+                }
+                TxType::TokenApprove => (Vec::new(), handlers::handle_token_approve(self, tx)),
+                TxType::TokenBurn => (Vec::new(), handlers::handle_token_burn(self, tx)),
+                TxType::ChangeDelegation => {
+                    (Vec::new(), handlers::handle_change_delegation(self, tx))
+                }
+                TxType::MinerRegister => (Vec::new(), handlers::handle_miner_register(self, tx)),
+                TxType::MinerHeartbeat => (Vec::new(), handlers::handle_miner_heartbeat(self, tx)),
+            };
 
         let actual_fee = if gas_free { 0 } else { GAS_FEE };
 
@@ -186,17 +220,17 @@ impl WorldState {
                 _ => {}
             }
 
-            Ok(actual_fee)
+            Ok((actual_fee, contract_events))
         } else {
             // Rollback gas on failure (gas is only charged on success)
             if !gas_free {
                 *self.balances.entry(tx.from).or_insert(0) += GAS_FEE;
             }
-            result.map(|()| 0)
+            Err(result.unwrap_err())
         }
     }
 
-    /// Compute the Merkle state root from all state entries.
+/// Compute the Merkle state root from all state entries.
     pub fn state_root(&self) -> [u8; 32] {
         let mut leaves: Vec<[u8; 32]> = Vec::new();
 

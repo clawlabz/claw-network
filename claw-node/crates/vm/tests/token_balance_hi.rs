@@ -47,6 +47,7 @@ fn make_context(contract_address: [u8; 32]) -> ExecutionContext {
         block_timestamp: 0,
         value: 0,
         fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+        read_only: false,
     }
 }
 

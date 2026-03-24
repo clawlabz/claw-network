@@ -1,4 +1,4 @@
-//! Safe wrappers around the 17 host functions provided by the ClawNetwork VM.
+//! Safe wrappers around the host functions provided by the ClawNetwork VM.
 //!
 //! All raw `extern "C"` declarations are private. The public API exposes safe
 //! Rust functions that handle pointer/length marshalling internally.
@@ -29,6 +29,7 @@ extern "C" {
     fn log_msg(ptr: u32, len: u32);
     fn return_data(ptr: u32, len: u32);
     fn abort(ptr: u32, len: u32);
+    fn emit_event(topic_ptr: u32, topic_len: u32, data_ptr: u32, data_len: u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,26 @@ pub fn log(msg: &str) {
 /// Set the return data for this execution.
 pub fn set_return_data(data: &[u8]) {
     unsafe { return_data(data.as_ptr() as u32, data.len() as u32) }
+}
+
+/// Emit a structured contract event.
+///
+/// The `topic` must be a non-empty UTF-8 string (max 256 bytes).
+/// The `data` is an arbitrary byte payload (max 4096 bytes).
+///
+/// Traps if:
+/// - `topic` is empty or exceeds 256 bytes
+/// - `data` exceeds 4096 bytes
+/// - the per-execution event limit (50) has been reached
+pub fn emit_event_raw(topic: &str, data: &[u8]) {
+    unsafe {
+        emit_event(
+            topic.as_ptr() as u32,
+            topic.len() as u32,
+            data.as_ptr() as u32,
+            data.len() as u32,
+        )
+    }
 }
 
 /// Abort execution with an error message.

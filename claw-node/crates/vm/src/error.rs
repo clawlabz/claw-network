@@ -20,4 +20,6 @@ pub enum VmError {
     MethodNotFound(String),
     #[error("wasm code too large: {size} bytes (max {max})")]
     CodeTooLarge { size: usize, max: usize },
+    #[error("contract aborted: {reason} (fuel consumed: {fuel_consumed})")]
+    ContractAbort { reason: String, fuel_consumed: u64 },
 }

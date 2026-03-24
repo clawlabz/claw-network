@@ -48,7 +48,7 @@ fn full_e2e_all_six_tx_types() {
             m
         },
     });
-    state.apply_tx(&tx).unwrap();
+    state.apply_tx(&tx, 0).unwrap();
     assert_eq!(state.agents.get(&addr1).unwrap().name, "agent-alpha");
 
     // === TX 2: Agent Register (addr2) ===
@@ -56,7 +56,7 @@ fn full_e2e_all_six_tx_types() {
         name: "agent-beta".into(),
         metadata: BTreeMap::new(),
     });
-    state.apply_tx(&tx).unwrap();
+    state.apply_tx(&tx, 0).unwrap();
     assert_eq!(state.agents.len(), 2);
 
     // === TX 3: Token Transfer (CLAW: addr1 → addr2) ===
@@ -66,7 +66,7 @@ fn full_e2e_all_six_tx_types() {
         to: addr2,
         amount: 2_000_000_000, // 2 CLAW
     });
-    state.apply_tx(&tx).unwrap();
+    state.apply_tx(&tx, 0).unwrap();
     assert_eq!(state.get_balance(&addr2), initial2 + 2_000_000_000);
     assert_eq!(state.get_balance(&addr1), initial1 - 2_000_000_000 - GAS_FEE);
 
@@ -77,7 +77,7 @@ fn full_e2e_all_six_tx_types() {
         decimals: 6,
         total_supply: 1_000_000_000_000, // 1M tokens
     });
-    state.apply_tx(&tx).unwrap();
+    state.apply_tx(&tx, 0).unwrap();
     assert_eq!(state.tokens.len(), 1);
     let token_id = *state.tokens.keys().next().unwrap();
     assert_eq!(state.get_token_balance(&addr1, &token_id), 1_000_000_000_000);
@@ -88,7 +88,7 @@ fn full_e2e_all_six_tx_types() {
         to: addr2,
         amount: 500_000_000_000, // 500K tokens
     });
-    state.apply_tx(&tx).unwrap();
+    state.apply_tx(&tx, 0).unwrap();
     assert_eq!(state.get_token_balance(&addr1, &token_id), 500_000_000_000);
     assert_eq!(state.get_token_balance(&addr2, &token_id), 500_000_000_000);
 
@@ -101,7 +101,7 @@ fn full_e2e_all_six_tx_types() {
         platform: "e2e-test".into(),
         memo: "reliable partner".into(),
     });
-    assert!(state.apply_tx(&tx).is_err(), "ReputationAttest is deprecated and must be rejected");
+    assert!(state.apply_tx(&tx, 0).is_err(), "ReputationAttest is deprecated and must be rejected");
     assert_eq!(state.reputation.len(), 0);
 
     // === TX 7: Service Register (addr1, nonce 5 — previous rep attest did not advance nonce) ===
@@ -113,7 +113,7 @@ fn full_e2e_all_six_tx_types() {
         endpoint: "https://agent-alpha.example.com/review".into(),
         active: true,
     });
-    state.apply_tx(&tx).unwrap();
+    state.apply_tx(&tx, 0).unwrap();
     assert_eq!(state.services.len(), 1);
 
     // === TX 8: Reputation attempt from addr2 — also deprecated, must be rejected ===
@@ -124,7 +124,7 @@ fn full_e2e_all_six_tx_types() {
         platform: "e2e-test".into(),
         memo: "fast and accurate".into(),
     });
-    assert!(state.apply_tx(&tx).is_err(), "ReputationAttest is deprecated and must be rejected");
+    assert!(state.apply_tx(&tx, 0).is_err(), "ReputationAttest is deprecated and must be rejected");
     assert_eq!(state.reputation.len(), 0);
 
     // === Verify final state ===

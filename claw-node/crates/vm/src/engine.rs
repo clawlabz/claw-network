@@ -82,6 +82,7 @@ impl VmEngine {
             logs: Arc::new(Mutex::new(Vec::new())),
             transfers: Arc::new(Mutex::new(Vec::new())),
             return_data: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::new(Mutex::new(Vec::new())),
             balances: Arc::new(balances_map),
             agent_scores: Arc::new(scores_map),
             registered_agents: Arc::new(registered_set),
@@ -114,6 +115,7 @@ impl VmEngine {
                 "log_msg" => Function::new_typed_with_env(&mut store, &func_env, host::host_log),
                 "return_data" => Function::new_typed_with_env(&mut store, &func_env, host::host_return_data),
                 "abort" => Function::new_typed_with_env(&mut store, &func_env, host::host_abort),
+                "emit_event" => Function::new_typed_with_env(&mut store, &func_env, host::host_emit_event),
             }
         };
 
@@ -171,13 +173,30 @@ impl VmEngine {
 
         let _result = func.call(&mut store, &call_args).map_err(|e| {
             let msg = e.to_string();
-            if msg.contains("fuel") {
+            let fuel_consumed = func_env
+                .as_ref(&store)
+                .fuel_consumed
+                .lock()
+                .map(|f| *f)
+                .unwrap_or(0);
+
+            if msg.contains("out of fuel") || msg.contains("fuel exhausted") {
                 VmError::OutOfFuel {
-                    used: fuel_limit,
+                    used: fuel_consumed,
                     limit: fuel_limit,
                 }
+            } else if msg.contains("contract abort:") {
+                let reason = msg
+                    .split("contract abort:")
+                    .nth(1)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| msg.clone());
+                VmError::ContractAbort {
+                    reason,
+                    fuel_consumed,
+                }
             } else {
-                VmError::ExecutionFailed(msg)
+                VmError::ExecutionFailed(format!("{msg} (fuel consumed: {fuel_consumed})"))
             }
         })?;
 
@@ -187,6 +206,7 @@ impl VmEngine {
         let storage_changes = env_ref.storage_changes.lock().unwrap().clone();
         let logs = env_ref.logs.lock().unwrap().clone();
         let transfers = env_ref.transfers.lock().unwrap().clone();
+        let events = env_ref.events.lock().unwrap().clone();
         let fuel_consumed = *env_ref.fuel_consumed.lock().unwrap();
 
         Ok(ExecutionResult {
@@ -195,6 +215,7 @@ impl VmEngine {
             storage_changes,
             logs,
             transfers,
+            events,
         })
     }
 }

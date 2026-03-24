@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borsh::BorshDeserialize;
+use claw_types::block::BlockEvent;
 use claw_types::state::*;
 use claw_types::transaction::*;
 
@@ -415,10 +416,14 @@ pub fn handle_service_register(
 }
 
 /// ContractDeploy: deploy a new smart contract.
+///
+/// Returns the list of `BlockEvent::ContractEvent` entries produced during
+/// constructor execution (empty when no init_method or no events emitted).
 pub fn handle_contract_deploy(
     state: &mut WorldState,
     tx: &Transaction,
-) -> Result<(), StateError> {
+    tx_index: u32,
+) -> Result<Vec<BlockEvent>, StateError> {
     let payload = ContractDeployPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
 
@@ -464,6 +469,7 @@ pub fn handle_contract_deploy(
             block_timestamp: state.block_timestamp,
             value: 0,
             fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+            read_only: false,
         };
 
         // Empty storage for a freshly deployed contract
@@ -496,6 +502,18 @@ pub fn handle_contract_deploy(
             }
         }
 
+        // Convert VM events to BlockEvent entries (collect before mutable borrows below)
+        let contract_events: Vec<BlockEvent> = result
+            .events
+            .iter()
+            .map(|e| BlockEvent::ContractEvent {
+                contract: contract_address,
+                tx_index,
+                topic: e.topic.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+
         // --- Atomic commit: everything succeeded, apply all changes ---
 
         // 1. Register contract
@@ -521,22 +539,28 @@ pub fn handle_contract_deploy(
             *state.balances.entry(contract_address).or_insert(0) -= amount;
             *state.balances.entry(to).or_insert(0) += amount;
         }
+
+        Ok(contract_events)
     } else {
         // No constructor — just register the contract
         state.contracts.insert(contract_address, instance);
         state
             .contract_code
             .insert(contract_address, payload.code.clone());
-    }
 
-    Ok(())
+        Ok(Vec::new())
+    }
 }
 
 /// ContractCall: call a method on a deployed smart contract.
+///
+/// Returns the list of `BlockEvent::ContractEvent` entries produced during
+/// execution (empty when no events were emitted).
 pub fn handle_contract_call(
     state: &mut WorldState,
     tx: &Transaction,
-) -> Result<(), StateError> {
+    tx_index: u32,
+) -> Result<Vec<BlockEvent>, StateError> {
     let payload = ContractCallPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
 
@@ -585,6 +609,7 @@ pub fn handle_contract_call(
         block_timestamp: state.block_timestamp,
         value: payload.value,
         fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+        read_only: false,
     };
 
     let engine = claw_vm::VmEngine::new();
@@ -621,6 +646,18 @@ pub fn handle_contract_call(
         }
     }
 
+    // Convert VM events to BlockEvent entries (collect before mutable borrows below)
+    let contract_events: Vec<BlockEvent> = result
+        .events
+        .iter()
+        .map(|e| BlockEvent::ContractEvent {
+            contract: payload.contract,
+            tx_index,
+            topic: e.topic.clone(),
+            data: e.data.clone(),
+        })
+        .collect();
+
     // --- Atomic commit: all validations passed, apply all changes ---
 
     // 1. Apply storage changes
@@ -645,7 +682,7 @@ pub fn handle_contract_call(
         *state.balances.entry(to).or_insert(0) += amount;
     }
 
-    Ok(())
+    Ok(contract_events)
 }
 
 /// Maximum action_type length for platform reports.

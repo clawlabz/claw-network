@@ -8,5 +8,5 @@ pub mod validate;
 pub use constants::*;
 pub use engine::VmEngine;
 pub use error::VmError;
-pub use types::{ChainState, ContractInstance, ExecutionContext, ExecutionResult};
+pub use types::{ChainState, ContractEvent, ContractInstance, ExecutionContext, ExecutionResult};
 pub use validate::validate_contract_code;

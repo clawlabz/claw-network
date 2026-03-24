@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::transaction::Transaction;
 
-/// A structured event emitted during block production (rewards, fees, burns).
+/// A structured event emitted during block production (rewards, fees, burns, contract events).
 /// Modeled after Cosmos/Polkadot event patterns for Explorer queryability.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum BlockEvent {
@@ -17,6 +17,17 @@ pub enum BlockEvent {
         amount: u128,
         /// Type of reward: "block_reward", "proposer_fee", "ecosystem_fee", "fee_burn".
         reward_type: String,
+    },
+    /// A structured event emitted by a smart contract via `emit_event`.
+    ContractEvent {
+        /// Address of the contract that emitted the event.
+        contract: [u8; 32],
+        /// Index of the transaction within the block that triggered this event.
+        tx_index: u32,
+        /// Event topic / name (non-empty UTF-8 string).
+        topic: String,
+        /// Raw event payload bytes.
+        data: Vec<u8>,
     },
 }
 

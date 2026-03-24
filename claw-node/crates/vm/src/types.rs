@@ -10,6 +10,15 @@ pub struct ContractInstance {
     pub deployed_at: u64,
 }
 
+/// A structured event emitted by a contract during execution.
+#[derive(Debug, Clone)]
+pub struct ContractEvent {
+    /// Event name / category (non-empty UTF-8 string, max 256 bytes).
+    pub topic: String,
+    /// Arbitrary event payload (max 4096 bytes).
+    pub data: Vec<u8>,
+}
+
 /// Result of a contract execution.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionResult {
@@ -18,6 +27,8 @@ pub struct ExecutionResult {
     pub storage_changes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     pub logs: Vec<String>,
     pub transfers: Vec<([u8; 32], u128)>,
+    /// Events emitted by the contract via `emit_event`.
+    pub events: Vec<ContractEvent>,
 }
 
 /// Context passed to contract execution.
@@ -29,6 +40,9 @@ pub struct ExecutionContext {
     pub block_timestamp: u64,
     pub value: u128,
     pub fuel_limit: u64,
+    /// When `true`, any host function that mutates state (storage write/delete,
+    /// token transfer) will trap immediately.  Used for view calls.
+    pub read_only: bool,
 }
 
 /// Read-only chain state interface for the VM.

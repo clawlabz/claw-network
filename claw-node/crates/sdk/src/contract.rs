@@ -59,3 +59,31 @@ macro_rules! require {
         }
     };
 }
+
+/// Emit a structured contract event.
+///
+/// Accepts a topic string literal (or expression) and an optional data argument.
+/// Data may be any `&[u8]` expression; if omitted, an empty payload is used.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Topic only (empty data):
+/// claw_sdk::emit!("transfer");
+///
+/// // Topic + raw bytes:
+/// claw_sdk::emit!("transfer", &amount.to_le_bytes());
+///
+/// // Topic + borsh-encoded payload:
+/// let payload = borsh::to_vec(&my_struct).unwrap();
+/// claw_sdk::emit!("my_event", &payload);
+/// ```
+#[macro_export]
+macro_rules! emit {
+    ($topic:expr) => {
+        $crate::env::emit_event_raw($topic, &[])
+    };
+    ($topic:expr, $data:expr) => {
+        $crate::env::emit_event_raw($topic, $data)
+    };
+}

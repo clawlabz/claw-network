@@ -396,6 +396,7 @@ impl Chain {
 
         let mut included_txs = Vec::new();
         let mut total_fees: u128 = 0;
+        let mut tx_contract_events: Vec<claw_types::BlockEvent> = Vec::new();
         let mut pending = std::mem::take(&mut inner.mempool);
 
         // Sort by (from, nonce) for deterministic ordering
@@ -409,10 +410,11 @@ impl Chain {
             inner.mempool = excess;
         }
 
-        for tx in pending {
-            match inner.state.apply_tx(&tx) {
-                Ok(fee) => {
+        for (tx_index, tx) in pending.into_iter().enumerate() {
+            match inner.state.apply_tx(&tx, tx_index as u32) {
+                Ok((fee, events)) => {
                     total_fees += fee;
+                    tx_contract_events.extend(events);
                     included_txs.push(tx);
                 }
                 Err(e) => {
@@ -453,8 +455,8 @@ impl Chain {
             total_fees,
         );
 
-        // Collect all block events
-        let block_events = [reward_events, mining_events, fee_events].concat();
+        // Collect all block events (contract events first, then reward/fee events)
+        let block_events = [tx_contract_events, reward_events, mining_events, fee_events].concat();
 
         // Update validator uptime tracking (B3):
         // - The block proposer gets a produced_blocks increment
@@ -733,9 +735,9 @@ impl Chain {
         // receive the actual block time, not the default 0.
         state_clone.block_timestamp = block.timestamp;
         let mut total_fees: u128 = 0;
-        for tx in &block.transactions {
-            let fee = state_clone
-                .apply_tx(tx)
+        for (tx_index, tx) in block.transactions.iter().enumerate() {
+            let (fee, _events) = state_clone
+                .apply_tx(tx, tx_index as u32)
                 .map_err(|e| format!("tx failed: {e}"))?;
             total_fees += fee;
         }
@@ -1476,6 +1478,47 @@ impl Chain {
         self.inner.lock().expect("chain state mutex poisoned").state.contract_code.get(addr).cloned()
     }
 
+    /// Return all `BlockEvent::ContractEvent` entries emitted by a specific contract,
+    /// optionally filtered by block range.
+    ///
+    /// Parameters:
+    /// - `contract`: contract address to filter by
+    /// - `from_block`: inclusive start height (0 = genesis)
+    /// - `to_block`: inclusive end height (u64::MAX = latest)
+    ///
+    /// Scans stored blocks; for large ranges this may be slow — callers should
+    /// apply reasonable range limits.
+    pub fn get_contract_events(
+        &self,
+        contract: &[u8; 32],
+        from_block: u64,
+        to_block: u64,
+    ) -> Vec<claw_types::block::BlockEvent> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let latest_height = inner.latest_block.height;
+        let to_block = to_block.min(latest_height);
+
+        let mut events = Vec::new();
+        for height in from_block..=to_block {
+            let block = if height == inner.latest_block.height {
+                Some(inner.latest_block.clone())
+            } else {
+                inner.store.get_block(height).ok().flatten()
+            };
+
+            if let Some(block) = block {
+                for event in block.events {
+                    if let claw_types::block::BlockEvent::ContractEvent { contract: c, .. } = &event {
+                        if c == contract {
+                            events.push(event);
+                        }
+                    }
+                }
+            }
+        }
+        events
+    }
+
     /// Execute a read-only contract view call (no state mutation).
     pub fn call_contract_view(
         &self,
@@ -1519,7 +1562,8 @@ impl Chain {
             block_height,
             block_timestamp,
             value: 0,
-            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+            fuel_limit: claw_vm::VIEW_CALL_FUEL_LIMIT,
+            read_only: true,
         };
 
         // Execute with timeout to prevent infinite-loop contracts from blocking
@@ -1536,6 +1580,15 @@ impl Chain {
                 "contract view execution timed out after 5s".to_string(),
             )))
             .map_err(|e| e.to_string())
+            .map(|mut result| {
+                // View calls must not produce any state mutations.
+                // Clear these defensively even though the read_only guard in
+                // host functions prevents any mutations from being recorded.
+                result.storage_changes.clear();
+                result.transfers.clear();
+                result.events.clear();
+                result
+            })
     }
 
     /// Persist slashing state to WorldState fields for snapshot consistency.
