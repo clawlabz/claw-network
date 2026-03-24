@@ -106,6 +106,9 @@ pub enum StateError {
     #[error("duplicate agent in platform activity report: {0}")]
     DuplicateAgentInReport(String),
 
+    #[error("action_count {count} exceeds maximum allowed per entry ({max})")]
+    ActionCountTooHigh { count: u32, max: u32 },
+
     #[error("contract transfer failed: insufficient balance (need {need}, have {have})")]
     ContractTransferInsufficientBalance { need: u128, have: u128 },
 
@@ -135,4 +138,7 @@ pub enum StateError {
 
     #[error("invalid IP address length: {0} bytes (expected 4 or 16)")]
     InvalidIpLength(usize),
+
+    #[error("VM concurrency limit reached: maximum concurrent executions exceeded")]
+    VmConcurrencyLimitReached,
 }

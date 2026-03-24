@@ -1,0 +1,24 @@
+[package]
+name = "arena-pool"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Arena Pool (Game Wallet) contract for ranked CLAW matches"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+claw-sdk = { path = "../../claw-node/crates/sdk" }
+borsh = { version = "1", features = ["derive"] }
+hex = "0.4"
+
+[dev-dependencies]
+# Integration tests run natively (not wasm), so we stub the host functions
+# via a test harness defined in tests/integration.rs
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

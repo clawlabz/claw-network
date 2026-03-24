@@ -92,7 +92,8 @@ fn full_e2e_all_six_tx_types() {
     assert_eq!(state.get_token_balance(&addr1, &token_id), 500_000_000_000);
     assert_eq!(state.get_token_balance(&addr2, &token_id), 500_000_000_000);
 
-    // === TX 6: Reputation Attest (addr1 → addr2) ===
+    // === TX 6: Reputation Attest (addr1 → addr2) — deprecated, must be rejected ===
+    // nonce 5 is consumed by the attempt but fails; addr1 nonce stays at 4.
     let tx = make_tx(&sk1, 5, TxType::ReputationAttest, &ReputationAttestPayload {
         to: addr2,
         category: "collaboration".into(),
@@ -100,13 +101,11 @@ fn full_e2e_all_six_tx_types() {
         platform: "e2e-test".into(),
         memo: "reliable partner".into(),
     });
-    state.apply_tx(&tx).unwrap();
-    assert_eq!(state.reputation.len(), 1);
-    assert_eq!(state.reputation[0].score, 85);
-    assert_eq!(state.reputation[0].platform, "e2e-test");
+    assert!(state.apply_tx(&tx).is_err(), "ReputationAttest is deprecated and must be rejected");
+    assert_eq!(state.reputation.len(), 0);
 
-    // === TX 7: Service Register (addr1) ===
-    let tx = make_tx(&sk1, 6, TxType::ServiceRegister, &ServiceRegisterPayload {
+    // === TX 7: Service Register (addr1, nonce 5 — previous rep attest did not advance nonce) ===
+    let tx = make_tx(&sk1, 5, TxType::ServiceRegister, &ServiceRegisterPayload {
         service_type: "code-review".into(),
         description: "Automated code review powered by AI".into(),
         price_token: NATIVE_TOKEN_ID,
@@ -117,7 +116,7 @@ fn full_e2e_all_six_tx_types() {
     state.apply_tx(&tx).unwrap();
     assert_eq!(state.services.len(), 1);
 
-    // === TX 8: Reputation reverse (addr2 → addr1) ===
+    // === TX 8: Reputation attempt from addr2 — also deprecated, must be rejected ===
     let tx = make_tx(&sk2, 2, TxType::ReputationAttest, &ReputationAttestPayload {
         to: addr1,
         category: "service".into(),
@@ -125,21 +124,21 @@ fn full_e2e_all_six_tx_types() {
         platform: "e2e-test".into(),
         memo: "fast and accurate".into(),
     });
-    state.apply_tx(&tx).unwrap();
-    assert_eq!(state.reputation.len(), 2);
+    assert!(state.apply_tx(&tx).is_err(), "ReputationAttest is deprecated and must be rejected");
+    assert_eq!(state.reputation.len(), 0);
 
     // === Verify final state ===
     let root = state.state_root();
     assert_ne!(root, [0u8; 32]);
 
-    // Gas accounting: addr1 used 6 txs, addr2 used 2 txs
-    // addr1: 10B - 2B transfer - 6 * 1M gas = 7,994,000,000
-    assert_eq!(state.get_balance(&addr1), 10_000_000_000 - 2_000_000_000 - 6 * GAS_FEE);
-    // addr2: 10B + 2B transfer - 2 * 1M gas = 11,998,000,000
-    assert_eq!(state.get_balance(&addr2), 10_000_000_000 + 2_000_000_000 - 2 * GAS_FEE);
+    // Gas accounting: addr1 used 5 successful txs (rep attest failed, no gas charged)
+    // addr1: 10B - 2B transfer - 5 * GAS_FEE
+    assert_eq!(state.get_balance(&addr1), 10_000_000_000 - 2_000_000_000 - 5 * GAS_FEE);
+    // addr2: 10B + 2B transfer - 1 * GAS_FEE (agent register only; rep attest failed)
+    assert_eq!(state.get_balance(&addr2), 10_000_000_000 + 2_000_000_000 - 1 * GAS_FEE);
 
     println!("\n=== E2E Test Summary ===");
-    println!("Transactions: 8 (2 register + 1 CLAW transfer + 1 token create + 1 custom transfer + 2 reputation + 1 service)");
+    println!("Transactions: 7 (2 register + 1 CLAW transfer + 1 token create + 1 custom transfer + 1 service; 2 rep attests rejected)");
     println!("Agents: {}", state.agents.len());
     println!("Custom tokens: {}", state.tokens.len());
     println!("Reputation records: {}", state.reputation.len());

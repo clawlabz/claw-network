@@ -101,13 +101,10 @@ fn write_bytes(env: &FunctionEnvMut<HostEnv>, ptr: u32, data: &[u8]) -> Result<(
     Ok(())
 }
 
-/// Deduct fuel for a host function call.
-///
-/// Panics on fuel exhaustion. Wasmer's singlepass backend catches panics from
-/// host functions via `catch_unwind` and converts them into `RuntimeError`,
-/// which is returned from `Instance::call()`. The caller in `engine.rs`
-/// detects "fuel" in the error message and maps it to `VmError::OutOfFuel`.
-fn deduct_fuel(env: &FunctionEnvMut<HostEnv>, cost: u64) {
+/// Deducts fuel from the execution budget.
+/// # Panics
+/// Intentionally panics on fuel exhaustion — Wasmer's catch_unwind converts this to a trap.
+fn consume_fuel_or_trap(env: &FunctionEnvMut<HostEnv>, cost: u64) {
     let data = env.data();
     if let Err(msg) = HostEnv::consume_fuel(
         &data.fuel_remaining,
@@ -132,7 +129,7 @@ pub fn host_storage_read(
     key_len: u32,
     val_ptr: u32,
 ) -> i32 {
-    deduct_fuel(&env, STORAGE_READ_FUEL);
+    consume_fuel_or_trap(&env, STORAGE_READ_FUEL);
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
         Err(_) => return -1,
@@ -160,7 +157,7 @@ pub fn host_storage_write(
     val_ptr: u32,
     val_len: u32,
 ) {
-    deduct_fuel(&env, STORAGE_WRITE_FUEL);
+    consume_fuel_or_trap(&env, STORAGE_WRITE_FUEL);
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
         Err(_) => return,
@@ -179,7 +176,7 @@ pub fn host_storage_write(
 
 /// Check whether a key exists in contract storage. Returns 1 if yes, 0 if no.
 pub fn host_storage_has(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: u32) -> i32 {
-    deduct_fuel(&env, STORAGE_READ_FUEL);
+    consume_fuel_or_trap(&env, STORAGE_READ_FUEL);
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
         Err(_) => return 0,
@@ -194,7 +191,7 @@ pub fn host_storage_has(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: u32
 
 /// Delete a key from contract storage.
 pub fn host_storage_delete(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: u32) {
-    deduct_fuel(&env, STORAGE_DELETE_FUEL);
+    consume_fuel_or_trap(&env, STORAGE_DELETE_FUEL);
     let key = match read_bytes(&env, key_ptr, key_len) {
         Ok(k) => k,
         Err(_) => return,
@@ -210,39 +207,39 @@ pub fn host_storage_delete(env: FunctionEnvMut<HostEnv>, key_ptr: u32, key_len: 
 
 /// Write the 32-byte caller address to guest memory at `out_ptr`.
 pub fn host_caller(env: FunctionEnvMut<HostEnv>, out_ptr: u32) {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     let caller = env.data().context.caller;
     let _ = write_bytes(&env, out_ptr, &caller);
 }
 
 /// Return the current block height.
 pub fn host_block_height(env: FunctionEnvMut<HostEnv>) -> i64 {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     env.data().context.block_height as i64
 }
 
 /// Return the current block timestamp.
 pub fn host_block_timestamp(env: FunctionEnvMut<HostEnv>) -> i64 {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     env.data().context.block_timestamp as i64
 }
 
 /// Write the 32-byte contract address to guest memory at `out_ptr`.
 pub fn host_contract_address(env: FunctionEnvMut<HostEnv>, out_ptr: u32) {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     let addr = env.data().context.contract_address;
     let _ = write_bytes(&env, out_ptr, &addr);
 }
 
 /// Return the low 64 bits of the transferred value.
 pub fn host_value_lo(env: FunctionEnvMut<HostEnv>) -> i64 {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     (env.data().context.value & 0xFFFF_FFFF_FFFF_FFFF) as i64
 }
 
 /// Return the high 64 bits of the transferred value.
 pub fn host_value_hi(env: FunctionEnvMut<HostEnv>) -> i64 {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     (env.data().context.value >> 64) as i64
 }
 
@@ -252,7 +249,7 @@ pub fn host_value_hi(env: FunctionEnvMut<HostEnv>) -> i64 {
 
 /// Get the reputation score of an agent by address.
 pub fn host_agent_get_score(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 {
-    deduct_fuel(&env, AGENT_QUERY_FUEL);
+    consume_fuel_or_trap(&env, AGENT_QUERY_FUEL);
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
         Err(_) => return 0,
@@ -265,7 +262,7 @@ pub fn host_agent_get_score(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 
 
 /// Check whether an agent is registered. Returns 1 if yes, 0 if no.
 pub fn host_agent_is_registered(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i32 {
-    deduct_fuel(&env, AGENT_QUERY_FUEL);
+    consume_fuel_or_trap(&env, AGENT_QUERY_FUEL);
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
         Err(_) => return 0,
@@ -285,7 +282,7 @@ pub fn host_agent_is_registered(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> 
 
 /// Return the low 64 bits of an address's token balance.
 pub fn host_token_balance(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
         Ok(b) => b,
         Err(_) => return 0,
@@ -304,7 +301,7 @@ pub fn host_token_transfer(
     amount_lo: i64,
     amount_hi: i64,
 ) -> i32 {
-    deduct_fuel(&env, TOKEN_TRANSFER_FUEL);
+    consume_fuel_or_trap(&env, TOKEN_TRANSFER_FUEL);
     let to_bytes = match read_bytes(&env, to_ptr, 32) {
         Ok(b) => b,
         Err(_) => return -1,
@@ -325,7 +322,7 @@ pub fn host_token_transfer(
 
 /// Log a message from the contract.
 pub fn host_log(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     let bytes = match read_bytes(&env, ptr, len) {
         Ok(b) => b,
         Err(_) => return,
@@ -342,12 +339,30 @@ pub fn host_log(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
 
 /// Set the return data for the execution result.
 pub fn host_return_data(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
-    deduct_fuel(&env, HOST_CALL_BASE_FUEL);
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
     let bytes = match read_bytes(&env, ptr, len) {
         Ok(b) => b,
         Err(_) => return,
     };
     *env.data().return_data.lock().unwrap() = bytes;
+}
+
+/// Return the high 64 bits (bits 64–127) of an address's token balance.
+///
+/// Contracts that need the full u128 balance call both `token_balance` (lo)
+/// and `token_balance_hi` (hi) and combine them:
+///   balance = (hi as u128) << 64 | (lo as u128)
+pub fn host_token_balance_hi(env: FunctionEnvMut<HostEnv>, addr_ptr: u32) -> i64 {
+    consume_fuel_or_trap(&env, HOST_CALL_BASE_FUEL);
+    let addr_bytes = match read_bytes(&env, addr_ptr, 32) {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+    let mut addr = [0u8; 32];
+    addr.copy_from_slice(&addr_bytes);
+    let balances = &env.data().balances;
+    let balance = balances.get(&addr).copied().unwrap_or(0);
+    (balance >> 64) as i64
 }
 
 /// Abort execution with an error message.
@@ -358,4 +373,88 @@ pub fn host_abort(env: FunctionEnvMut<HostEnv>, ptr: u32, len: u32) {
     let bytes = read_bytes(&env, ptr, len).unwrap_or_default();
     let msg = String::from_utf8_lossy(&bytes).to_string();
     panic!("contract abort: {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    /// Verify the lo/hi split and reconstruction logic for balances.
+    ///
+    /// These tests mirror exactly what `host_token_balance` and
+    /// `host_token_balance_hi` compute, independent of Wasmer machinery.
+    fn balance_lo(balance: u128) -> i64 {
+        (balance & 0xFFFF_FFFF_FFFF_FFFF) as i64
+    }
+
+    fn balance_hi(balance: u128) -> i64 {
+        (balance >> 64) as i64
+    }
+
+    fn reconstruct(lo: i64, hi: i64) -> u128 {
+        (hi as u64 as u128) << 64 | (lo as u64 as u128)
+    }
+
+    #[test]
+    fn test_balance_lo_hi_zero() {
+        let balance: u128 = 0;
+        assert_eq!(balance_lo(balance), 0);
+        assert_eq!(balance_hi(balance), 0);
+        assert_eq!(reconstruct(balance_lo(balance), balance_hi(balance)), 0);
+    }
+
+    #[test]
+    fn test_balance_fits_in_u64() {
+        // A balance that fits entirely in the low 64 bits — hi must be 0.
+        let balance: u128 = u64::MAX as u128;
+        assert_eq!(balance_lo(balance), -1_i64); // u64::MAX reinterpreted as i64
+        assert_eq!(balance_hi(balance), 0);
+        assert_eq!(reconstruct(balance_lo(balance), balance_hi(balance)), balance);
+    }
+
+    #[test]
+    fn test_balance_just_above_u64_max() {
+        // 2^64 — first value where high bits are non-zero.
+        let balance: u128 = (u64::MAX as u128) + 1;
+        assert_eq!(balance_lo(balance), 0);  // low word is 0
+        assert_eq!(balance_hi(balance), 1);  // high word is 1
+        assert_eq!(reconstruct(balance_lo(balance), balance_hi(balance)), balance);
+    }
+
+    #[test]
+    fn test_balance_large_u128() {
+        // A balance with both lo and hi parts non-zero.
+        // balance = 0xDEAD_BEEF_0000_0000_CAFE_BABE_1234_5678
+        let hi_word: u64 = 0xDEAD_BEEF_0000_0000;
+        let lo_word: u64 = 0xCAFE_BABE_1234_5678;
+        let balance: u128 = (hi_word as u128) << 64 | (lo_word as u128);
+
+        assert_eq!(balance_lo(balance), lo_word as i64);
+        assert_eq!(balance_hi(balance), hi_word as i64);
+        assert_eq!(reconstruct(balance_lo(balance), balance_hi(balance)), balance);
+    }
+
+    #[test]
+    fn test_balance_max_u128() {
+        let balance = u128::MAX;
+        // Both lo and hi are all-ones (i64 -1).
+        assert_eq!(balance_lo(balance), -1_i64);
+        assert_eq!(balance_hi(balance), -1_i64);
+        assert_eq!(reconstruct(balance_lo(balance), balance_hi(balance)), balance);
+    }
+
+    #[test]
+    fn test_old_api_truncates_large_balance() {
+        // This documents the bug that existed before: the old `token_balance`
+        // host function returned only lo bits, so callers treating the result
+        // as the full balance would get a wrong (truncated) value.
+        let balance: u128 = ((u64::MAX as u128) + 1) * 5; // 5 * 2^64
+        let old_result = balance_lo(balance) as u64;
+        assert_eq!(old_result, 0, "old API silently truncates to 0 for multiples of 2^64");
+        // The correct full value requires combining lo + hi:
+        let full = reconstruct(balance_lo(balance), balance_hi(balance));
+        assert_eq!(full, balance);
+    }
 }

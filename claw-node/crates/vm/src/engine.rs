@@ -109,6 +109,7 @@ impl VmEngine {
                 "agent_get_score" => Function::new_typed_with_env(&mut store, &func_env, host::host_agent_get_score),
                 "agent_is_registered" => Function::new_typed_with_env(&mut store, &func_env, host::host_agent_is_registered),
                 "token_balance" => Function::new_typed_with_env(&mut store, &func_env, host::host_token_balance),
+                "token_balance_hi" => Function::new_typed_with_env(&mut store, &func_env, host::host_token_balance_hi),
                 "token_transfer" => Function::new_typed_with_env(&mut store, &func_env, host::host_token_transfer),
                 "log_msg" => Function::new_typed_with_env(&mut store, &func_env, host::host_log),
                 "return_data" => Function::new_typed_with_env(&mut store, &func_env, host::host_return_data),

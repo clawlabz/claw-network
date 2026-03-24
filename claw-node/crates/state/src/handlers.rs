@@ -1,5 +1,6 @@
 //! Transaction handlers — one per TxType.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use borsh::BorshDeserialize;
@@ -16,6 +17,30 @@ use crate::world::{
 /// Prevents infinite loops in pure Wasm computation that bypass host-function fuel metering.
 const CONTRACT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum number of VM executions that may run concurrently.
+const VM_CONCURRENCY_LIMIT: usize = 16;
+
+/// Global counter tracking how many VM threads are currently executing.
+/// Using a simple Mutex<usize> counter as a counting semaphore.
+static VM_CONCURRENCY_COUNTER: std::sync::OnceLock<Arc<Mutex<usize>>> =
+    std::sync::OnceLock::new();
+
+fn vm_concurrency_counter() -> &'static Arc<Mutex<usize>> {
+    VM_CONCURRENCY_COUNTER.get_or_init(|| Arc::new(Mutex::new(0)))
+}
+
+/// RAII guard that decrements the VM concurrency counter on drop.
+struct VmPermitGuard {
+    counter: Arc<Mutex<usize>>,
+}
+
+impl Drop for VmPermitGuard {
+    fn drop(&mut self) {
+        let mut count = self.counter.lock().expect("VM concurrency counter mutex poisoned");
+        *count = count.saturating_sub(1);
+    }
+}
+
 /// Lightweight owned snapshot of chain state, allowing the execution thread to
 /// be fully detached (no borrowed references).
 struct ChainStateSnapshot {
@@ -26,24 +51,41 @@ struct ChainStateSnapshot {
 }
 
 impl ChainStateSnapshot {
-    /// Capture the subset of chain state needed for VM execution.
+    /// Capture chain state needed for VM execution.
+    ///
+    /// Balances are captured from the full `WorldState` (passed as a concrete
+    /// reference) so the VM can query the balance of **any** address — not just
+    /// caller and contract_address. The `addresses` slice is still used to
+    /// pre-populate agent scores and registered-agent data, which are only needed
+    /// for the execution context participants.
     fn capture(state: &dyn claw_vm::ChainState, addresses: &[[u8; 32]]) -> Self {
-        let mut balances = std::collections::BTreeMap::new();
         let mut agent_scores = std::collections::BTreeMap::new();
         let mut registered_agents = std::collections::BTreeSet::new();
         for addr in addresses {
-            balances.insert(*addr, state.get_balance(addr));
             agent_scores.insert(*addr, state.get_agent_score(addr));
             if state.get_agent_registered(addr) {
                 registered_agents.insert(*addr);
             }
         }
         Self {
-            balances,
+            // Empty: get_balance falls through to the full-state lookup below.
+            // Populated by capture_from_world when called from handlers.
+            balances: std::collections::BTreeMap::new(),
             agent_scores,
             registered_agents,
             contract_storage: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Capture a full snapshot from a `WorldState`, cloning the complete
+    /// balances map so the detached thread can query any address.
+    fn capture_from_world(state: &crate::world::WorldState, addresses: &[[u8; 32]]) -> Self {
+        let mut snapshot = Self::capture(state, addresses);
+        // Clone the full balances map — this is the key fix:
+        // previously only caller+contract were captured, causing any third-party
+        // balance query (e.g., Arena Pool checking a player's balance) to return 0.
+        snapshot.balances = state.balances.clone();
+        snapshot
     }
 }
 
@@ -80,17 +122,37 @@ fn execute_with_timeout(
     args: &[u8],
     ctx: claw_vm::ExecutionContext,
     storage: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
-    chain_state: &dyn claw_vm::ChainState,
+    world: &WorldState,
 ) -> Result<claw_vm::ExecutionResult, claw_vm::VmError> {
     let (tx, rx) = std::sync::mpsc::channel();
 
-    // Snapshot chain state and clone all data so the thread owns everything.
-    let snapshot = ChainStateSnapshot::capture(chain_state, &[ctx.caller, ctx.contract_address]);
+    // Snapshot the FULL balance map from WorldState so the VM can query any
+    // address's balance (e.g. a player's balance from inside an Arena Pool contract).
+    // Previously only caller+contract were captured, causing third-party lookups
+    // to return 0 silently.
+    let snapshot = ChainStateSnapshot::capture_from_world(world, &[ctx.caller, ctx.contract_address]);
     let code = code.to_vec();
     let method = method.to_string();
     let args = args.to_vec();
 
+    // Acquire a concurrency permit before spawning. If the limit is already
+    // reached, reject immediately rather than queuing unbounded threads.
+    {
+        let counter = vm_concurrency_counter();
+        let mut count = counter.lock().expect("VM concurrency counter mutex poisoned");
+        if *count >= VM_CONCURRENCY_LIMIT {
+            return Err(claw_vm::VmError::ExecutionFailed(
+                "VM concurrency limit reached".to_string(),
+            ));
+        }
+        *count += 1;
+    }
+    // Clone the Arc so the guard can be moved into the thread.
+    let permit_counter = Arc::clone(vm_concurrency_counter());
+
     std::thread::spawn(move || {
+        // Guard releases the permit when this thread completes or panics.
+        let _permit = VmPermitGuard { counter: permit_counter };
         let engine = claw_vm::VmEngine::new();
         let result = engine.execute(&code, &method, &args, ctx, storage, &snapshot);
         // Ignore send error — receiver may have timed out and been dropped
@@ -288,83 +350,17 @@ pub fn handle_token_mint_transfer(
     Ok(())
 }
 
-/// ReputationAttest: record a reputation attestation.
+/// ReputationAttest: unconditionally rejected.
 ///
-/// DEPRECATED: This transaction type is kept for backward compatibility but
-/// attestations submitted via this method are no longer counted toward
-/// Agent Score calculations. Use PlatformActivityReport (tx type 11) instead.
+/// DEPRECATED: This transaction type is disabled. All callers must migrate to
+/// PlatformActivityReport (tx type 11).
 pub fn handle_reputation_attest(
-    state: &mut WorldState,
-    tx: &Transaction,
+    _state: &mut WorldState,
+    _tx: &Transaction,
 ) -> Result<(), StateError> {
-    let payload = ReputationAttestPayload::try_from_slice(&tx.payload)
-        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
-
-    // Global cap on reputation records to prevent unbounded growth
-    const MAX_REPUTATION_RECORDS: usize = 100_000;
-    if state.reputation.len() >= MAX_REPUTATION_RECORDS {
-        return Err(StateError::StakeError("reputation attestation limit reached".into()));
-    }
-
-    if tx.from == payload.to {
-        return Err(StateError::SelfAttestation);
-    }
-
-    if !state.agents.contains_key(&tx.from) {
-        return Err(StateError::AgentNotRegistered);
-    }
-
-    if !state.agents.contains_key(&payload.to) {
-        return Err(StateError::AgentNotRegistered);
-    }
-
-    if payload.score < -100 || payload.score > 100 {
-        return Err(StateError::ScoreOutOfRange(payload.score));
-    }
-
-    if payload.category.is_empty() || payload.category.len() > MAX_CATEGORY_LEN {
-        return Err(StateError::NameTooLong {
-            len: payload.category.len(),
-            max: MAX_CATEGORY_LEN,
-        });
-    }
-
-    if payload.platform.len() > MAX_CATEGORY_LEN {
-        return Err(StateError::NameTooLong {
-            len: payload.platform.len(),
-            max: MAX_CATEGORY_LEN,
-        });
-    }
-
-    if payload.memo.len() > MAX_MEMO_LEN {
-        return Err(StateError::MemoTooLong {
-            len: payload.memo.len(),
-            max: MAX_MEMO_LEN,
-        });
-    }
-
-    // Limit attestations per attester-target pair
-    const MAX_ATTESTATIONS_PER_PAIR: usize = 50;
-    let existing_count = state.reputation.iter()
-        .filter(|r| r.from == tx.from && r.to == payload.to)
-        .count();
-    if existing_count >= MAX_ATTESTATIONS_PER_PAIR {
-        return Err(StateError::AttestationLimitReached {
-            max: MAX_ATTESTATIONS_PER_PAIR,
-        });
-    }
-
-    state.reputation.push(ReputationAttestation {
-        from: tx.from,
-        to: payload.to,
-        category: payload.category,
-        score: payload.score,
-        platform: payload.platform,
-        memo: payload.memo,
-        block_height: state.block_height,
-    });
-
-    Ok(())
+    Err(StateError::StakeError(
+        "ReputationAttest is deprecated — use PlatformActivityReport".into(),
+    ))
 }
 
 /// ServiceRegister: register or update a service.
@@ -465,7 +461,7 @@ pub fn handle_contract_deploy(
             caller: tx.from,
             contract_address,
             block_height: state.block_height,
-            block_timestamp: 0,
+            block_timestamp: state.block_timestamp,
             value: 0,
             fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
         };
@@ -484,19 +480,20 @@ pub fn handle_contract_deploy(
             )
             .map_err(|e| StateError::ContractExecutionFailed(e.to_string()))?;
 
-        // Validate ALL transfers before applying any state changes
-        for (to, amount) in &result.transfers {
+        // Validate ALL transfers before applying any state changes.
+        // Track cumulative spend to catch insufficient balance across multiple transfers.
+        {
+            let mut cumulative_spend: u128 = 0;
             let contract_bal = state.balances.get(&contract_address).copied().unwrap_or(0);
-            if contract_bal < *amount {
-                return Err(StateError::ContractTransferInsufficientBalance {
-                    need: *amount,
-                    have: contract_bal,
-                });
+            for (_, amount) in &result.transfers {
+                cumulative_spend = cumulative_spend.saturating_add(*amount);
+                if contract_bal < cumulative_spend {
+                    return Err(StateError::ContractTransferInsufficientBalance {
+                        need: *amount,
+                        have: contract_bal.saturating_sub(cumulative_spend.saturating_sub(*amount)),
+                    });
+                }
             }
-            // Note: for multiple transfers we'd need cumulative tracking,
-            // but the original code checked per-transfer against live state,
-            // so we preserve the same semantics below when applying.
-            let _ = to; // suppress unused warning in validation pass
         }
 
         // --- Atomic commit: everything succeeded, apply all changes ---
@@ -585,7 +582,7 @@ pub fn handle_contract_call(
         caller: tx.from,
         contract_address: payload.contract,
         block_height: state.block_height,
-        block_timestamp: 0,
+        block_timestamp: state.block_timestamp,
         value: payload.value,
         fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
     };
@@ -654,8 +651,12 @@ pub fn handle_contract_call(
 /// Maximum action_type length for platform reports.
 const MAX_ACTION_TYPE_LEN: usize = claw_types::state::MAX_ACTION_TYPE_LEN;
 
-/// Epoch length in blocks (must match claw_consensus::EPOCH_LENGTH).
+///// Epoch length in blocks (must match claw_consensus::EPOCH_LENGTH).
 const EPOCH_LENGTH: u64 = 100;
+
+/// Maximum action_count allowed per ActivityEntry in a PlatformActivityReport.
+/// Prevents compromised platform agents from inflating Agent Scores via u32::MAX.
+const MAX_ACTION_COUNT_PER_ENTRY: u32 = 10_000;
 
 /// PlatformActivityReport: submit on-chain activity data from a platform.
 ///
@@ -714,6 +715,12 @@ pub fn handle_platform_activity_report(
             return Err(StateError::ActionTypeTooLong {
                 len: entry.action_type.len(),
                 max: MAX_ACTION_TYPE_LEN,
+            });
+        }
+        if entry.action_count > MAX_ACTION_COUNT_PER_ENTRY {
+            return Err(StateError::ActionCountTooHigh {
+                count: entry.action_count,
+                max: MAX_ACTION_COUNT_PER_ENTRY,
             });
         }
         if !state.agents.contains_key(&entry.agent) {
@@ -968,7 +975,7 @@ pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result
     // Backward compat: old payloads are 16 bytes (amount only), new are 48 (amount + validator)
     let payload = if tx.payload.len() == 16 {
         StakeWithdrawPayload {
-            amount: u128::from_le_bytes(tx.payload[..16].try_into().unwrap()),
+            amount: u128::from_le_bytes(tx.payload[..16].try_into().expect("payload is exactly 16 bytes — checked above")),
             validator: [0u8; 32],
         }
     } else {
@@ -1197,7 +1204,7 @@ pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Resul
     };
 
     // Update miner state
-    let miner = state.miners.get_mut(&tx.from).unwrap();
+    let miner = state.miners.get_mut(&tx.from).expect("miner existence validated above");
     miner.last_heartbeat = state.block_height;
     miner.active = true;
     miner.reputation_bps = new_reputation;
@@ -1206,4 +1213,91 @@ pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Resul
     state.miner_heartbeat_tracker.insert((tx.from, window), true);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use claw_vm::ChainState as ChainStateTrait;
+    use crate::world::WorldState;
+
+    /// Build a WorldState with preset balances — no transactions required.
+    fn world_with_balances(entries: &[([u8; 32], u128)]) -> WorldState {
+        let mut state = WorldState::default();
+        for (addr, bal) in entries {
+            state.balances.insert(*addr, *bal);
+        }
+        state
+    }
+
+    /// After the fix: ChainStateSnapshot captured via `capture_from_world` must
+    /// return the correct balance for ANY address in the world state, not only
+    /// the caller and contract addresses that are passed explicitly.
+    ///
+    /// This is the key regression: before the fix, a contract calling
+    /// `host_token_balance` for a third-party address (e.g. a player in Arena Pool)
+    /// would always receive 0.
+    #[test]
+    fn snapshot_returns_balance_for_arbitrary_address() {
+        let addr_a = [1u8; 32]; // caller
+        let addr_b = [2u8; 32]; // contract_address
+        let addr_c = [3u8; 32]; // third-party — e.g. a player whose balance the contract queries
+
+        let world = world_with_balances(&[
+            (addr_a, 1_000),
+            (addr_b, 2_000),
+            (addr_c, 3_000),
+        ]);
+
+        // Only pass caller+contract (the old explicit list), but the fix ensures
+        // the full balance map is cloned, so addr_c is still accessible.
+        let snapshot = ChainStateSnapshot::capture_from_world(&world, &[addr_a, addr_b]);
+
+        assert_eq!(
+            snapshot.get_balance(&addr_c),
+            3_000,
+            "snapshot must return the real balance for any address, not just caller/contract"
+        );
+
+        // Sanity: the explicitly passed addresses still work.
+        assert_eq!(snapshot.get_balance(&addr_a), 1_000);
+        assert_eq!(snapshot.get_balance(&addr_b), 2_000);
+    }
+
+    /// An address with no balance in WorldState must return 0, not panic.
+    #[test]
+    fn snapshot_returns_zero_for_unknown_address() {
+        let world = world_with_balances(&[]);
+        let snapshot = ChainStateSnapshot::capture_from_world(&world, &[]);
+        assert_eq!(snapshot.get_balance(&[42u8; 32]), 0);
+    }
+
+    /// Snapshot must correctly reflect multiple arbitrary addresses simultaneously.
+    #[test]
+    fn snapshot_handles_many_addresses() {
+        let addrs: Vec<[u8; 32]> = (0u8..10).map(|i| [i; 32]).collect();
+        let entries: Vec<([u8; 32], u128)> = addrs.iter().copied().zip(1_000u128..).collect();
+        let world = world_with_balances(&entries);
+
+        // Pass only the first two as the "explicit" list.
+        let snapshot = ChainStateSnapshot::capture_from_world(&world, &addrs[..2]);
+
+        // All 10 addresses must be queryable.
+        for (i, addr) in addrs.iter().enumerate() {
+            assert_eq!(
+                snapshot.get_balance(addr),
+                1_000 + i as u128,
+                "address index {i} balance mismatch"
+            );
+        }
+    }
+
+    /// Zero-balance address (balance == 0) must still return 0, not be absent.
+    #[test]
+    fn snapshot_zero_balance_address_returns_zero() {
+        let addr = [7u8; 32];
+        let world = world_with_balances(&[(addr, 0)]);
+        let snapshot = ChainStateSnapshot::capture_from_world(&world, &[]);
+        assert_eq!(snapshot.get_balance(&addr), 0);
+    }
 }

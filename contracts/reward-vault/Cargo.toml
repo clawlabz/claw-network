@@ -1,0 +1,20 @@
+[package]
+name = "reward-vault"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+claw-sdk = { path = "../../claw-node/crates/sdk" }
+borsh = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# Unit tests run with `cargo test` (native target, no VM required).
+# The test harness in tests/integration.rs uses a mock environment.
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

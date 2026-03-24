@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 server over HTTP with /metrics and /health endpoints.
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{Method, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
@@ -10,8 +10,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
@@ -83,7 +84,40 @@ fn faucet_cooldown_map() -> &'static Mutex<HashMap<[u8; 32], Instant>> {
     FAUCET_LAST_DRIP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> Json<RpcResponse> {
+/// Per-IP sliding-window rate limiter for `claw_callContractView`.
+/// Each entry stores (window_start, call_count). Window resets after 1 second.
+const CONTRACT_VIEW_RATE_LIMIT: u32 = 10;
+const CONTRACT_VIEW_RATE_WINDOW: Duration = Duration::from_secs(1);
+
+static CONTRACT_VIEW_RATE: std::sync::OnceLock<Mutex<HashMap<IpAddr, (Instant, u32)>>> =
+    std::sync::OnceLock::new();
+
+fn contract_view_rate_map() -> &'static Mutex<HashMap<IpAddr, (Instant, u32)>> {
+    CONTRACT_VIEW_RATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns true if the request from `ip` is within the allowed rate limit.
+fn check_contract_view_rate(ip: IpAddr) -> bool {
+    let mut map = contract_view_rate_map().lock().unwrap();
+    let now = Instant::now();
+    let entry = map.entry(ip).or_insert((now, 0));
+    if now.duration_since(entry.0) >= CONTRACT_VIEW_RATE_WINDOW {
+        // Window has elapsed — reset counter.
+        *entry = (now, 1);
+        true
+    } else if entry.1 < CONTRACT_VIEW_RATE_LIMIT {
+        entry.1 += 1;
+        true
+    } else {
+        false
+    }
+}
+
+async fn handle_rpc(
+    State(chain): State<Chain>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<RpcRequest>,
+) -> Json<RpcResponse> {
     if req.jsonrpc != "2.0" {
         return Json(RpcResponse::err(req.id, -32600, "Invalid JSON-RPC version".into()));
     }
@@ -306,6 +340,13 @@ async fn handle_rpc(State(chain): State<Chain>, Json(req): Json<RpcRequest>) -> 
             }
         }
         "claw_callContractView" => {
+            if !check_contract_view_rate(peer.ip()) {
+                return Json(RpcResponse::err(
+                    req.id,
+                    -32029,
+                    "rate limit exceeded: max 10 callContractView requests per second per IP".into(),
+                ));
+            }
             let addr = parse_address(&req.params, 0);
             let method = req.params.get(1).and_then(|v| v.as_str()).unwrap_or("");
             let args_hex = req.params.get(2).and_then(|v| v.as_str()).unwrap_or("");
@@ -746,7 +787,7 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool) -> anyhow::Res
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.ok();
     });
 
     Ok(handle)

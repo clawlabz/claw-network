@@ -20,3 +20,4 @@ proptest.workspace = true
 claw-storage.workspace = true
 hex.workspace = true
 tempfile = "3"
+wat = "1"

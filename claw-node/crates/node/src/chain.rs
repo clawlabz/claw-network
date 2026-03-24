@@ -384,6 +384,15 @@ impl Chain {
 
         let new_height = inner.latest_block.height + 1;
         inner.state.block_height = new_height;
+        // Capture the block timestamp before applying transactions so that
+        // contracts calling block_timestamp() during execution receive the
+        // actual current time rather than the hardcoded 0 that was previously
+        // forwarded by the handler.
+        let block_timestamp_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(std::time::Duration::ZERO)
+            .as_secs();
+        inner.state.block_timestamp = block_timestamp_now;
 
         let mut included_txs = Vec::new();
         let mut total_fees: u128 = 0;
@@ -469,10 +478,9 @@ impl Chain {
             }
         }
 
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // Reuse the timestamp captured before tx execution so the block header
+        // and the state's block_timestamp are consistent.
+        let timestamp = block_timestamp_now;
 
         // Sync slashing state to WorldState BEFORE computing state_root
         // so the root commits to current slashing data
@@ -721,6 +729,9 @@ impl Chain {
         // Apply all transactions
         let mut state_clone = inner.state.clone();
         state_clone.block_height = block.height;
+        // Forward the block's timestamp so contracts calling block_timestamp()
+        // receive the actual block time, not the default 0.
+        state_clone.block_timestamp = block.timestamp;
         let mut total_fees: u128 = 0;
         for tx in &block.transactions {
             let fee = state_clone
@@ -1337,7 +1348,7 @@ impl Chain {
     pub fn get_reputation(&self, addr: &[u8; 32]) -> Vec<claw_types::state::ReputationAttestation> {
         self.inner
             .lock()
-            .unwrap()
+            .expect("chain state mutex poisoned")
             .state
             .reputation
             .iter()
@@ -1548,7 +1559,7 @@ impl Chain {
     pub fn get_unbonding(&self, addr: &[u8; 32]) -> Vec<claw_types::state::UnbondingEntry> {
         self.inner
             .lock()
-            .unwrap()
+            .expect("chain state mutex poisoned")
             .state
             .unbonding_queue
             .iter()

@@ -61,6 +61,8 @@ pub struct WorldState {
     pub services: BTreeMap<([u8; 32], String), ServiceEntry>,
     /// Current block height (set by the engine before applying txs).
     pub block_height: u64,
+    /// Current block timestamp in Unix seconds (set by the engine before applying txs).
+    pub block_timestamp: u64,
     /// Deployed smart contracts.
     pub contracts: BTreeMap<[u8; 32], claw_vm::ContractInstance>,
     /// Contract storage: (contract_address, key) → value.

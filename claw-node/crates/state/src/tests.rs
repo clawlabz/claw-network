@@ -309,10 +309,10 @@ mod tests {
             platform: "arena".into(),
             memo: "good player".into(),
         };
-        state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload)).unwrap();
-
-        assert_eq!(state.reputation.len(), 1);
-        assert_eq!(state.reputation[0].score, 80);
+        // ReputationAttest is deprecated — all submissions are rejected.
+        let result = state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload));
+        assert!(result.is_err(), "deprecated ReputationAttest must be rejected");
+        assert_eq!(state.reputation.len(), 0);
     }
 
     #[test]
@@ -329,7 +329,8 @@ mod tests {
             memo: "".into(),
         };
         let tx = make_tx(&sk, 2, TxType::ReputationAttest, &payload);
-        assert_eq!(state.apply_tx(&tx), Err(StateError::SelfAttestation));
+        // ReputationAttest is deprecated — rejected before self-attest check.
+        assert!(state.apply_tx(&tx).is_err());
     }
 
     #[test]
@@ -347,9 +348,9 @@ mod tests {
         let payload = ReputationAttestPayload {
             to: addr2, category: "x".into(), score: 101, platform: "p".into(), memo: "".into(),
         };
-        assert_eq!(
-            state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload)),
-            Err(StateError::ScoreOutOfRange(101))
+        // ReputationAttest is deprecated — rejected before score validation.
+        assert!(
+            state.apply_tx(&make_tx(&sk1, 2, TxType::ReputationAttest, &payload)).is_err()
         );
     }
 
@@ -570,6 +571,61 @@ mod tests {
             state.apply_tx(&tx),
             Err(StateError::AgentNotRegistered)
         );
+    }
+
+    #[test]
+    fn platform_activity_report_action_count_exceeds_max_is_rejected() {
+        let (mut state, sk1, _addr1, _sk2, addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 10_001, // one over the 10,000 limit
+                action_type: "game_played".into(),
+            }],
+        };
+        let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
+        assert!(matches!(
+            state.apply_tx(&tx),
+            Err(StateError::ActionCountTooHigh { .. })
+        ));
+    }
+
+    #[test]
+    fn platform_activity_report_action_count_at_max_is_accepted() {
+        let (mut state, sk1, _addr1, _sk2, addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 10_000, // exactly at the limit
+                action_type: "game_played".into(),
+            }],
+        };
+        let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
+        state.apply_tx(&tx).unwrap();
+
+        let agg = state.platform_activity.get(&addr2).unwrap();
+        assert_eq!(agg.total_actions, 10_000);
+    }
+
+    #[test]
+    fn platform_activity_report_action_count_zero_is_accepted() {
+        let (mut state, sk1, _addr1, _sk2, addr2) = setup_platform_agent();
+
+        let payload = PlatformActivityReportPayload {
+            reports: vec![ActivityEntry {
+                agent: addr2,
+                action_count: 0, // zero is a valid edge case
+                action_type: "game_played".into(),
+            }],
+        };
+        let tx = make_tx(&sk1, 3, TxType::PlatformActivityReport, &payload);
+        state.apply_tx(&tx).unwrap();
+
+        let agg = state.platform_activity.get(&addr2).unwrap();
+        assert_eq!(agg.total_actions, 0);
+        assert_eq!(agg.platform_count, 1);
     }
 
     // === Activity Stats Tracking ===
@@ -1008,5 +1064,147 @@ mod tests {
 
         let root_after = state.state_root();
         assert_ne!(root_before, root_after);
+    }
+
+    // === Contract block_timestamp fix (Task 0.1) ===
+
+    /// Minimal WAT module that calls `block_timestamp()` and writes the
+    /// 8-byte little-endian result into contract storage under the key b"ts".
+    ///
+    /// Only imports the two host functions it actually uses; other host functions
+    /// don't need to be declared in a module that doesn't call them.
+    /// Signatures match the actual host functions in `crates/vm/src/host.rs`:
+    ///   block_timestamp() -> i64
+    ///   storage_write(key_ptr: i32, key_len: i32, val_ptr: i32, val_len: i32)
+    fn timestamp_contract_wasm() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+              (import "env" "block_timestamp" (func $block_timestamp (result i64)))
+              (import "env" "storage_write"   (func $storage_write (param i32 i32 i32 i32)))
+              (memory (export "memory") 1)
+              ;; Memory layout:
+              ;;   offset 0..2  = storage key "ts" (2 bytes, ASCII)
+              ;;   offset 8..16 = i64 timestamp value (8 bytes, little-endian)
+              (data (i32.const 0) "ts")
+              (func (export "get_ts")
+                (local $ts i64)
+                (local.set $ts (call $block_timestamp))
+                (i64.store (i32.const 8) (local.get $ts))
+                (call $storage_write
+                  (i32.const 0) (i32.const 2)
+                  (i32.const 8) (i32.const 8))
+              )
+            )
+            "#,
+        )
+        .expect("WAT compilation failed")
+    }
+
+    /// Verify that WorldState.block_timestamp defaults to 0 and can be set.
+    ///
+    /// TDD RED: compile-fails until `block_timestamp` field is added to WorldState.
+    #[test]
+    fn world_state_block_timestamp_field_exists() {
+        let mut state = WorldState::default();
+        assert_eq!(state.block_timestamp, 0, "default should be 0");
+        state.block_timestamp = 9_999_999_999;
+        assert_eq!(state.block_timestamp, 9_999_999_999);
+    }
+
+    /// Verify that `block_timestamp` is forwarded into the contract ExecutionContext
+    /// so contracts calling `block_timestamp()` receive the actual block time,
+    /// not a hardcoded 0.
+    ///
+    /// TDD RED: fails with stored_ts == 0 until handlers.rs is fixed.
+    #[test]
+    fn contract_call_execution_context_uses_block_timestamp() {
+        let (sk, vk) = generate_keypair();
+        let addr = vk.to_bytes();
+
+        let mut state = WorldState::default();
+        state.balances.insert(addr, 100 * GAS_FEE + 1_000_000_000);
+        state.block_height = 42;
+        // Set a known non-zero timestamp — this field must exist on WorldState.
+        state.block_timestamp = 1_700_000_042;
+
+        // Deploy the timestamp-reading contract (no constructor).
+        let code = timestamp_contract_wasm();
+        let deploy_payload = ContractDeployPayload {
+            code,
+            init_method: String::new(),
+            init_args: vec![],
+        };
+        let deploy_tx = make_tx(&sk, 1, TxType::ContractDeploy, &deploy_payload);
+        state.apply_tx(&deploy_tx).expect("deploy failed");
+
+        // Derive the contract address the same way the handler does.
+        // nonce was 0 before the deploy transaction consumed it.
+        let contract_addr = claw_vm::VmEngine::derive_contract_address(&addr, 0);
+        assert!(state.contracts.contains_key(&contract_addr), "contract not registered");
+
+        // Call get_ts — should store block_timestamp into contract storage under key "ts".
+        let call_payload = ContractCallPayload {
+            contract: contract_addr,
+            method: "get_ts".into(),
+            args: vec![],
+            value: 0,
+        };
+        let call_tx = make_tx(&sk, 2, TxType::ContractCall, &call_payload);
+        state.apply_tx(&call_tx).expect("contract call failed");
+
+        // Read the stored value: must equal the timestamp we set, NOT zero.
+        let stored = state
+            .contract_storage
+            .get(&(contract_addr, b"ts".to_vec()))
+            .expect("storage key 'ts' not written by contract");
+
+        assert_eq!(stored.len(), 8, "expected 8-byte i64 in storage");
+        let stored_ts = i64::from_le_bytes(stored[..8].try_into().unwrap()) as u64;
+        assert_eq!(
+            stored_ts,
+            1_700_000_042,
+            "contract received block_timestamp={stored_ts} but expected 1_700_000_042; \
+             handlers.rs likely still has `block_timestamp: 0` hardcoded"
+        );
+    }
+
+    /// Verify that the contract deploy constructor also receives the correct
+    /// block_timestamp (not 0) when an init_method is provided.
+    #[test]
+    fn contract_deploy_constructor_uses_block_timestamp() {
+        let (sk, vk) = generate_keypair();
+        let addr = vk.to_bytes();
+
+        let mut state = WorldState::default();
+        state.balances.insert(addr, 100 * GAS_FEE + 1_000_000_000);
+        state.block_height = 10;
+        state.block_timestamp = 1_600_000_010;
+
+        // Deploy with init_method="get_ts" so the constructor runs our timestamp-writing code.
+        let code = timestamp_contract_wasm();
+        let deploy_payload = ContractDeployPayload {
+            code,
+            init_method: "get_ts".into(),
+            init_args: vec![],
+        };
+        let deploy_tx = make_tx(&sk, 1, TxType::ContractDeploy, &deploy_payload);
+        state.apply_tx(&deploy_tx).expect("deploy with constructor failed");
+
+        let contract_addr = claw_vm::VmEngine::derive_contract_address(&addr, 0);
+
+        // The constructor stored block_timestamp under key "ts".
+        let stored = state
+            .contract_storage
+            .get(&(contract_addr, b"ts".to_vec()))
+            .expect("constructor did not write storage key 'ts'");
+
+        let stored_ts = i64::from_le_bytes(stored[..8].try_into().unwrap()) as u64;
+        assert_eq!(
+            stored_ts,
+            1_600_000_010,
+            "constructor received block_timestamp={stored_ts} but expected 1_600_000_010; \
+             ContractDeploy handler likely still has `block_timestamp: 0` hardcoded"
+        );
     }
 }

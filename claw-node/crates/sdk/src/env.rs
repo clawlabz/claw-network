@@ -24,6 +24,7 @@ extern "C" {
     fn agent_get_score(addr_ptr: u32) -> i64;
     fn agent_is_registered(addr_ptr: u32) -> i32;
     fn token_balance(addr_ptr: u32) -> i64;
+    fn token_balance_hi(addr_ptr: u32) -> i64;
     fn token_transfer(to_ptr: u32, amount_lo: i64, amount_hi: i64) -> i32;
     fn log_msg(ptr: u32, len: u32);
     fn return_data(ptr: u32, len: u32);
@@ -118,9 +119,15 @@ pub fn is_agent_registered(address: &[u8; 32]) -> bool {
     unsafe { agent_is_registered(address.as_ptr() as u32) != 0 }
 }
 
-/// Get CLAW balance of an address.
-pub fn get_balance(address: &[u8; 32]) -> u64 {
-    unsafe { token_balance(address.as_ptr() as u32) as u64 }
+/// Get CLAW balance of an address as the full u128.
+///
+/// Combines the `token_balance` (low 64 bits) and `token_balance_hi`
+/// (high 64 bits) host functions, matching the lo/hi pattern used by
+/// `get_value()` for transferred amounts.
+pub fn get_balance(address: &[u8; 32]) -> u128 {
+    let lo = unsafe { token_balance(address.as_ptr() as u32) } as u64;
+    let hi = unsafe { token_balance_hi(address.as_ptr() as u32) } as u64;
+    (hi as u128) << 64 | (lo as u128)
 }
 
 /// Transfer CLAW tokens from the contract to an address.
