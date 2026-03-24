@@ -25,8 +25,8 @@ use tower_http::cors::CorsLayer;
 
 // --- Constants ---
 
-/// Maximum request body size in bytes (256 KB).
-pub const MAX_REQUEST_BODY_SIZE: usize = 256 * 1024;
+/// Maximum request body size in bytes (2 MB — hex-encoded 512KB wasm ≈ 1MB hex + overhead).
+pub const MAX_REQUEST_BODY_SIZE: usize = 2 * 1024 * 1024;
 
 /// Maximum RPC requests per second per IP.
 pub const RATE_LIMIT_PER_SECOND: u32 = 100;
@@ -34,8 +34,8 @@ pub const RATE_LIMIT_PER_SECOND: u32 = 100;
 /// Maximum hex-encoded address length (64 hex chars = 32 bytes).
 pub const MAX_ADDRESS_HEX_LEN: usize = 64;
 
-/// Maximum transaction JSON size submitted via RPC (64 KB).
-pub const MAX_TX_RPC_SIZE: usize = 64 * 1024;
+/// Maximum transaction JSON size submitted via RPC (1.5 MB — hex-encoded 512KB wasm ≈ 1MB + overhead).
+pub const MAX_TX_RPC_SIZE: usize = 1536 * 1024;
 
 // --- Rate limiter ---
 

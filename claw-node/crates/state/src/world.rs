@@ -13,8 +13,8 @@ use crate::handlers;
 
 // --- Safety constants ---
 
-/// Maximum transaction payload size (64 KB).
-pub const MAX_TX_PAYLOAD_SIZE: usize = 64 * 1024;
+/// Maximum transaction payload size (512 KB — must accommodate ContractDeploy with up to 512KB wasm).
+pub const MAX_TX_PAYLOAD_SIZE: usize = 512 * 1024;
 
 /// Maximum name/service_type length (bytes).
 pub const MAX_NAME_LEN: usize = 64;
