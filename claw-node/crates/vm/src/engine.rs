@@ -153,9 +153,20 @@ impl VmEngine {
             .get_function(method)
             .map_err(|_| VmError::MethodNotFound(method.to_string()))?;
 
-        let call_args = match args_ptr {
-            Some(ptr) => vec![Value::I32(ptr as i32), Value::I32(args.len() as i32)],
-            None => vec![],
+        // Determine call args based on the function's actual signature.
+        // SDK contracts export methods as (i32, i32) -> () for (args_ptr, args_len).
+        // Simple/test contracts may export methods with no params: () -> ().
+        let func_type = func.ty(&store);
+        let func_params = func_type.params();
+        let call_args = if func_params.len() == 2 {
+            // SDK-style: always pass (ptr, len), even when args is empty → (0, 0)
+            match args_ptr {
+                Some(ptr) => vec![Value::I32(ptr as i32), Value::I32(args.len() as i32)],
+                None => vec![Value::I32(0), Value::I32(0)],
+            }
+        } else {
+            // No-param style (test/simple contracts)
+            vec![]
         };
 
         let _result = func.call(&mut store, &call_args).map_err(|e| {
