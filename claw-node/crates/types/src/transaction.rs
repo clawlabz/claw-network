@@ -53,6 +53,10 @@ pub enum TxType {
     ChangeDelegation = 14,
     MinerRegister = 15,
     MinerHeartbeat = 16,
+    /// Announce intent to upgrade a contract (starts the timelock).
+    ContractUpgradeAnnounce = 17,
+    /// Execute a previously announced contract upgrade (after delay has elapsed).
+    ContractUpgradeExecute = 18,
 }
 
 /// A signed transaction on ClawNetwork.
@@ -243,6 +247,37 @@ pub struct MinerHeartbeatPayload {
     pub latest_block_hash: [u8; 32],
     /// Height of the latest block the miner has synced.
     pub latest_height: u64,
+}
+
+/// Payload for announcing a contract upgrade (starts the timelock).
+///
+/// The caller must be the contract's admin. After `UPGRADE_DELAY_BLOCKS` have
+/// elapsed, the admin can submit a `ContractUpgradeExecute` transaction with
+/// the actual new Wasm bytecode.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ContractUpgradeAnnouncePayload {
+    /// Address of the contract to upgrade.
+    pub contract: [u8; 32],
+    /// blake3 hash of the new Wasm bytecode that will be submitted on execute.
+    pub new_code_hash: [u8; 32],
+}
+
+/// Payload for executing a previously announced contract upgrade.
+///
+/// The caller must be the contract's admin and the timelock delay must have
+/// elapsed since the announce. The `new_code` must hash to the same value
+/// that was committed in the announce transaction.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct ContractUpgradeExecutePayload {
+    /// Address of the contract to upgrade.
+    pub contract: [u8; 32],
+    /// Full Wasm bytecode of the new contract version.
+    pub new_code: Vec<u8>,
+    /// Optional migration method to call on the new code immediately after upgrade.
+    /// `None` means no migration is run.
+    pub migrate_method: Option<String>,
+    /// Arguments passed to the migration method (borsh-encoded).
+    pub migrate_args: Vec<u8>,
 }
 
 impl Transaction {

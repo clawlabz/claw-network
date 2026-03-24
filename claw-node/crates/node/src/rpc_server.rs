@@ -632,7 +632,11 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
                 Err(_) => (None, None),
             }
         }
-        TxType::ChangeDelegation | TxType::MinerRegister | TxType::MinerHeartbeat => (None, None),
+        TxType::ChangeDelegation
+        | TxType::MinerRegister
+        | TxType::MinerHeartbeat
+        | TxType::ContractUpgradeAnnounce
+        | TxType::ContractUpgradeExecute => (None, None),
     }
 }
 
@@ -656,6 +660,8 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::ChangeDelegation => "ChangeDelegation",
         claw_types::TxType::MinerRegister => "MinerRegister",
         claw_types::TxType::MinerHeartbeat => "MinerHeartbeat",
+        claw_types::TxType::ContractUpgradeAnnounce => "ContractUpgradeAnnounce",
+        claw_types::TxType::ContractUpgradeExecute => "ContractUpgradeExecute",
     }
 }
 
@@ -705,7 +711,9 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         | claw_types::TxType::TokenBurn
         | claw_types::TxType::ChangeDelegation
         | claw_types::TxType::MinerRegister
-        | claw_types::TxType::MinerHeartbeat => (None, None),
+        | claw_types::TxType::MinerHeartbeat
+        | claw_types::TxType::ContractUpgradeAnnounce
+        | claw_types::TxType::ContractUpgradeExecute => (None, None),
         claw_types::TxType::ContractCall => {
             // payload starts with [contract: 32 bytes]
             if tx.payload.len() >= 32 {

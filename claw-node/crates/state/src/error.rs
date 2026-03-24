@@ -141,4 +141,16 @@ pub enum StateError {
 
     #[error("VM concurrency limit reached: maximum concurrent executions exceeded")]
     VmConcurrencyLimitReached,
+
+    #[error("unauthorized: caller is not the contract admin")]
+    Unauthorized,
+
+    #[error("no pending upgrade: must announce before executing")]
+    NoPendingUpgrade,
+
+    #[error("upgrade not ready: current block {current} < ready_at {ready_at}")]
+    UpgradeNotReady { current: u64, ready_at: u64 },
+
+    #[error("upgrade code hash mismatch: submitted code does not match announced hash")]
+    UpgradeCodeHashMismatch,
 }

@@ -729,6 +729,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "claw-test"
+version = "0.4.5"
+dependencies = [
+ "blake3",
+ "borsh",
+ "claw-types",
+ "claw-vm",
+ "wat",
+]
+
+[[package]]
 name = "claw-types"
 version = "0.4.5"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "claw-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "In-process test framework for ClawNetwork smart contracts"
+
+[dependencies]
+claw-vm = { path = "../vm" }
+claw-types = { path = "../types" }
+blake3 = "1"
+borsh = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+wat = "1"

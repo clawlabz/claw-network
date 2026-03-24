@@ -200,6 +200,15 @@ impl WorldState {
                 }
                 TxType::MinerRegister => (Vec::new(), handlers::handle_miner_register(self, tx)),
                 TxType::MinerHeartbeat => (Vec::new(), handlers::handle_miner_heartbeat(self, tx)),
+                TxType::ContractUpgradeAnnounce => {
+                    (Vec::new(), handlers::handle_contract_upgrade_announce(self, tx))
+                }
+                TxType::ContractUpgradeExecute => {
+                    match handlers::handle_contract_upgrade_execute(self, tx, tx_index) {
+                        Ok(events) => (events, Ok(())),
+                        Err(e) => (Vec::new(), Err(e)),
+                    }
+                }
             };
 
         let actual_fee = if gas_free { 0 } else { GAS_FEE };

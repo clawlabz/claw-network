@@ -13,5 +13,10 @@ pub use world::WorldState;
 pub use error::StateError;
 pub use score::{compute_agent_score, AgentScoreDetail};
 
+/// Number of blocks that must elapse between a `ContractUpgradeAnnounce` and
+/// a `ContractUpgradeExecute`. At ~3 s/block this is approximately 36 minutes,
+/// giving node operators and users time to react before an upgrade takes effect.
+pub const UPGRADE_DELAY_BLOCKS: u64 = 720;
+
 #[cfg(test)]
 mod tests;

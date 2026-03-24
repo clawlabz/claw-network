@@ -11,6 +11,7 @@ members = [
     "crates/node",
     "crates/vm",
     "crates/sdk",
+    "crates/test-framework",
 ]
 
 [workspace.package]

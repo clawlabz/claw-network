@@ -1,6 +1,17 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
+/// Pending upgrade state stored on a contract instance after an announce.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct PendingUpgrade {
+    /// blake3 hash of the new Wasm code committed in the announce transaction.
+    pub new_code_hash: [u8; 32],
+    /// Block height at which the upgrade was announced.
+    pub announced_at: u64,
+    /// Block height at or after which the execute is allowed (`announced_at + UPGRADE_DELAY_BLOCKS`).
+    pub ready_at: u64,
+}
+
 /// Metadata for a deployed contract.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct ContractInstance {
@@ -8,6 +19,15 @@ pub struct ContractInstance {
     pub code_hash: [u8; 32],
     pub creator: [u8; 32],
     pub deployed_at: u64,
+    /// Admin address: the only account permitted to announce/execute upgrades.
+    /// Defaults to the creator on deploy.
+    pub admin: [u8; 32],
+    /// Code hash of the previous version, set after a successful upgrade.
+    pub previous_code_hash: Option<[u8; 32]>,
+    /// Block height at which the most recent upgrade was executed.
+    pub upgrade_height: Option<u64>,
+    /// Pending upgrade announced but not yet executed.
+    pub pending_upgrade: Option<PendingUpgrade>,
 }
 
 /// A structured event emitted by a contract during execution.

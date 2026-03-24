@@ -457,6 +457,10 @@ pub fn handle_contract_deploy(
         code_hash,
         creator: tx.from,
         deployed_at: state.block_height,
+        admin: tx.from,
+        previous_code_hash: None,
+        upgrade_height: None,
+        pending_upgrade: None,
     };
 
     // If init_method is specified, run the constructor and validate all
@@ -1250,6 +1254,203 @@ pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Resul
     state.miner_heartbeat_tracker.insert((tx.from, window), true);
 
     Ok(())
+}
+
+/// ContractUpgradeAnnounce: announce intent to upgrade a contract (starts the timelock).
+///
+/// The caller must be the contract's `admin`. Stores a `PendingUpgrade` on the
+/// contract instance. Re-announcing replaces any existing pending upgrade.
+pub fn handle_contract_upgrade_announce(
+    state: &mut WorldState,
+    tx: &Transaction,
+) -> Result<(), StateError> {
+    let payload = ContractUpgradeAnnouncePayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // Contract must exist
+    let instance = state
+        .contracts
+        .get(&payload.contract)
+        .ok_or_else(|| StateError::ContractNotFound(hex::encode(payload.contract)))?;
+
+    // Only the admin may announce an upgrade
+    if tx.from != instance.admin {
+        return Err(StateError::Unauthorized);
+    }
+
+    let announced_at = state.block_height;
+    let ready_at = announced_at + crate::UPGRADE_DELAY_BLOCKS;
+
+    let pending = claw_vm::PendingUpgrade {
+        new_code_hash: payload.new_code_hash,
+        announced_at,
+        ready_at,
+    };
+
+    // Update in place (replace any existing pending upgrade)
+    state
+        .contracts
+        .get_mut(&payload.contract)
+        .expect("contract existence checked above")
+        .pending_upgrade = Some(pending);
+
+    Ok(())
+}
+
+/// ContractUpgradeExecute: execute a previously announced upgrade.
+///
+/// Requirements:
+/// 1. Contract must exist.
+/// 2. Caller must be the contract's `admin`.
+/// 3. A `PendingUpgrade` must be present on the instance.
+/// 4. `current_block_height >= pending.ready_at`.
+/// 5. `blake3(new_code) == pending.new_code_hash`.
+/// 6. New Wasm must be valid.
+///
+/// If `migrate_method` is `Some`, the migration is run against the existing
+/// storage under the new code. Storage changes from the migration are applied.
+pub fn handle_contract_upgrade_execute(
+    state: &mut WorldState,
+    tx: &Transaction,
+    tx_index: u32,
+) -> Result<Vec<claw_types::block::BlockEvent>, StateError> {
+    let payload = ContractUpgradeExecutePayload::try_from_slice(&tx.payload)
+        .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
+
+    // 1. Contract must exist
+    let instance = state
+        .contracts
+        .get(&payload.contract)
+        .ok_or_else(|| StateError::ContractNotFound(hex::encode(payload.contract)))?;
+
+    // 2. Caller must be admin
+    if tx.from != instance.admin {
+        return Err(StateError::Unauthorized);
+    }
+
+    // 3. Pending upgrade must exist
+    let pending = instance
+        .pending_upgrade
+        .clone()
+        .ok_or(StateError::NoPendingUpgrade)?;
+
+    // 4. Timelock: ready_at must have elapsed
+    if state.block_height < pending.ready_at {
+        return Err(StateError::UpgradeNotReady {
+            current: state.block_height,
+            ready_at: pending.ready_at,
+        });
+    }
+
+    // 5. Verify code hash matches the announced commitment
+    let submitted_hash = *blake3::hash(&payload.new_code).as_bytes();
+    if submitted_hash != pending.new_code_hash {
+        return Err(StateError::UpgradeCodeHashMismatch);
+    }
+
+    // 6. Validate code size and Wasm module
+    if payload.new_code.len() > claw_vm::MAX_CONTRACT_CODE_SIZE {
+        return Err(StateError::ContractCodeTooLarge {
+            size: payload.new_code.len(),
+            max: claw_vm::MAX_CONTRACT_CODE_SIZE,
+        });
+    }
+    let engine = claw_vm::VmEngine::new();
+    engine
+        .validate(&payload.new_code)
+        .map_err(|e| StateError::ContractExecutionFailed(e.to_string()))?;
+
+    // Capture old code hash before modifying state
+    let old_code_hash = state
+        .contracts
+        .get(&payload.contract)
+        .expect("contract existence verified above")
+        .code_hash;
+    let upgrade_height = state.block_height;
+
+    // --- Optional migration ---
+    // Run before committing code swap so storage reads see the old state.
+    let migration_events = if let Some(ref migrate_method) = payload.migrate_method {
+        // Snapshot existing storage for this contract
+        let storage: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = state
+            .contract_storage
+            .iter()
+            .filter(|((addr, _), _)| addr == &payload.contract)
+            .map(|((_, key), value)| (key.clone(), value.clone()))
+            .collect();
+
+        let ctx = claw_vm::ExecutionContext {
+            caller: tx.from,
+            contract_address: payload.contract,
+            block_height: state.block_height,
+            block_timestamp: state.block_timestamp,
+            value: 0,
+            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+            read_only: false,
+        };
+
+        let result = execute_with_timeout(
+            &engine,
+            &payload.new_code,
+            migrate_method,
+            &payload.migrate_args,
+            ctx,
+            storage,
+            state,
+        )
+        .map_err(|e| StateError::ContractExecutionFailed(e.to_string()))?;
+
+        // Collect migration events
+        let events: Vec<claw_types::block::BlockEvent> = result
+            .events
+            .iter()
+            .map(|e| claw_types::block::BlockEvent::ContractEvent {
+                contract: payload.contract,
+                tx_index,
+                topic: e.topic.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+
+        // Apply migration storage changes
+        for (key, value) in result.storage_changes {
+            match value {
+                Some(v) => {
+                    state
+                        .contract_storage
+                        .insert((payload.contract, key), v);
+                }
+                None => {
+                    state
+                        .contract_storage
+                        .remove(&(payload.contract, key));
+                }
+            }
+        }
+
+        events
+    } else {
+        Vec::new()
+    };
+
+    // --- Atomic commit: replace code and update instance ---
+
+    // Replace bytecode
+    state
+        .contract_code
+        .insert(payload.contract, payload.new_code.clone());
+
+    // Update instance fields
+    let instance = state
+        .contracts
+        .get_mut(&payload.contract)
+        .expect("contract existence verified above");
+    instance.previous_code_hash = Some(old_code_hash);
+    instance.code_hash = submitted_hash;
+    instance.upgrade_height = Some(upgrade_height);
+    instance.pending_upgrade = None;
+
+    Ok(migration_events)
 }
 
 #[cfg(test)]

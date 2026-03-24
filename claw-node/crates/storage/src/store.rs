@@ -200,7 +200,9 @@ impl ChainStore {
             | TxType::StakeDeposit | TxType::StakeWithdraw | TxType::StakeClaim
             | TxType::PlatformActivityReport | TxType::TokenApprove | TxType::TokenBurn
             | TxType::ChangeDelegation | TxType::MinerRegister
-            | TxType::MinerHeartbeat => None,
+            | TxType::MinerHeartbeat
+            | TxType::ContractUpgradeAnnounce
+            | TxType::ContractUpgradeExecute => None,
         }
     }
 

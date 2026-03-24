@@ -1170,6 +1170,479 @@ mod tests {
         );
     }
 
+    // === Contract Upgrade Mechanism (Timelock) ===
+
+    /// Minimal WAT module used for upgrade tests.
+    /// Exports a `noop` method so the contract is valid and callable.
+    fn minimal_contract_wasm() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "noop"))
+            )
+            "#,
+        )
+        .expect("WAT compilation failed")
+    }
+
+    /// A second minimal WAT module with a different body (different code_hash).
+    fn minimal_contract_v2_wasm() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "noop")
+                (nop)
+                (nop)
+              )
+            )
+            "#,
+        )
+        .expect("WAT compilation failed")
+    }
+
+    /// Helper: deploy a minimal contract and return its address.
+    fn deploy_minimal_contract(
+        state: &mut WorldState,
+        sk: &SigningKey,
+        nonce: u64,
+    ) -> [u8; 32] {
+        let addr = sk.verifying_key().to_bytes();
+        let code = minimal_contract_wasm();
+        let payload = ContractDeployPayload {
+            code,
+            init_method: String::new(),
+            init_args: vec![],
+        };
+        let tx = make_tx(sk, nonce, TxType::ContractDeploy, &payload);
+        state.apply_tx(&tx, 0).expect("deploy should succeed");
+        let pre_deploy_nonce = nonce - 1;
+        claw_vm::VmEngine::derive_contract_address(&addr, pre_deploy_nonce)
+    }
+
+    /// Test 1: Announce upgrade stores PendingUpgrade on the contract instance.
+    #[test]
+    fn contract_upgrade_announce_stores_pending_upgrade() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        let instance = state.contracts.get(&contract_addr).expect("instance must exist");
+        let pending = instance.pending_upgrade.as_ref().expect("pending_upgrade must be set");
+        assert_eq!(pending.new_code_hash, new_code_hash);
+        assert_eq!(pending.announced_at, 100);
+        assert_eq!(
+            pending.ready_at,
+            100 + crate::UPGRADE_DELAY_BLOCKS,
+            "ready_at must be announced_at + UPGRADE_DELAY_BLOCKS"
+        );
+    }
+
+    /// Test 2: Execute upgrade before ready_at is rejected.
+    #[test]
+    fn contract_upgrade_execute_before_ready_rejected() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        // Try to execute at block 100 (same block as announce, before ready_at)
+        state.block_height = 100;
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code: new_code.clone(),
+            migrate_method: None,
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&sk, 3, TxType::ContractUpgradeExecute, &execute_payload);
+        let result = state.apply_tx(&execute_tx, 0);
+        assert!(
+            result.is_err(),
+            "executing upgrade before ready_at must fail"
+        );
+        assert!(
+            matches!(result.unwrap_err(), StateError::UpgradeNotReady { .. }),
+            "error must be UpgradeNotReady"
+        );
+    }
+
+    /// Test 3: Execute upgrade after ready_at replaces code and updates instance.
+    #[test]
+    fn contract_upgrade_execute_after_ready_succeeds() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+        let original_code_hash = state.contracts[&contract_addr].code_hash;
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        // Announce at block 100
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        // Advance block height past ready_at
+        state.block_height = 100 + crate::UPGRADE_DELAY_BLOCKS;
+
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code: new_code.clone(),
+            migrate_method: None,
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&sk, 3, TxType::ContractUpgradeExecute, &execute_payload);
+        state.apply_tx(&execute_tx, 0).expect("execute should succeed after delay");
+
+        let instance = state.contracts.get(&contract_addr).expect("instance must exist");
+        assert_eq!(instance.code_hash, new_code_hash, "code_hash must be updated");
+        assert_eq!(
+            instance.previous_code_hash,
+            Some(original_code_hash),
+            "previous_code_hash must be set to the old hash"
+        );
+        assert_eq!(
+            instance.upgrade_height,
+            Some(100 + crate::UPGRADE_DELAY_BLOCKS),
+            "upgrade_height must be set to current block"
+        );
+        assert!(
+            instance.pending_upgrade.is_none(),
+            "pending_upgrade must be cleared after execution"
+        );
+
+        // Verify the actual bytecode in contract_code was replaced
+        let stored_code = state.contract_code.get(&contract_addr).expect("code must exist");
+        assert_eq!(*blake3::hash(stored_code).as_bytes(), new_code_hash);
+    }
+
+    /// Test 4: Execute with wrong code hash (code does not match announced hash) is rejected.
+    #[test]
+    fn contract_upgrade_execute_wrong_code_hash_rejected() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        // Announce with hash of v2
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        state.block_height = 100 + crate::UPGRADE_DELAY_BLOCKS;
+
+        // Submit the original (v1) code, which has a different hash
+        let wrong_code = minimal_contract_wasm();
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code: wrong_code,
+            migrate_method: None,
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&sk, 3, TxType::ContractUpgradeExecute, &execute_payload);
+        let result = state.apply_tx(&execute_tx, 0);
+        assert!(result.is_err(), "wrong code hash must be rejected");
+        assert!(
+            matches!(result.unwrap_err(), StateError::UpgradeCodeHashMismatch),
+            "error must be UpgradeCodeHashMismatch"
+        );
+    }
+
+    /// Test 5: Non-admin announce is rejected.
+    #[test]
+    fn contract_upgrade_announce_non_admin_rejected() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        // Create a different keypair (the attacker)
+        let (attacker_sk, attacker_vk) = generate_keypair();
+        let attacker_addr = attacker_vk.to_bytes();
+        state
+            .balances
+            .insert(attacker_addr, 100 * GAS_FEE + 1_000_000_000);
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        // Attacker tries to announce upgrade for a contract they don't own
+        let announce_tx = make_tx(&attacker_sk, 1, TxType::ContractUpgradeAnnounce, &announce_payload);
+        let result = state.apply_tx(&announce_tx, 0);
+        assert!(result.is_err(), "non-admin announce must be rejected");
+        assert!(
+            matches!(result.unwrap_err(), StateError::Unauthorized),
+            "error must be Unauthorized"
+        );
+    }
+
+    /// Test 6: Non-admin execute is rejected.
+    #[test]
+    fn contract_upgrade_execute_non_admin_rejected() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        // Admin announces
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        state.block_height = 100 + crate::UPGRADE_DELAY_BLOCKS;
+
+        // Create an attacker
+        let (attacker_sk, attacker_vk) = generate_keypair();
+        let attacker_addr = attacker_vk.to_bytes();
+        state
+            .balances
+            .insert(attacker_addr, 100 * GAS_FEE + 1_000_000_000);
+
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code: new_code.clone(),
+            migrate_method: None,
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&attacker_sk, 1, TxType::ContractUpgradeExecute, &execute_payload);
+        let result = state.apply_tx(&execute_tx, 0);
+        assert!(result.is_err(), "non-admin execute must be rejected");
+        assert!(
+            matches!(result.unwrap_err(), StateError::Unauthorized),
+            "error must be Unauthorized"
+        );
+    }
+
+    /// Test 7: Execute with migrate_method=Some runs migration against existing storage.
+    #[test]
+    fn contract_upgrade_execute_with_migration_runs_migrate() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        // Deploy the timestamp contract as a stand-in for a "real" contract
+        // (it has a `get_ts` method we can call post-upgrade)
+        let (sk2, vk2) = generate_keypair();
+        let addr2 = vk2.to_bytes();
+        state.balances.insert(addr2, 100 * GAS_FEE + 1_000_000_000);
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let new_code = minimal_contract_v2_wasm();
+        let new_code_hash = *blake3::hash(&new_code).as_bytes();
+
+        // Announce
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        state.block_height = 100 + crate::UPGRADE_DELAY_BLOCKS;
+
+        // Execute with migrate_method=Some("noop") — noop exists in v2 wasm
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code: new_code.clone(),
+            migrate_method: Some("noop".to_string()),
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&sk, 3, TxType::ContractUpgradeExecute, &execute_payload);
+        // Should succeed — migration runs "noop" which does nothing
+        state.apply_tx(&execute_tx, 0).expect("execute with migration should succeed");
+
+        // Contract instance should be updated
+        let instance = state.contracts.get(&contract_addr).expect("instance must exist");
+        assert_eq!(instance.code_hash, new_code_hash);
+        assert!(instance.pending_upgrade.is_none());
+    }
+
+    /// Test 8: previous_code_hash is updated correctly after upgrade.
+    /// (Implicitly covered by test 3, but we make it explicit.)
+    #[test]
+    fn contract_upgrade_previous_code_hash_updated() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 50;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+        let v1_hash = state.contracts[&contract_addr].code_hash;
+
+        let v2_code = minimal_contract_v2_wasm();
+        let v2_hash = *blake3::hash(&v2_code).as_bytes();
+
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash: v2_hash,
+        };
+        let announce_tx = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce_payload);
+        state.apply_tx(&announce_tx, 0).expect("announce should succeed");
+
+        state.block_height = 50 + crate::UPGRADE_DELAY_BLOCKS;
+
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code: v2_code,
+            migrate_method: None,
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&sk, 3, TxType::ContractUpgradeExecute, &execute_payload);
+        state.apply_tx(&execute_tx, 0).expect("execute should succeed");
+
+        let instance = state.contracts.get(&contract_addr).expect("instance must exist");
+        assert_eq!(
+            instance.previous_code_hash,
+            Some(v1_hash),
+            "previous_code_hash should equal the v1 hash"
+        );
+        assert_eq!(instance.code_hash, v2_hash);
+    }
+
+    /// Test 9: Re-announcing replaces the pending upgrade (cancel via new announce).
+    #[test]
+    fn contract_upgrade_re_announce_replaces_pending() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let v2_code = minimal_contract_v2_wasm();
+        let v2_hash = *blake3::hash(&v2_code).as_bytes();
+
+        // First announce with v2 hash
+        let announce1 = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash: v2_hash,
+        };
+        let tx1 = make_tx(&sk, 2, TxType::ContractUpgradeAnnounce, &announce1);
+        state.apply_tx(&tx1, 0).expect("first announce should succeed");
+
+        // Second announce with a different (v1 code hash as a stand-in for "v3")
+        let v1_code = minimal_contract_wasm();
+        let v3_hash = *blake3::hash(&v1_code).as_bytes(); // reuse v1 bytes as "v3"
+
+        state.block_height = 200; // advance height for the second announce
+        let announce2 = ContractUpgradeAnnouncePayload {
+            contract: contract_addr,
+            new_code_hash: v3_hash,
+        };
+        let tx2 = make_tx(&sk, 3, TxType::ContractUpgradeAnnounce, &announce2);
+        state.apply_tx(&tx2, 0).expect("second announce should succeed");
+
+        let instance = state.contracts.get(&contract_addr).expect("instance must exist");
+        let pending = instance.pending_upgrade.as_ref().expect("pending must exist");
+        assert_eq!(
+            pending.new_code_hash, v3_hash,
+            "pending upgrade must be updated to the latest announce"
+        );
+        assert_eq!(
+            pending.announced_at, 200,
+            "announced_at must reflect the new announcement block"
+        );
+    }
+
+    /// Test 10: Announce on non-existent contract fails.
+    #[test]
+    fn contract_upgrade_announce_nonexistent_contract_fails() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 100;
+
+        let fake_contract = [0x42u8; 32];
+        let new_code_hash = [0x01u8; 32];
+
+        let announce_payload = ContractUpgradeAnnouncePayload {
+            contract: fake_contract,
+            new_code_hash,
+        };
+        let tx = make_tx(&sk, 1, TxType::ContractUpgradeAnnounce, &announce_payload);
+        let result = state.apply_tx(&tx, 0);
+        assert!(result.is_err(), "announce on nonexistent contract must fail");
+        assert!(
+            matches!(result.unwrap_err(), StateError::ContractNotFound(_)),
+            "error must be ContractNotFound"
+        );
+    }
+
+    /// Test 11: Execute without a pending upgrade fails.
+    #[test]
+    fn contract_upgrade_execute_without_announce_fails() {
+        let (mut state, sk, _addr) = setup();
+        state.block_height = 1000;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let new_code = minimal_contract_v2_wasm();
+        let execute_payload = ContractUpgradeExecutePayload {
+            contract: contract_addr,
+            new_code,
+            migrate_method: None,
+            migrate_args: vec![],
+        };
+        let execute_tx = make_tx(&sk, 2, TxType::ContractUpgradeExecute, &execute_payload);
+        let result = state.apply_tx(&execute_tx, 0);
+        assert!(result.is_err(), "execute without pending upgrade must fail");
+        assert!(
+            matches!(result.unwrap_err(), StateError::NoPendingUpgrade),
+            "error must be NoPendingUpgrade"
+        );
+    }
+
+    /// Test 12: admin field defaults to creator on deploy.
+    #[test]
+    fn contract_instance_admin_defaults_to_creator() {
+        let (mut state, sk, addr) = setup();
+        state.block_height = 1;
+
+        let contract_addr = deploy_minimal_contract(&mut state, &sk, 1);
+
+        let instance = state.contracts.get(&contract_addr).expect("instance must exist");
+        assert_eq!(
+            instance.admin, addr,
+            "admin must default to creator on deploy"
+        );
+    }
+
     /// Verify that the contract deploy constructor also receives the correct
     /// block_timestamp (not 0) when an init_method is provided.
     #[test]
