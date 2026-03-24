@@ -125,9 +125,9 @@ pub fn default_testnet() -> GenesisConfig {
         timestamp: 1741737600,
         allocations: standard_allocations(),
         validators: vec![
-            // Bootstrap validator operated by ClawLabz
+            // Hetzner testnet validator operated by ClawLabz
             GenesisValidator {
-                address: genesis_address_hex(20),
+                address: "53b66a4de468a72b1f3dd995b080733d3b97c83f6a5c6df962ae76d2c91a6c63".into(),
                 stake: (MIN_STAKE * 100).to_string(),
             },
         ],
