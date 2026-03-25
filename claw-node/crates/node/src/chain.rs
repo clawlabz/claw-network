@@ -20,6 +20,14 @@ use crate::metrics;
 /// Maximum number of transactions allowed in the mempool.
 const MAX_MEMPOOL_SIZE: usize = 10_000;
 
+/// Response for `get_tx_receipt` combining block location and the optional full receipt.
+#[derive(Debug, Clone)]
+pub struct TxReceiptResponse {
+    pub block_height: u64,
+    pub transaction_index: usize,
+    pub receipt: Option<claw_types::TransactionReceipt>,
+}
+
 /// Shared chain state.
 #[derive(Clone)]
 pub struct Chain {
@@ -1396,13 +1404,18 @@ impl Chain {
             .unwrap_or_default()
     }
 
-    pub fn get_tx_receipt(&self, tx_hash: &[u8; 32]) -> Option<(u64, usize)> {
+    pub fn get_tx_receipt(&self, tx_hash: &[u8; 32]) -> Option<TxReceiptResponse> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
         if let Ok(Some(height)) = inner.store.get_tx_block_height(tx_hash) {
             if let Ok(Some(block)) = inner.store.get_block(height) {
                 for (i, tx) in block.transactions.iter().enumerate() {
                     if tx.hash() == *tx_hash {
-                        return Some((height, i));
+                        let receipt = inner.state.receipts.get(tx_hash).cloned();
+                        return Some(TxReceiptResponse {
+                            block_height: height,
+                            transaction_index: i,
+                            receipt,
+                        });
                     }
                 }
             }

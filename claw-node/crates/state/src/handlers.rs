@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use borsh::BorshDeserialize;
 use claw_types::block::BlockEvent;
+use claw_types::receipt::{ReceiptEvent, TransactionReceipt};
 use claw_types::state::*;
 use claw_types::transaction::*;
 
@@ -432,13 +433,14 @@ pub fn handle_service_register(
 
 /// ContractDeploy: deploy a new smart contract.
 ///
-/// Returns the list of `BlockEvent::ContractEvent` entries produced during
-/// constructor execution (empty when no init_method or no events emitted).
+/// Returns `(block_events, receipt)`:
+/// - `block_events`: `BlockEvent::ContractEvent` entries produced during constructor execution.
+/// - `receipt`: `TransactionReceipt` with execution details.
 pub fn handle_contract_deploy(
     state: &mut WorldState,
     tx: &Transaction,
     tx_index: u32,
-) -> Result<Vec<BlockEvent>, StateError> {
+) -> Result<(Vec<BlockEvent>, TransactionReceipt), StateError> {
     let payload = ContractDeployPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
 
@@ -521,6 +523,26 @@ pub fn handle_contract_deploy(
             }
         }
 
+        // Build receipt from execution result
+        let tx_hash = tx.hash();
+        let receipt = TransactionReceipt {
+            tx_hash,
+            success: true,
+            fuel_consumed: result.fuel_consumed,
+            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+            return_data: result.return_data.clone(),
+            error_message: None,
+            events: result
+                .events
+                .iter()
+                .map(|e| ReceiptEvent {
+                    topic: e.topic.clone(),
+                    data: e.data.clone(),
+                })
+                .collect(),
+            logs: result.logs.clone(),
+        };
+
         // Convert VM events to BlockEvent entries (collect before mutable borrows below)
         let contract_events: Vec<BlockEvent> = result
             .events
@@ -559,27 +581,39 @@ pub fn handle_contract_deploy(
             *state.balances.entry(to).or_insert(0) += amount;
         }
 
-        Ok(contract_events)
+        Ok((contract_events, receipt))
     } else {
-        // No constructor — just register the contract
+        // No constructor — just register the contract with a minimal receipt
         state.contracts.insert(contract_address, instance);
         state
             .contract_code
             .insert(contract_address, payload.code.clone());
 
-        Ok(Vec::new())
+        let receipt = TransactionReceipt {
+            tx_hash: tx.hash(),
+            success: true,
+            fuel_consumed: 0,
+            fuel_limit: 0,
+            return_data: Vec::new(),
+            error_message: None,
+            events: Vec::new(),
+            logs: Vec::new(),
+        };
+
+        Ok((Vec::new(), receipt))
     }
 }
 
 /// ContractCall: call a method on a deployed smart contract.
 ///
-/// Returns the list of `BlockEvent::ContractEvent` entries produced during
-/// execution (empty when no events were emitted).
+/// Returns `(block_events, receipt)`:
+/// - `block_events`: `BlockEvent::ContractEvent` entries produced during execution.
+/// - `receipt`: `TransactionReceipt` with execution details.
 pub fn handle_contract_call(
     state: &mut WorldState,
     tx: &Transaction,
     tx_index: u32,
-) -> Result<Vec<BlockEvent>, StateError> {
+) -> Result<(Vec<BlockEvent>, TransactionReceipt), StateError> {
     let payload = ContractCallPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
 
@@ -665,6 +699,26 @@ pub fn handle_contract_call(
         }
     }
 
+    // Build receipt from execution result
+    let tx_hash = tx.hash();
+    let receipt = TransactionReceipt {
+        tx_hash,
+        success: true,
+        fuel_consumed: result.fuel_consumed,
+        fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+        return_data: result.return_data.clone(),
+        error_message: None,
+        events: result
+            .events
+            .iter()
+            .map(|e| ReceiptEvent {
+                topic: e.topic.clone(),
+                data: e.data.clone(),
+            })
+            .collect(),
+        logs: result.logs.clone(),
+    };
+
     // Convert VM events to BlockEvent entries (collect before mutable borrows below)
     let contract_events: Vec<BlockEvent> = result
         .events
@@ -701,7 +755,7 @@ pub fn handle_contract_call(
         *state.balances.entry(to).or_insert(0) += amount;
     }
 
-    Ok(contract_events)
+    Ok((contract_events, receipt))
 }
 
 /// Maximum action_type length for platform reports.
@@ -1328,7 +1382,7 @@ pub fn handle_contract_upgrade_execute(
     state: &mut WorldState,
     tx: &Transaction,
     tx_index: u32,
-) -> Result<Vec<claw_types::block::BlockEvent>, StateError> {
+) -> Result<(Vec<claw_types::block::BlockEvent>, TransactionReceipt), StateError> {
     let payload = ContractUpgradeExecutePayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
 
@@ -1385,7 +1439,7 @@ pub fn handle_contract_upgrade_execute(
 
     // --- Optional migration ---
     // Run before committing code swap so storage reads see the old state.
-    let migration_events = if let Some(ref migrate_method) = payload.migrate_method {
+    let (migration_events, migration_fuel, migration_return, migration_receipt_events, migration_logs) = if let Some(ref migrate_method) = payload.migrate_method {
         // Snapshot existing storage for this contract
         let storage: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = state
             .contract_storage
@@ -1415,6 +1469,19 @@ pub fn handle_contract_upgrade_execute(
         )
         .map_err(|e| StateError::ContractExecutionFailed(e.to_string()))?;
 
+        // Build receipt from migration execution result
+        let receipt_events: Vec<ReceiptEvent> = result
+            .events
+            .iter()
+            .map(|e| ReceiptEvent {
+                topic: e.topic.clone(),
+                data: e.data.clone(),
+            })
+            .collect();
+        let receipt_fuel = result.fuel_consumed;
+        let receipt_return = result.return_data.clone();
+        let receipt_logs = result.logs.clone();
+
         // Collect migration events
         let events: Vec<claw_types::block::BlockEvent> = result
             .events
@@ -1443,9 +1510,9 @@ pub fn handle_contract_upgrade_execute(
             }
         }
 
-        events
+        (events, receipt_fuel, receipt_return, receipt_events, receipt_logs)
     } else {
-        Vec::new()
+        (Vec::new(), 0, Vec::new(), Vec::new(), Vec::new())
     };
 
     // --- Atomic commit: replace code and update instance ---
@@ -1465,7 +1532,18 @@ pub fn handle_contract_upgrade_execute(
     instance.upgrade_height = Some(upgrade_height);
     instance.pending_upgrade = None;
 
-    Ok(migration_events)
+    let receipt = TransactionReceipt {
+        tx_hash: tx.hash(),
+        success: true,
+        fuel_consumed: migration_fuel,
+        fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
+        return_data: migration_return,
+        error_message: None,
+        events: migration_receipt_events,
+        logs: migration_logs,
+    };
+
+    Ok((migration_events, receipt))
 }
 
 #[cfg(test)]

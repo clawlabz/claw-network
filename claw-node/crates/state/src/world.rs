@@ -104,6 +104,8 @@ pub struct WorldState {
     pub miners: BTreeMap<[u8; 32], claw_types::state::MinerInfo>,
     /// Miner heartbeat deduplication tracker: (address, interval_window) → true.
     pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
+    /// Transaction receipts: tx_hash → receipt (populated for contract txs).
+    pub receipts: BTreeMap<[u8; 32], claw_types::TransactionReceipt>,
 }
 
 impl WorldState {
@@ -159,63 +161,71 @@ impl WorldState {
         // Fee is deducted but not credited — caller distributes via rewards::distribute_fees
 
         // 4. Dispatch to handler.
-        // Contract handlers return `Vec<BlockEvent>` on success; other handlers return `()`.
-        // We normalise to `(Vec<BlockEvent>, Result<(), StateError>)` for uniform post-processing.
-        let (contract_events, result): (Vec<BlockEvent>, Result<(), StateError>) =
-            match tx.tx_type {
-                TxType::ContractDeploy => {
-                    match handlers::handle_contract_deploy(self, tx, tx_index) {
-                        Ok(events) => (events, Ok(())),
-                        Err(e) => (Vec::new(), Err(e)),
-                    }
+        // Contract handlers return `(Vec<BlockEvent>, TransactionReceipt)` on success;
+        // other handlers return `()`. We normalise to a 3-tuple for uniform post-processing.
+        let (contract_events, receipt, result): (
+            Vec<BlockEvent>,
+            Option<claw_types::TransactionReceipt>,
+            Result<(), StateError>,
+        ) = match tx.tx_type {
+            TxType::ContractDeploy => {
+                match handlers::handle_contract_deploy(self, tx, tx_index) {
+                    Ok((events, receipt)) => (events, Some(receipt), Ok(())),
+                    Err(e) => (Vec::new(), None, Err(e)),
                 }
-                TxType::ContractCall => {
-                    match handlers::handle_contract_call(self, tx, tx_index) {
-                        Ok(events) => (events, Ok(())),
-                        Err(e) => (Vec::new(), Err(e)),
-                    }
+            }
+            TxType::ContractCall => {
+                match handlers::handle_contract_call(self, tx, tx_index) {
+                    Ok((events, receipt)) => (events, Some(receipt), Ok(())),
+                    Err(e) => (Vec::new(), None, Err(e)),
                 }
-                TxType::AgentRegister => (Vec::new(), handlers::handle_agent_register(self, tx)),
-                TxType::TokenTransfer => (Vec::new(), handlers::handle_token_transfer(self, tx)),
-                TxType::TokenCreate => (Vec::new(), handlers::handle_token_create(self, tx)),
-                TxType::TokenMintTransfer => {
-                    (Vec::new(), handlers::handle_token_mint_transfer(self, tx))
+            }
+            TxType::AgentRegister => (Vec::new(), None, handlers::handle_agent_register(self, tx)),
+            TxType::TokenTransfer => (Vec::new(), None, handlers::handle_token_transfer(self, tx)),
+            TxType::TokenCreate => (Vec::new(), None, handlers::handle_token_create(self, tx)),
+            TxType::TokenMintTransfer => {
+                (Vec::new(), None, handlers::handle_token_mint_transfer(self, tx))
+            }
+            TxType::ReputationAttest => {
+                (Vec::new(), None, handlers::handle_reputation_attest(self, tx))
+            }
+            TxType::ServiceRegister => {
+                (Vec::new(), None, handlers::handle_service_register(self, tx))
+            }
+            TxType::StakeDeposit => (Vec::new(), None, handlers::handle_stake_deposit(self, tx)),
+            TxType::StakeWithdraw => (Vec::new(), None, handlers::handle_stake_withdraw(self, tx)),
+            TxType::StakeClaim => (Vec::new(), None, handlers::handle_stake_claim(self, tx)),
+            TxType::PlatformActivityReport => {
+                (Vec::new(), None, handlers::handle_platform_activity_report(self, tx))
+            }
+            TxType::TokenApprove => (Vec::new(), None, handlers::handle_token_approve(self, tx)),
+            TxType::TokenBurn => (Vec::new(), None, handlers::handle_token_burn(self, tx)),
+            TxType::ChangeDelegation => {
+                (Vec::new(), None, handlers::handle_change_delegation(self, tx))
+            }
+            TxType::MinerRegister => (Vec::new(), None, handlers::handle_miner_register(self, tx)),
+            TxType::MinerHeartbeat => (Vec::new(), None, handlers::handle_miner_heartbeat(self, tx)),
+            TxType::ContractUpgradeAnnounce => {
+                (Vec::new(), None, handlers::handle_contract_upgrade_announce(self, tx))
+            }
+            TxType::ContractUpgradeExecute => {
+                match handlers::handle_contract_upgrade_execute(self, tx, tx_index) {
+                    Ok((events, receipt)) => (events, Some(receipt), Ok(())),
+                    Err(e) => (Vec::new(), None, Err(e)),
                 }
-                TxType::ReputationAttest => {
-                    (Vec::new(), handlers::handle_reputation_attest(self, tx))
-                }
-                TxType::ServiceRegister => {
-                    (Vec::new(), handlers::handle_service_register(self, tx))
-                }
-                TxType::StakeDeposit => (Vec::new(), handlers::handle_stake_deposit(self, tx)),
-                TxType::StakeWithdraw => (Vec::new(), handlers::handle_stake_withdraw(self, tx)),
-                TxType::StakeClaim => (Vec::new(), handlers::handle_stake_claim(self, tx)),
-                TxType::PlatformActivityReport => {
-                    (Vec::new(), handlers::handle_platform_activity_report(self, tx))
-                }
-                TxType::TokenApprove => (Vec::new(), handlers::handle_token_approve(self, tx)),
-                TxType::TokenBurn => (Vec::new(), handlers::handle_token_burn(self, tx)),
-                TxType::ChangeDelegation => {
-                    (Vec::new(), handlers::handle_change_delegation(self, tx))
-                }
-                TxType::MinerRegister => (Vec::new(), handlers::handle_miner_register(self, tx)),
-                TxType::MinerHeartbeat => (Vec::new(), handlers::handle_miner_heartbeat(self, tx)),
-                TxType::ContractUpgradeAnnounce => {
-                    (Vec::new(), handlers::handle_contract_upgrade_announce(self, tx))
-                }
-                TxType::ContractUpgradeExecute => {
-                    match handlers::handle_contract_upgrade_execute(self, tx, tx_index) {
-                        Ok(events) => (events, Ok(())),
-                        Err(e) => (Vec::new(), Err(e)),
-                    }
-                }
-            };
+            }
+        };
 
         let actual_fee = if gas_free { 0 } else { GAS_FEE };
 
         if result.is_ok() {
             // 5. Update nonce on success
             self.nonces.insert(tx.from, tx.nonce);
+
+            // 5b. Store transaction receipt if produced (contract txs)
+            if let Some(r) = receipt {
+                self.receipts.insert(r.tx_hash, r);
+            }
 
             // 6. Update per-epoch activity stats for the sender
             let stats = self.activity_stats.entry(tx.from).or_default();

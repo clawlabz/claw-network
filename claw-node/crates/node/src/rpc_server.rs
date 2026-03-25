@@ -196,10 +196,27 @@ async fn handle_rpc(
             let hash = parse_address(&req.params, 0);
             match hash {
                 Ok(h) => match chain.get_tx_receipt(&h) {
-                    Some((height, index)) => Ok(serde_json::json!({
-                        "blockHeight": height,
-                        "transactionIndex": index,
-                    })),
+                    Some(resp) => {
+                        let mut result = serde_json::json!({
+                            "blockHeight": resp.block_height,
+                            "transactionIndex": resp.transaction_index,
+                        });
+                        if let Some(receipt) = resp.receipt {
+                            result["success"] = serde_json::json!(receipt.success);
+                            result["fuelConsumed"] = serde_json::json!(receipt.fuel_consumed);
+                            result["fuelLimit"] = serde_json::json!(receipt.fuel_limit);
+                            result["returnData"] = serde_json::json!(hex::encode(&receipt.return_data));
+                            result["errorMessage"] = serde_json::json!(receipt.error_message);
+                            result["events"] = serde_json::json!(
+                                receipt.events.iter().map(|e| serde_json::json!({
+                                    "topic": e.topic,
+                                    "data": hex::encode(&e.data),
+                                })).collect::<Vec<_>>()
+                            );
+                            result["logs"] = serde_json::json!(receipt.logs);
+                        }
+                        Ok(result)
+                    },
                     None => Ok(Value::Null),
                 },
                 Err(e) => Err(e),
