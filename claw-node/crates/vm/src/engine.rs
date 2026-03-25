@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use wasmer::{imports, Function, FunctionEnv, Instance, Module, Store, Value};
@@ -7,13 +8,132 @@ use wasmer::Singlepass;
 use crate::error::VmError;
 use crate::host::{self, HostEnv};
 use crate::types::{ChainState, ExecutionContext, ExecutionResult};
-use crate::constants::MAX_CONTRACT_CODE_SIZE;
+use crate::constants::{MAX_CONTRACT_CODE_SIZE, MAX_WASM_MEMORY_PAGES};
 
-pub struct VmEngine;
+/// Maximum number of compiled modules to cache.
+const MODULE_CACHE_CAPACITY: usize = 64;
+
+/// Simple LRU cache for serialized compiled Wasm modules.
+///
+/// Keyed by blake3 hash of the raw Wasm bytecode. Values are the
+/// serialized compiled module bytes produced by `module.serialize()`.
+/// On cache hit we use `Module::deserialize()` which is much faster
+/// than recompiling from source.
+struct ModuleCache {
+    entries: HashMap<[u8; 32], Vec<u8>>,
+    /// Most-recently-used key at the back.
+    order: VecDeque<[u8; 32]>,
+    capacity: NonZeroUsize,
+}
+
+impl ModuleCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity: NonZeroUsize::new(capacity).expect("cache capacity must be > 0"),
+        }
+    }
+
+    fn get(&mut self, key: &[u8; 32]) -> Option<&Vec<u8>> {
+        if self.entries.contains_key(key) {
+            // Move to back (most recently used)
+            self.order.retain(|k| k != key);
+            self.order.push_back(*key);
+            self.entries.get(key)
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, key: [u8; 32], value: Vec<u8>) {
+        if self.entries.contains_key(&key) {
+            self.order.retain(|k| k != &key);
+        } else if self.entries.len() >= self.capacity.get() {
+            // Evict least recently used (front)
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            }
+        }
+        self.entries.insert(key, value);
+        self.order.push_back(key);
+    }
+}
+
+pub struct VmEngine {
+    /// Cache: blake3 hash of wasm bytecode -> serialized compiled module.
+    module_cache: Mutex<ModuleCache>,
+}
 
 impl VmEngine {
     pub fn new() -> Self {
-        Self
+        Self {
+            module_cache: Mutex::new(ModuleCache::new(MODULE_CACHE_CAPACITY)),
+        }
+    }
+
+    /// Load a Wasm module, using the serialized-module cache when possible.
+    ///
+    /// On cache miss the module is compiled with Singlepass, serialized,
+    /// and stored in the cache for future calls.  On cache hit the
+    /// pre-serialized bytes are deserialized which is significantly faster
+    /// than a full recompilation.
+    fn load_module(&self, store: &Store, code: &[u8]) -> Result<Module, VmError> {
+        let code_hash: [u8; 32] = *blake3::hash(code).as_bytes();
+
+        // Try cache first
+        {
+            let mut cache = self.module_cache.lock().unwrap();
+            if let Some(serialized) = cache.get(&code_hash) {
+                // SAFETY: We only store bytes produced by `module.serialize()`
+                // from the same engine (Singlepass), so deserializing is safe.
+                let module = unsafe {
+                    Module::deserialize(store, serialized.as_slice())
+                }
+                .map_err(|e| VmError::CompilationFailed(format!("cache deserialize: {e}")))?;
+                return Ok(module);
+            }
+        }
+
+        // Cache miss — compile from source
+        let module =
+            Module::new(store, code).map_err(|e| VmError::CompilationFailed(e.to_string()))?;
+
+        // Serialize and cache the compiled module
+        if let Ok(serialized) = module.serialize() {
+            let mut cache = self.module_cache.lock().unwrap();
+            cache.insert(code_hash, serialized.to_vec());
+        }
+
+        Ok(module)
+    }
+
+    /// Check that the module's memory declarations do not exceed the page limit.
+    ///
+    /// Inspects all exported memory types and rejects any whose initial or
+    /// maximum size exceeds `MAX_WASM_MEMORY_PAGES` (256 pages = 16 MB).
+    fn check_memory_limits(module: &Module) -> Result<(), VmError> {
+        for export in module.exports() {
+            if let wasmer::ExternType::Memory(mem_type) = export.ty() {
+                let initial = mem_type.minimum.0 as u32;
+                if initial > MAX_WASM_MEMORY_PAGES {
+                    return Err(VmError::MemoryLimitExceeded {
+                        pages: initial,
+                        max: MAX_WASM_MEMORY_PAGES,
+                    });
+                }
+                if let Some(max_pages) = mem_type.maximum {
+                    let max_val = max_pages.0 as u32;
+                    if max_val > MAX_WASM_MEMORY_PAGES {
+                        return Err(VmError::MemoryLimitExceeded {
+                            pages: max_val,
+                            max: MAX_WASM_MEMORY_PAGES,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Derive contract address from deployer + nonce.
@@ -35,7 +155,8 @@ impl VmEngine {
         }
         let compiler = Singlepass::new();
         let store = Store::new(compiler);
-        Module::new(&store, code).map_err(|e| VmError::InvalidModule(e.to_string()))?;
+        let module = Module::new(&store, code).map_err(|e| VmError::InvalidModule(e.to_string()))?;
+        Self::check_memory_limits(&module)?;
         Ok(())
     }
 
@@ -49,11 +170,13 @@ impl VmEngine {
         storage: BTreeMap<Vec<u8>, Vec<u8>>,
         chain_state: &dyn ChainState,
     ) -> Result<ExecutionResult, VmError> {
-        // 1. Compile
+        // 1. Compile (with module cache)
         let compiler = Singlepass::new();
         let mut store = Store::new(compiler);
-        let module =
-            Module::new(&store, code).map_err(|e| VmError::CompilationFailed(e.to_string()))?;
+        let module = self.load_module(&store, code)?;
+
+        // 1b. Enforce Wasm memory page limit
+        Self::check_memory_limits(&module)?;
 
         // 2. Build chain state snapshots
         // Collect addresses from storage keys, context, etc.
@@ -255,11 +378,13 @@ impl VmEngine {
         chain_state: Arc<dyn ChainState>,
         contract_code: Arc<BTreeMap<[u8; 32], Vec<u8>>>,
     ) -> Result<ExecutionResult, VmError> {
-        // 1. Compile
+        // 1. Compile (with module cache)
         let compiler = Singlepass::new();
         let mut store = Store::new(compiler);
-        let module =
-            Module::new(&store, code).map_err(|e| VmError::CompilationFailed(e.to_string()))?;
+        let module = self.load_module(&store, code)?;
+
+        // 1b. Enforce Wasm memory page limit
+        Self::check_memory_limits(&module)?;
 
         // 2. Build chain state snapshots for balance/agent queries
         let mut all_addresses: Vec<[u8; 32]> = Vec::new();

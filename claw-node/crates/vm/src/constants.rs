@@ -27,3 +27,11 @@ pub const MAX_CALL_DEPTH: u32 = 4;
 pub const CROSS_CALL_BASE_FUEL: u64 = 200_000;
 /// Maximum byte length of return data from a cross-contract call (16 KB).
 pub const MAX_CROSS_CALL_RETURN_SIZE: usize = 16 * 1024;
+
+// ---------------------------------------------------------------------------
+// Wasm memory limits
+// ---------------------------------------------------------------------------
+
+/// Maximum number of Wasm memory pages a contract may declare or grow to.
+/// 256 pages * 64 KB/page = 16 MB.
+pub const MAX_WASM_MEMORY_PAGES: u32 = 256;

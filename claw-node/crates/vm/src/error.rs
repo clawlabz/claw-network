@@ -22,4 +22,6 @@ pub enum VmError {
     CodeTooLarge { size: usize, max: usize },
     #[error("contract aborted: {reason} (fuel consumed: {fuel_consumed})")]
     ContractAbort { reason: String, fuel_consumed: u64 },
+    #[error("wasm memory limit exceeded: {pages} pages requested (max {max})")]
+    MemoryLimitExceeded { pages: u32, max: u32 },
 }
