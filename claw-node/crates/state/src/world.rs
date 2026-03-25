@@ -105,6 +105,9 @@ pub struct WorldState {
     /// Miner heartbeat deduplication tracker: (address, interval_window) → true.
     pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
     /// Transaction receipts: tx_hash → receipt (populated for contract txs).
+    /// Skipped from borsh serialization — receipts are an in-memory runtime
+    /// cache rebuilt per block, not persisted to the chain state DB.
+    #[borsh(skip)]
     pub receipts: BTreeMap<[u8; 32], claw_types::TransactionReceipt>,
 }
 
