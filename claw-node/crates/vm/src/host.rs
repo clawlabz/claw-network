@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use wasmer::{AsStoreRef, FunctionEnvMut, Memory, RuntimeError};
 
 use crate::constants::*;
 use crate::error::VmError;
-use crate::types::{ContractEvent, ExecutionContext};
+use crate::types::{ChainState, ContractEvent, ExecutionContext};
 
 /// Maximum buffer size for guest-provided lengths in host functions (64 KB).
 /// Prevents a malicious contract from requesting an unbounded allocation.
@@ -39,6 +39,17 @@ pub struct HostEnv {
     pub fuel_consumed: Arc<Mutex<u64>>,
     /// Fuel limit for error reporting.
     pub fuel_limit: u64,
+    // -- Cross-contract call support --
+    /// Chain state snapshot for nested contract lookups.
+    pub chain_state: Option<Arc<dyn ChainState>>,
+    /// Contract bytecode cache for nested execution.
+    pub contract_code: Arc<BTreeMap<[u8; 32], Vec<u8>>>,
+    /// Return data from the last cross-contract call.
+    pub last_cross_call_return: Arc<Mutex<Vec<u8>>>,
+    /// Current call depth (mirrors context.call_depth).
+    pub call_depth: u32,
+    /// Shared reentrancy mutex (same Arc across the entire call stack).
+    pub executing_contracts: Arc<Mutex<HashSet<[u8; 32]>>>,
 }
 
 impl HostEnv {
@@ -504,6 +515,214 @@ pub fn host_emit_event(
 
     events.push(ContractEvent { topic, data });
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cross-contract call host functions
+// ---------------------------------------------------------------------------
+
+/// Call another contract synchronously.
+///
+/// Returns:
+/// -  0 on success (return data accessible via `cross_call_return_data`)
+/// - -1 on failure (child reverted, contract not found, etc.)
+/// - -2 on reentrancy violation
+/// - -3 on max call depth exceeded
+pub fn host_call_contract(
+    mut env: FunctionEnvMut<HostEnv>,
+    addr_ptr: u32,
+    method_ptr: u32,
+    method_len: u32,
+    args_ptr: u32,
+    args_len: u32,
+    value_lo: i64,
+    value_hi: i64,
+) -> Result<i32, RuntimeError> {
+    check_fuel(&env, CROSS_CALL_BASE_FUEL)?;
+
+    // Read-only mode disallows cross-contract calls (they can mutate state)
+    if env.data().context.read_only {
+        return Err(RuntimeError::new(
+            "cross-contract call not allowed in read-only (view) call",
+        ));
+    }
+
+    // 1. Read target address
+    let addr_bytes = read_bytes(&env, addr_ptr, 32)
+        .map_err(|e| RuntimeError::new(format!("call_contract: bad address: {e}")))?;
+    let mut target_addr = [0u8; 32];
+    target_addr.copy_from_slice(&addr_bytes);
+
+    // 2. Check call depth
+    let call_depth = env.data().call_depth;
+    if call_depth >= MAX_CALL_DEPTH {
+        return Ok(-3);
+    }
+
+    // 3. Check reentrancy mutex
+    {
+        let executing = env.data().executing_contracts.lock().unwrap();
+        if executing.contains(&target_addr) {
+            return Ok(-2); // reentrancy rejected
+        }
+    }
+
+    // 4. Read method name and args from guest memory
+    let method_bytes = read_bytes(&env, method_ptr, method_len)
+        .map_err(|e| RuntimeError::new(format!("call_contract: bad method: {e}")))?;
+    let method = String::from_utf8(method_bytes)
+        .map_err(|_| RuntimeError::new("call_contract: method name is not valid UTF-8"))?;
+
+    let args = if args_len > 0 {
+        read_bytes(&env, args_ptr, args_len)
+            .map_err(|e| RuntimeError::new(format!("call_contract: bad args: {e}")))?
+    } else {
+        Vec::new()
+    };
+
+    let value = (value_lo as u64 as u128) | ((value_hi as u64 as u128) << 64);
+
+    // 5. Look up target contract code
+    let code = {
+        let env_data = env.data();
+        env_data.contract_code.get(&target_addr).cloned()
+    };
+    let code = match code {
+        Some(c) => c,
+        None => return Ok(-1), // contract not found
+    };
+
+    // 6. Add target to reentrancy mutex
+    env.data().executing_contracts.lock().unwrap().insert(target_addr);
+
+    // 7. Compute forwarded fuel (remaining - base cost already deducted)
+    let child_fuel = {
+        let remaining = *env.data().fuel_remaining.lock().unwrap();
+        remaining // base cost already deducted by check_fuel above
+    };
+
+    // 8. Build child execution context
+    let env_data = env.data();
+    let caller_contract = env_data.context.contract_address;
+    let child_ctx = ExecutionContext {
+        caller: caller_contract,
+        contract_address: target_addr,
+        block_height: env_data.context.block_height,
+        block_timestamp: env_data.context.block_timestamp,
+        value,
+        fuel_limit: child_fuel,
+        read_only: false,
+        call_depth: call_depth + 1,
+        executing_contracts: env_data.executing_contracts.clone(),
+    };
+
+    // 9. Build child storage (empty — child reads via host functions from chain_state)
+    let child_storage: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+
+    let chain_state_arc = env_data.chain_state.clone();
+
+    // Release the shared reference before executing child
+    let _ = env_data;
+
+    // 10. Execute child contract in a separate thread.
+    // Wasmer Singlepass generates native code on the thread stack. Nested
+    // Singlepass executions on the same thread can deadlock, so we spawn
+    // a child thread and wait for the result.
+    let child_result = if let Some(cs) = chain_state_arc {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let code_owned = code;
+        let method_owned = method;
+        let args_owned = args;
+        std::thread::spawn(move || {
+            let engine = crate::engine::VmEngine::new();
+            let result = engine.execute(
+                &code_owned, &method_owned, &args_owned,
+                child_ctx, child_storage, cs.as_ref(),
+            );
+            let _ = tx.send(result);
+        });
+        // Wait with a timeout to prevent indefinite blocking.
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or(Err(crate::error::VmError::ExecutionFailed(
+                "cross-contract call timed out".to_string(),
+            )))
+    } else {
+        // No chain state — remove target from mutex and return failure
+        env.data_mut().executing_contracts.lock().unwrap().remove(&target_addr);
+        return Ok(-1);
+    };
+
+    // 11. Remove target from reentrancy mutex
+    env.data_mut().executing_contracts.lock().unwrap().remove(&target_addr);
+
+    // 12. Deduct child's fuel consumption from parent's remaining fuel
+    match &child_result {
+        Ok(result) => {
+            let child_consumed = result.fuel_consumed;
+            let data = env.data();
+            // Deduct child fuel from parent — single lock acquisition to avoid deadlock
+            {
+                let mut remaining = data.fuel_remaining.lock().unwrap();
+                let deduct = child_consumed.min(*remaining);
+                *remaining -= deduct;
+            }
+            *data.fuel_consumed.lock().unwrap() += child_consumed;
+
+            // Merge child state into parent
+            // Storage changes: tagged with target contract address
+            // (parent's handler will apply them to the correct contract)
+            for (key, val) in &result.storage_changes {
+                data.storage_changes.lock().unwrap().push((key.clone(), val.clone()));
+            }
+
+            // Transfers
+            data.transfers.lock().unwrap().extend(result.transfers.iter().cloned());
+
+            // Events
+            data.events.lock().unwrap().extend(result.events.iter().cloned());
+
+            // Store return data for retrieval
+            *data.last_cross_call_return.lock().unwrap() = result.return_data.clone();
+            Ok(0) // success
+        }
+        Err(_) => {
+            // Child failed — discard its state, deduct fuel if available
+            if let Err(VmError::OutOfFuel { used, .. }) = &child_result {
+                let data = env.data();
+                {
+                    let mut remaining = data.fuel_remaining.lock().unwrap();
+                    let deduct = (*used).min(*remaining);
+                    *remaining -= deduct;
+                }
+                *data.fuel_consumed.lock().unwrap() += *used;
+            }
+            *env.data().last_cross_call_return.lock().unwrap() = Vec::new();
+            Ok(-1) // child failed
+        }
+    }
+}
+
+/// Read the return data from the last cross-contract call.
+///
+/// Writes the data to `out_ptr` in guest memory.
+/// Returns the byte length of the data, or 0 if no data.
+pub fn host_cross_call_return_data(
+    env: FunctionEnvMut<HostEnv>,
+    out_ptr: u32,
+) -> Result<i32, RuntimeError> {
+    check_fuel(&env, HOST_CALL_BASE_FUEL)?;
+
+    let data = env.data().last_cross_call_return.lock().unwrap().clone();
+    if data.is_empty() {
+        return Ok(0);
+    }
+    if data.len() > MAX_CROSS_CALL_RETURN_SIZE {
+        return Ok(-1); // return data too large
+    }
+    match write_bytes(&env, out_ptr, &data) {
+        Ok(()) => Ok(data.len() as i32),
+        Err(_) => Ok(-1),
+    }
 }
 
 // ---------------------------------------------------------------------------

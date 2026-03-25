@@ -28,6 +28,9 @@ impl ChainState for TestChainState {
     fn get_contract_storage(&self, _: &[u8; 32], _: &[u8]) -> Option<Vec<u8>> {
         None
     }
+    fn get_contract_code(&self, _contract: &[u8; 32]) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -35,15 +38,15 @@ impl ChainState for TestChainState {
 // ---------------------------------------------------------------------------
 
 fn make_context() -> ExecutionContext {
-    ExecutionContext {
-        caller: [0u8; 32],
-        contract_address: [1u8; 32],
-        block_height: 10,
-        block_timestamp: 1_000_000,
-        value: 0,
-        fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-        read_only: false,
-    }
+    ExecutionContext::new_top_level(
+        [0u8; 32],
+        [1u8; 32],
+        10,
+        1_000_000,
+        0,
+        claw_vm::DEFAULT_FUEL_LIMIT,
+        false,
+    )
 }
 
 fn compile_wat(src: &str) -> Vec<u8> {

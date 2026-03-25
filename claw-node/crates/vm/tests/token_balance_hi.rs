@@ -33,6 +33,9 @@ impl ChainState for TestChainState {
     fn get_contract_storage(&self, _: &[u8; 32], _: &[u8]) -> Option<Vec<u8>> {
         None
     }
+    fn get_contract_code(&self, _contract: &[u8; 32]) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -40,15 +43,15 @@ impl ChainState for TestChainState {
 // ---------------------------------------------------------------------------
 
 fn make_context(contract_address: [u8; 32]) -> ExecutionContext {
-    ExecutionContext {
-        caller: [0u8; 32],
+    ExecutionContext::new_top_level(
+        [0u8; 32],
         contract_address,
-        block_height: 1,
-        block_timestamp: 0,
-        value: 0,
-        fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-        read_only: false,
-    }
+        1,
+        0,
+        0,
+        claw_vm::DEFAULT_FUEL_LIMIT,
+        false,
+    )
 }
 
 /// Compile WAT source to Wasm bytes using the `wat` crate.

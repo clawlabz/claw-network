@@ -556,4 +556,8 @@ impl claw_vm::ChainState for WorldState {
             .get(&(*contract, key.to_vec()))
             .cloned()
     }
+
+    fn get_contract_code(&self, contract: &[u8; 32]) -> Option<Vec<u8>> {
+        self.contract_code.get(contract).cloned()
+    }
 }

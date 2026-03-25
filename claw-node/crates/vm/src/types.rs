@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +66,38 @@ pub struct ExecutionContext {
     /// When `true`, any host function that mutates state (storage write/delete,
     /// token transfer) will trap immediately.  Used for view calls.
     pub read_only: bool,
+    /// Current nesting depth for cross-contract calls (0 = top-level).
+    pub call_depth: u32,
+    /// MANDATORY reentrancy mutex: set of contract addresses currently on the
+    /// call stack.  Any reentrant call (A→B→A) is rejected immediately.
+    pub executing_contracts: Arc<std::sync::Mutex<HashSet<[u8; 32]>>>,
+}
+
+impl ExecutionContext {
+    /// Create a new top-level execution context (call_depth = 0, empty mutex).
+    pub fn new_top_level(
+        caller: [u8; 32],
+        contract_address: [u8; 32],
+        block_height: u64,
+        block_timestamp: u64,
+        value: u128,
+        fuel_limit: u64,
+        read_only: bool,
+    ) -> Self {
+        let executing = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        executing.lock().unwrap().insert(contract_address);
+        Self {
+            caller,
+            contract_address,
+            block_height,
+            block_timestamp,
+            value,
+            fuel_limit,
+            read_only,
+            call_depth: 0,
+            executing_contracts: executing,
+        }
+    }
 }
 
 /// Read-only chain state interface for the VM.
@@ -71,4 +106,22 @@ pub trait ChainState: Send + Sync {
     fn get_agent_score(&self, address: &[u8; 32]) -> u64;
     fn get_agent_registered(&self, address: &[u8; 32]) -> bool;
     fn get_contract_storage(&self, contract: &[u8; 32], key: &[u8]) -> Option<Vec<u8>>;
+    /// Retrieve compiled Wasm bytecode for a deployed contract.
+    /// Required for cross-contract calls.
+    fn get_contract_code(&self, contract: &[u8; 32]) -> Option<Vec<u8>>;
+}
+
+/// Result of a cross-contract call, used to merge child state into parent.
+#[derive(Debug, Clone, Default)]
+pub struct CrossCallResult {
+    pub success: bool,
+    pub return_data: Vec<u8>,
+    pub fuel_consumed: u64,
+    /// Storage changes keyed by (contract_address, key, value).
+    /// `None` value means deletion.
+    pub storage_changes: Vec<([u8; 32], Vec<u8>, Option<Vec<u8>>)>,
+    /// Token transfers: (recipient, amount).
+    pub transfers: Vec<([u8; 32], u128)>,
+    /// Events emitted by the child contract.
+    pub events: Vec<ContractEvent>,
 }

@@ -49,6 +49,8 @@ struct ChainStateSnapshot {
     agent_scores: std::collections::BTreeMap<[u8; 32], u64>,
     registered_agents: std::collections::BTreeSet<[u8; 32]>,
     contract_storage: std::collections::BTreeMap<[u8; 32], std::collections::BTreeMap<Vec<u8>, Vec<u8>>>,
+    /// Contract bytecode cache for cross-contract calls.
+    contract_code: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
 }
 
 impl ChainStateSnapshot {
@@ -75,6 +77,7 @@ impl ChainStateSnapshot {
             agent_scores,
             registered_agents,
             contract_storage: std::collections::BTreeMap::new(),
+            contract_code: std::collections::BTreeMap::new(),
         }
     }
 
@@ -86,6 +89,8 @@ impl ChainStateSnapshot {
         // previously only caller+contract were captured, causing any third-party
         // balance query (e.g., Arena Pool checking a player's balance) to return 0.
         snapshot.balances = state.balances.clone();
+        // Clone contract code for cross-contract call support.
+        snapshot.contract_code = state.contract_code.clone();
         snapshot
     }
 }
@@ -104,6 +109,9 @@ impl claw_vm::ChainState for ChainStateSnapshot {
         self.contract_storage
             .get(contract)
             .and_then(|m| m.get(key).cloned())
+    }
+    fn get_contract_code(&self, contract: &[u8; 32]) -> Option<Vec<u8>> {
+        self.contract_code.get(contract).cloned()
     }
 }
 
@@ -151,11 +159,18 @@ fn execute_with_timeout(
     // Clone the Arc so the guard can be moved into the thread.
     let permit_counter = Arc::clone(vm_concurrency_counter());
 
+    // Build contract code map and Arc<dyn ChainState> for cross-contract calls.
+    let contract_code_map = std::sync::Arc::new(snapshot.contract_code.clone());
+    let chain_state_arc: std::sync::Arc<dyn claw_vm::ChainState> = std::sync::Arc::new(snapshot);
+
     std::thread::spawn(move || {
         // Guard releases the permit when this thread completes or panics.
         let _permit = VmPermitGuard { counter: permit_counter };
         let engine = claw_vm::VmEngine::new();
-        let result = engine.execute(&code, &method, &args, ctx, storage, &snapshot);
+        let result = engine.execute_with_cross_calls(
+            &code, &method, &args, ctx, storage,
+            chain_state_arc, contract_code_map,
+        );
         // Ignore send error — receiver may have timed out and been dropped
         let _ = tx.send(result);
     });
@@ -466,15 +481,15 @@ pub fn handle_contract_deploy(
     // If init_method is specified, run the constructor and validate all
     // side-effects BEFORE committing anything to state.
     if !payload.init_method.is_empty() {
-        let ctx = claw_vm::ExecutionContext {
-            caller: tx.from,
+        let ctx = claw_vm::ExecutionContext::new_top_level(
+            tx.from,
             contract_address,
-            block_height: state.block_height,
-            block_timestamp: state.block_timestamp,
-            value: 0,
-            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-            read_only: false,
-        };
+            state.block_height,
+            state.block_timestamp,
+            0,
+            claw_vm::DEFAULT_FUEL_LIMIT,
+            false,
+        );
 
         // Empty storage for a freshly deployed contract
         let storage = std::collections::BTreeMap::new();
@@ -606,15 +621,15 @@ pub fn handle_contract_call(
         .map(|((_, key), value)| (key.clone(), value.clone()))
         .collect();
 
-    let ctx = claw_vm::ExecutionContext {
-        caller: tx.from,
-        contract_address: payload.contract,
-        block_height: state.block_height,
-        block_timestamp: state.block_timestamp,
-        value: payload.value,
-        fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-        read_only: false,
-    };
+    let ctx = claw_vm::ExecutionContext::new_top_level(
+        tx.from,
+        payload.contract,
+        state.block_height,
+        state.block_timestamp,
+        payload.value,
+        claw_vm::DEFAULT_FUEL_LIMIT,
+        false,
+    );
 
     let engine = claw_vm::VmEngine::new();
     let result = execute_with_timeout(
@@ -1379,15 +1394,15 @@ pub fn handle_contract_upgrade_execute(
             .map(|((_, key), value)| (key.clone(), value.clone()))
             .collect();
 
-        let ctx = claw_vm::ExecutionContext {
-            caller: tx.from,
-            contract_address: payload.contract,
-            block_height: state.block_height,
-            block_timestamp: state.block_timestamp,
-            value: 0,
-            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-            read_only: false,
-        };
+        let ctx = claw_vm::ExecutionContext::new_top_level(
+            tx.from,
+            payload.contract,
+            state.block_height,
+            state.block_timestamp,
+            0,
+            claw_vm::DEFAULT_FUEL_LIMIT,
+            false,
+        );
 
         let result = execute_with_timeout(
             &engine,

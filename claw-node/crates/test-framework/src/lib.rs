@@ -184,15 +184,15 @@ impl TestEnv {
         let contract_address = VmEngine::derive_contract_address(&deployer, nonce);
 
         // 3. Build execution context for init.
-        let context = ExecutionContext {
-            caller: deployer,
+        let context = ExecutionContext::new_top_level(
+            deployer,
             contract_address,
-            block_height: self.block_height,
-            block_timestamp: self.block_timestamp,
-            value: 0,
-            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-            read_only: false,
-        };
+            self.block_height,
+            self.block_timestamp,
+            0,
+            claw_vm::DEFAULT_FUEL_LIMIT,
+            false,
+        );
 
         // Snapshot current contract storage for this contract (empty at deploy time).
         let storage_snapshot = self.contract_storage_snapshot(contract_address);
@@ -262,15 +262,15 @@ impl TestEnv {
         }
 
         // Build context.
-        let context = ExecutionContext {
+        let context = ExecutionContext::new_top_level(
             caller,
-            contract_address: contract,
-            block_height: self.block_height,
-            block_timestamp: self.block_timestamp,
+            contract,
+            self.block_height,
+            self.block_timestamp,
             value,
-            fuel_limit: claw_vm::DEFAULT_FUEL_LIMIT,
-            read_only: false,
-        };
+            claw_vm::DEFAULT_FUEL_LIMIT,
+            false,
+        );
 
         // Snapshot current storage for this contract.
         let storage_snapshot = self.contract_storage_snapshot(contract);
@@ -386,9 +386,11 @@ impl ChainState for TestChainState {
     }
 
     fn get_contract_storage(&self, _contract: &[u8; 32], _key: &[u8]) -> Option<Vec<u8>> {
-        // The engine resolves storage via the snapshot passed to `execute`,
-        // not via this trait method (which is only used for cross-contract
-        // queries — not yet supported in the test framework).
+        None
+    }
+
+    fn get_contract_code(&self, _contract: &[u8; 32]) -> Option<Vec<u8>> {
+        // Test framework doesn't yet support cross-contract code lookup.
         None
     }
 }

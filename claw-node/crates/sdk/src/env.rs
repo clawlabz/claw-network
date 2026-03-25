@@ -30,6 +30,13 @@ extern "C" {
     fn return_data(ptr: u32, len: u32);
     fn abort(ptr: u32, len: u32);
     fn emit_event(topic_ptr: u32, topic_len: u32, data_ptr: u32, data_len: u32);
+    fn call_contract(
+        addr_ptr: u32,
+        method_ptr: u32, method_len: u32,
+        args_ptr: u32, args_len: u32,
+        value_lo: i64, value_hi: i64,
+    ) -> i32;
+    fn cross_call_return_data(out_ptr: u32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +175,62 @@ pub fn emit_event_raw(topic: &str, data: &[u8]) {
             data.len() as u32,
         )
     }
+}
+
+/// Maximum buffer size for cross-contract call return data (16 KB).
+const CROSS_CALL_RETURN_BUF: usize = 16 * 1024;
+
+/// Call another deployed contract synchronously.
+///
+/// Returns `Ok(return_data)` on success, or an `Err` variant on failure:
+/// - `Err(CrossCallError::Failed)` — child contract reverted or not found
+/// - `Err(CrossCallError::Reentrancy)` — reentrancy detected (A→B→A)
+/// - `Err(CrossCallError::MaxDepth)` — call depth exceeded (max 4)
+pub fn call_contract_invoke(
+    address: &[u8; 32],
+    method: &str,
+    args: &[u8],
+    value: u128,
+) -> Result<Vec<u8>, CrossCallError> {
+    let lo = value as i64;
+    let hi = (value >> 64) as i64;
+    let result = unsafe {
+        call_contract(
+            address.as_ptr() as u32,
+            method.as_ptr() as u32,
+            method.len() as u32,
+            args.as_ptr() as u32,
+            args.len() as u32,
+            lo,
+            hi,
+        )
+    };
+    match result {
+        0 => {
+            // Success — read return data
+            let mut buf = vec![0u8; CROSS_CALL_RETURN_BUF];
+            let len = unsafe { cross_call_return_data(buf.as_mut_ptr() as u32) };
+            if len < 0 {
+                return Ok(Vec::new());
+            }
+            buf.truncate(len as usize);
+            Ok(buf)
+        }
+        -2 => Err(CrossCallError::Reentrancy),
+        -3 => Err(CrossCallError::MaxDepth),
+        _ => Err(CrossCallError::Failed),
+    }
+}
+
+/// Errors from cross-contract calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossCallError {
+    /// Child contract reverted or was not found.
+    Failed,
+    /// Reentrancy detected (contract A called B which tried to call A).
+    Reentrancy,
+    /// Maximum call depth exceeded (4 levels).
+    MaxDepth,
 }
 
 /// Abort execution with an error message.

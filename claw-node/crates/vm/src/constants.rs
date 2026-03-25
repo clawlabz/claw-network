@@ -15,3 +15,15 @@ pub const EVENT_EMIT_FUEL: u64 = 20_000;
 pub const MAX_EVENTS_PER_EXECUTION: usize = 50;
 /// Maximum byte length of the `data` payload in a single event.
 pub const MAX_EVENT_DATA_SIZE: usize = 4096;
+
+// ---------------------------------------------------------------------------
+// Cross-contract call constants
+// ---------------------------------------------------------------------------
+
+/// Maximum nested call depth (A calls B calls C calls D = depth 4).
+pub const MAX_CALL_DEPTH: u32 = 4;
+/// Base fuel cost charged for each cross-contract call before forwarding
+/// remaining fuel to the callee.
+pub const CROSS_CALL_BASE_FUEL: u64 = 200_000;
+/// Maximum byte length of return data from a cross-contract call (16 KB).
+pub const MAX_CROSS_CALL_RETURN_SIZE: usize = 16 * 1024;

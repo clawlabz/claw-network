@@ -1556,15 +1556,15 @@ impl Chain {
 
         drop(inner); // Release lock before VM execution
 
-        let ctx = claw_vm::ExecutionContext {
-            caller: [0u8; 32],
-            contract_address: *addr,
+        let ctx = claw_vm::ExecutionContext::new_top_level(
+            [0u8; 32],
+            *addr,
             block_height,
             block_timestamp,
-            value: 0,
-            fuel_limit: claw_vm::VIEW_CALL_FUEL_LIMIT,
-            read_only: true,
-        };
+            0,
+            claw_vm::VIEW_CALL_FUEL_LIMIT,
+            true,
+        );
 
         // Execute with timeout to prevent infinite-loop contracts from blocking
         let method_owned = method.to_string();
@@ -1820,5 +1820,11 @@ impl claw_vm::ChainState for ChainStateSnapshot {
         self.contract_storage
             .get(&(*contract, key.to_vec()))
             .cloned()
+    }
+
+    fn get_contract_code(&self, _contract: &[u8; 32]) -> Option<Vec<u8>> {
+        // View calls are read-only and cross-contract calls are blocked,
+        // so we don't need to look up contract code here.
+        None
     }
 }

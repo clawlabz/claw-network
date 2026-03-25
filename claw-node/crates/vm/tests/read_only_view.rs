@@ -33,6 +33,9 @@ impl ChainState for TestChainState {
     fn get_contract_storage(&self, _: &[u8; 32], _: &[u8]) -> Option<Vec<u8>> {
         None
     }
+    fn get_contract_code(&self, _contract: &[u8; 32]) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -40,27 +43,27 @@ impl ChainState for TestChainState {
 // ---------------------------------------------------------------------------
 
 fn make_context_rw() -> ExecutionContext {
-    ExecutionContext {
-        caller: [0u8; 32],
-        contract_address: [1u8; 32],
-        block_height: 1,
-        block_timestamp: 0,
-        value: 0,
-        fuel_limit: DEFAULT_FUEL_LIMIT,
-        read_only: false,
-    }
+    ExecutionContext::new_top_level(
+        [0u8; 32],
+        [1u8; 32],
+        1,
+        0,
+        0,
+        DEFAULT_FUEL_LIMIT,
+        false,
+    )
 }
 
 fn make_context_view() -> ExecutionContext {
-    ExecutionContext {
-        caller: [0u8; 32],
-        contract_address: [1u8; 32],
-        block_height: 1,
-        block_timestamp: 0,
-        value: 0,
-        fuel_limit: VIEW_CALL_FUEL_LIMIT,
-        read_only: true,
-    }
+    ExecutionContext::new_top_level(
+        [0u8; 32],
+        [1u8; 32],
+        1,
+        0,
+        0,
+        VIEW_CALL_FUEL_LIMIT,
+        true,
+    )
 }
 
 fn compile_wat(src: &str) -> Vec<u8> {
@@ -280,15 +283,15 @@ fn test_view_call_fuel_limit_is_5_million() {
 fn test_read_only_defaults_to_false_semantically() {
     // The context built by existing callers sets read_only: false.
     // A write operation must succeed.
-    let ctx = ExecutionContext {
-        caller: [0u8; 32],
-        contract_address: [1u8; 32],
-        block_height: 1,
-        block_timestamp: 0,
-        value: 0,
-        fuel_limit: DEFAULT_FUEL_LIMIT,
-        read_only: false, // explicit — mirrors what existing callers set
-    };
+    let ctx = ExecutionContext::new_top_level(
+        [0u8; 32],
+        [1u8; 32],
+        1,
+        0,
+        0,
+        DEFAULT_FUEL_LIMIT,
+        false, // explicit — mirrors what existing callers set
+    );
 
     let wasm = compile_wat(CONTRACT_ALL_OPS);
     let engine = VmEngine::new();
