@@ -31,7 +31,11 @@ enum Commands {
     },
 
     /// Build the contract Wasm (run inside a contract project)
-    Build,
+    Build {
+        /// Run wasm-opt -Oz to minimize the output binary
+        #[arg(long)]
+        optimize: bool,
+    },
 
     /// Deploy a compiled Wasm contract to the chain
     Deploy {
@@ -82,6 +86,35 @@ enum Commands {
 
     /// Start a single-node local devnet for development
     Devnet,
+
+    /// Verify a deployed contract by rebuilding from source and comparing hashes
+    Verify {
+        /// Contract address (64-char hex, with or without 0x prefix)
+        contract: String,
+
+        /// Path to the contract source directory (must contain Cargo.toml)
+        #[arg(long)]
+        source: PathBuf,
+
+        /// JSON-RPC endpoint URL
+        #[arg(long, default_value = "https://testnet-rpc.clawlabz.xyz")]
+        rpc: String,
+    },
+
+    /// Disassemble Wasm bytecode to WAT text format
+    #[command(alias = "wat")]
+    Disassemble {
+        /// Contract address (64-char hex) OR path to a local .wasm file
+        target: String,
+
+        /// JSON-RPC endpoint URL (used when target is a contract address)
+        #[arg(long, default_value = "https://testnet-rpc.clawlabz.xyz")]
+        rpc: String,
+
+        /// Write output to a file instead of stdout
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -90,7 +123,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::New { name } => cmd_new(&name),
-        Commands::Build => cmd_build(),
+        Commands::Build { optimize } => cmd_build(optimize),
         Commands::Deploy { wasm_file, method, args, rpc, key } => {
             cmd_deploy(&wasm_file, &method, &args, &rpc, &key).await
         }
@@ -98,6 +131,12 @@ async fn main() -> Result<()> {
             cmd_call(&contract, &method, &args, value, &rpc, &key).await
         }
         Commands::Devnet => cmd_devnet(),
+        Commands::Verify { contract, source, rpc } => {
+            cmd_verify(&contract, &source, &rpc).await
+        }
+        Commands::Disassemble { target, rpc, output } => {
+            cmd_disassemble(&target, &rpc, output.as_deref()).await
+        }
     }
 }
 
@@ -114,7 +153,7 @@ fn cmd_new(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_build() -> Result<()> {
+fn cmd_build(optimize: bool) -> Result<()> {
     // Determine project name from Cargo.toml in current directory
     let cargo_toml_path = Path::new("Cargo.toml");
     if !cargo_toml_path.exists() {
@@ -144,28 +183,68 @@ fn cmd_build() -> Result<()> {
         "target/wasm32-unknown-unknown/release/{wasm_name}.wasm"
     );
 
-    // Report size
-    if let Ok(meta) = std::fs::metadata(&wasm_path) {
-        let kb = meta.len() / 1024;
-        println!("Built: {wasm_path} ({kb}KB)");
+    // Report build size
+    let size_before = std::fs::metadata(&wasm_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if size_before > 0 {
+        println!("Built: {wasm_path} ({}KB)", size_before / 1024);
     } else {
         println!("Built: {wasm_path}");
     }
 
-    // Try wasm-opt (optional)
-    let wasm_opt = std::process::Command::new("wasm-opt")
-        .args(["-Oz", "--output", &wasm_path, &wasm_path])
+    // Wasm optimization pass (opt-in via --optimize)
+    if optimize {
+        run_wasm_opt(&wasm_path, size_before)?;
+    }
+
+    Ok(())
+}
+
+/// Run `wasm-opt -Oz` on the compiled wasm and report size savings.
+fn run_wasm_opt(wasm_path: &str, size_before: u64) -> Result<()> {
+    let optimized_path = format!("{wasm_path}.opt");
+
+    let wasm_opt_result = std::process::Command::new("wasm-opt")
+        .args(["-Oz", wasm_path, "-o", &optimized_path])
         .status();
 
-    match wasm_opt {
+    match wasm_opt_result {
         Ok(s) if s.success() => {
-            if let Ok(meta) = std::fs::metadata(&wasm_path) {
-                let kb = meta.len() / 1024;
-                println!("Optimized with wasm-opt: {wasm_path} ({kb}KB)");
+            // Replace original with optimized
+            std::fs::rename(&optimized_path, wasm_path)
+                .context("replacing wasm with optimized version")?;
+
+            let size_after = std::fs::metadata(wasm_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            println!("Optimized: {wasm_path} ({}KB)", size_after / 1024);
+
+            if size_before > 0 && size_after > 0 {
+                let saved = size_before.saturating_sub(size_after);
+                let pct = (saved as f64 / size_before as f64) * 100.0;
+                println!(
+                    "  before: {}KB, after: {}KB, saved: {}KB ({:.1}%)",
+                    size_before / 1024,
+                    size_after / 1024,
+                    saved / 1024,
+                    pct,
+                );
             }
         }
-        Ok(_) => eprintln!("Warning: wasm-opt failed, skipping optimization"),
-        Err(_) => eprintln!("Warning: wasm-opt not found, skipping optimization"),
+        Ok(_) => {
+            // Clean up partial output
+            let _ = std::fs::remove_file(&optimized_path);
+            eprintln!("Warning: wasm-opt exited with error, skipping optimization");
+        }
+        Err(_) => {
+            eprintln!(
+                "Warning: wasm-opt not found. Install it to enable optimization:\n  \
+                 brew install binaryen\n  \
+                 or: cargo install wasm-opt"
+            );
+        }
     }
 
     Ok(())
@@ -314,6 +393,128 @@ fn cmd_devnet() -> Result<()> {
                  cd claw-node && cargo build --release\n\
                  Or add it to your PATH."
             );
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_verify(contract_hex: &str, source_dir: &Path, rpc_url: &str) -> Result<()> {
+    let address = contract_hex
+        .strip_prefix("0x")
+        .unwrap_or(contract_hex);
+
+    // 1. Validate source directory
+    let cargo_toml = source_dir.join("Cargo.toml");
+    if !cargo_toml.exists() {
+        bail!(
+            "no Cargo.toml found in source directory: {}",
+            source_dir.display()
+        );
+    }
+
+    let cargo_toml_str =
+        std::fs::read_to_string(&cargo_toml).context("reading source Cargo.toml")?;
+    let pkg_name = extract_package_name(&cargo_toml_str)
+        .context("could not determine package name from source Cargo.toml")?;
+
+    // 2. Build the contract from source
+    println!("Building {pkg_name} from source...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--target", "wasm32-unknown-unknown", "--release"])
+        .current_dir(source_dir)
+        .status()
+        .context("running cargo build in source directory")?;
+
+    if !status.success() {
+        bail!("cargo build failed for source directory: {}", source_dir.display());
+    }
+
+    // 3. Locate and hash the compiled .wasm
+    let wasm_name = pkg_name.replace('-', "_");
+    let wasm_path = source_dir.join(format!(
+        "target/wasm32-unknown-unknown/release/{wasm_name}.wasm"
+    ));
+
+    if !wasm_path.exists() {
+        bail!("expected wasm output not found: {}", wasm_path.display());
+    }
+
+    let wasm_bytes =
+        std::fs::read(&wasm_path).context("reading compiled wasm")?;
+    let local_hash = blake3::hash(&wasm_bytes);
+    let local_hash_hex = hex::encode(local_hash.as_bytes());
+
+    println!(
+        "Local build: {} ({} bytes)",
+        wasm_path.display(),
+        wasm_bytes.len()
+    );
+    println!("Local hash:  {local_hash_hex}");
+
+    // 4. Fetch on-chain code hash
+    println!("Fetching on-chain contract info for {address}...");
+    let info = rpc::fetch_contract_info(rpc_url, address)
+        .await
+        .context("fetching contract info from chain")?;
+
+    let onchain_hash = &info.code_hash;
+    println!("On-chain hash: {onchain_hash}");
+
+    // 5. Compare
+    println!();
+    if local_hash_hex == *onchain_hash {
+        println!("Verified \u{2713}  Source matches on-chain bytecode.");
+        println!("  Contract: 0x{address}");
+        println!("  Creator:  0x{}", info.creator);
+        println!("  Deployed at block: {}", info.deployed_at);
+    } else {
+        println!("MISMATCH \u{2717}  Source does NOT match on-chain bytecode.");
+        println!("  Local:    {local_hash_hex}");
+        println!("  On-chain: {onchain_hash}");
+        println!();
+        println!("Possible causes:");
+        println!("  - Different Rust/toolchain version");
+        println!("  - Different source code");
+        println!("  - wasm-opt was applied to the deployed binary but not locally (or vice versa)");
+        bail!("verification failed: hash mismatch");
+    }
+
+    Ok(())
+}
+
+async fn cmd_disassemble(target: &str, rpc_url: &str, output: Option<&Path>) -> Result<()> {
+    // Determine if target is a file path or a contract address
+    let wasm_bytes = if Path::new(target).exists() {
+        // Local file
+        println!("Reading Wasm from file: {target}");
+        std::fs::read(target)
+            .with_context(|| format!("reading wasm file: {target}"))?
+    } else {
+        // Treat as contract address — fetch bytecode via RPC
+        let address = target.strip_prefix("0x").unwrap_or(target);
+        println!("Fetching bytecode for contract {address} from {rpc_url}...");
+        rpc::fetch_contract_code(rpc_url, address)
+            .await
+            .context("fetching contract bytecode")?
+    };
+
+    println!("Wasm size: {} bytes", wasm_bytes.len());
+    println!("Disassembling to WAT...");
+
+    // Convert Wasm to WAT
+    let wat = wasmprinter::print_bytes(&wasm_bytes)
+        .context("failed to disassemble Wasm to WAT")?;
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, &wat)
+                .with_context(|| format!("writing WAT to {}", path.display()))?;
+            println!("WAT written to {} ({} bytes)", path.display(), wat.len());
+        }
+        None => {
+            println!("--- WAT output ---");
+            println!("{wat}");
         }
     }
 

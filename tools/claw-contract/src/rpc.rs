@@ -156,6 +156,113 @@ pub async fn poll_confirmation(rpc_url: &str, tx_hash: &str, max_seconds: u64) -
     bail!("transaction not confirmed after {max_seconds}s: {tx_hash}");
 }
 
+/// Contract info returned by `claw_getContractInfo`.
+#[derive(Debug)]
+pub struct ContractInfo {
+    pub address: String,
+    pub code_hash: String,
+    pub creator: String,
+    pub deployed_at: u64,
+}
+
+/// Fetch contract info (address, codeHash, creator, deployedAt) via RPC.
+pub async fn fetch_contract_info(rpc_url: &str, address_hex: &str) -> Result<ContractInfo> {
+    let client = make_client()?;
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0",
+        method: "claw_getContractInfo",
+        params: json!([address_hex]),
+        id: 10,
+    };
+
+    let response: JsonRpcResponse = client
+        .post(rpc_url)
+        .json(&request)
+        .send()
+        .await
+        .context("sending claw_getContractInfo request")?
+        .json()
+        .await
+        .context("parsing claw_getContractInfo response")?;
+
+    if let Some(err) = response.error {
+        bail!("RPC error fetching contract info: {err}");
+    }
+
+    let result = response.result.context("claw_getContractInfo returned no result")?;
+    if result.is_null() {
+        bail!("contract not found at address {address_hex}");
+    }
+
+    let code_hash = result
+        .get("codeHash")
+        .and_then(|v| v.as_str())
+        .context("codeHash missing from response")?
+        .to_string();
+    let address = result
+        .get("address")
+        .and_then(|v| v.as_str())
+        .unwrap_or(address_hex)
+        .to_string();
+    let creator = result
+        .get("creator")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let deployed_at = result
+        .get("deployedAt")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Ok(ContractInfo {
+        address,
+        code_hash,
+        creator,
+        deployed_at,
+    })
+}
+
+/// Fetch contract Wasm bytecode via `claw_getContractCode`.
+/// Returns the raw bytes of the deployed Wasm.
+pub async fn fetch_contract_code(rpc_url: &str, address_hex: &str) -> Result<Vec<u8>> {
+    let client = make_client()?;
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0",
+        method: "claw_getContractCode",
+        params: json!([address_hex]),
+        id: 11,
+    };
+
+    let response: JsonRpcResponse = client
+        .post(rpc_url)
+        .json(&request)
+        .send()
+        .await
+        .context("sending claw_getContractCode request")?
+        .json()
+        .await
+        .context("parsing claw_getContractCode response")?;
+
+    if let Some(err) = response.error {
+        bail!("RPC error fetching contract code: {err}");
+    }
+
+    let result = response.result.context("claw_getContractCode returned no result")?;
+    if result.is_null() {
+        bail!("contract code not found at address {address_hex}");
+    }
+
+    let code_hex = result
+        .get("code")
+        .and_then(|v| v.as_str())
+        .context("code field missing from response")?;
+
+    let code_bytes = hex::decode(code_hex).context("invalid hex in contract code response")?;
+    Ok(code_bytes)
+}
+
 /// Borsh-serialize a SignedTransaction in the format the node expects.
 ///
 /// Node Transaction struct layout (borsh):
