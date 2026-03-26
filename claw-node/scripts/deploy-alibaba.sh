@@ -108,9 +108,23 @@ info "Deploying on server..."
 ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s" << REMOTE
 set -euo pipefail
 
-# Stop old process
+# CRITICAL: Stop FIRST, then backup. Copying redb while running produces corrupt files.
 pkill -f claw-node || true
-sleep 1
+sleep 3
+# Verify process fully stopped
+if pgrep -f claw-node >/dev/null 2>&1; then
+  echo "WARNING: claw-node still running, force killing..."
+  pkill -9 -f claw-node || true
+  sleep 2
+fi
+
+# Backup after clean stop
+DB="${DEPLOY_DIR}/chain.redb"
+if [ -f "\$DB" ]; then
+  BACKUP="/tmp/chain-aliyun-\$(date +%s).redb"
+  cp "\$DB" "\$BACKUP"
+  echo "==> Backed up chain.redb → \$BACKUP (\$(du -h "\$BACKUP" | cut -f1))"
+fi
 
 # Extract new binary
 tar xzf /tmp/${ARTIFACT} -C ${DEPLOY_DIR}/bin/
