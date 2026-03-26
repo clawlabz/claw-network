@@ -440,7 +440,13 @@ async fn main() -> Result<()> {
 
             // Devnet always allows genesis creation; mainnet/testnet require --allow-genesis flag.
             let effective_allow_genesis = allow_genesis || resolved_network == Network::Devnet;
-            let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes, &genesis_cfg, effective_allow_genesis)?;
+            let chain = chain::Chain::new(
+                &data_dir,
+                cfg.signing_key_bytes,
+                &genesis_cfg,
+                effective_allow_genesis,
+                net_cfg.chain_id,
+            )?;
 
             // Fast sync: enable state snapshot request on first peer connection
             if sync_mode == sync::SyncMode::Fast {

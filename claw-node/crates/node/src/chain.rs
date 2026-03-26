@@ -45,6 +45,8 @@ struct ChainInner {
     validator_set: ValidatorSet,
     /// Genesis block hash — used to verify state snapshots belong to the same chain.
     genesis_hash: [u8; 32],
+    /// Chain identifier (e.g. "claw-mainnet-1") — exposed via /health for deploy verification.
+    chain_id: String,
     /// Slashing state: jailed validators, evidence, missed slots.
     slashing: SlashingState,
     /// Pending votes for the latest block, keyed by voter address.
@@ -76,6 +78,7 @@ impl Chain {
         signing_key_bytes: [u8; 32],
         genesis_config: &GenesisConfig,
         allow_genesis: bool,
+        chain_id: &str,
     ) -> anyhow::Result<Self> {
         let db_path = data_dir.join("chain.redb");
         let store = ChainStore::open(&db_path)?;
@@ -218,6 +221,7 @@ impl Chain {
                 latest_block,
                 validator_set,
                 genesis_hash,
+                chain_id: chain_id.to_string(),
                 slashing,
                 pending_votes: std::collections::HashMap::new(),
                 offline_validators: Vec::new(),
@@ -1490,6 +1494,16 @@ impl Chain {
     /// Get current epoch.
     pub fn get_epoch(&self) -> u64 {
         self.inner.lock().expect("chain state mutex poisoned").validator_set.epoch
+    }
+
+    /// Get genesis block hash (hex-encoded).
+    pub fn get_genesis_hash(&self) -> String {
+        hex::encode(self.inner.lock().expect("chain state mutex poisoned").genesis_hash)
+    }
+
+    /// Get chain identifier (e.g. "claw-mainnet-1").
+    pub fn get_chain_id(&self) -> String {
+        self.inner.lock().expect("chain state mutex poisoned").chain_id.clone()
     }
 
     /// Get number of pending transactions in mempool.

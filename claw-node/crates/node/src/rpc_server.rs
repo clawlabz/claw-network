@@ -797,6 +797,8 @@ async fn handle_health(State(chain): State<Chain>) -> Json<Value> {
     let mempool_size = chain.get_mempool_size();
     let last_block_ts = chain.get_last_block_timestamp();
     let epoch = chain.get_epoch();
+    let chain_id = chain.get_chain_id();
+    let genesis_hash = chain.get_genesis_hash();
 
     // Consider unhealthy if last block is older than 60 seconds
     let block_age = now.saturating_sub(last_block_ts);
@@ -805,6 +807,8 @@ async fn handle_health(State(chain): State<Chain>) -> Json<Value> {
     Json(serde_json::json!({
         "status": status,
         "version": env!("CARGO_PKG_VERSION"),
+        "chain_id": chain_id,
+        "genesis_hash": genesis_hash,
         "height": height,
         "epoch": epoch,
         "peer_count": peer_count,
