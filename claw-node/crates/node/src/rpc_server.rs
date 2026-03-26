@@ -723,12 +723,30 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
                 (None, None)
             }
         }
+        claw_types::TxType::StakeDeposit => {
+            // payload = [amount: 16 bytes u128 LE][validator: 32 bytes][commission_bps: 2 bytes]
+            if tx.payload.len() >= 48 {
+                let amount = u128::from_le_bytes(tx.payload[..16].try_into().unwrap());
+                let validator: [u8; 32] = tx.payload[16..48].try_into().unwrap();
+                let to = if validator == [0u8; 32] { None } else { Some(validator) };
+                (to, Some(amount))
+            } else {
+                (None, None)
+            }
+        }
+        claw_types::TxType::StakeWithdraw => {
+            // payload = [amount: 16 bytes u128 LE]
+            if tx.payload.len() >= 16 {
+                let amount = u128::from_le_bytes(tx.payload[..16].try_into().unwrap());
+                (None, Some(amount))
+            } else {
+                (None, None)
+            }
+        }
         claw_types::TxType::AgentRegister
         | claw_types::TxType::TokenCreate
         | claw_types::TxType::ServiceRegister
         | claw_types::TxType::ContractDeploy
-        | claw_types::TxType::StakeDeposit
-        | claw_types::TxType::StakeWithdraw
         | claw_types::TxType::StakeClaim
         | claw_types::TxType::PlatformActivityReport
         | claw_types::TxType::TokenApprove
