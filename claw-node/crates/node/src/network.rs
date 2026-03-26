@@ -2,7 +2,7 @@
 
 use clap::ValueEnum;
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Network {
     /// Public mainnet
     Mainnet,

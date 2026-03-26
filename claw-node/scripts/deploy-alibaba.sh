@@ -138,8 +138,10 @@ else
 fi
 
 # Start node (NO init — preserves chain data)
+# NOTE: uses mainnet, NOT devnet. --allow-genesis is intentionally omitted
+# so the node refuses to start if chain.redb is missing/corrupt.
 nohup ${DEPLOY_DIR}/bin/claw-node start \
-  --network devnet \
+  --network mainnet \
   --rpc-port 9710 \
   > ${DEPLOY_DIR}/node.log 2>&1 &
 

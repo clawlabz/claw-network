@@ -66,10 +66,16 @@ impl Chain {
     ///
     /// Accepts a `GenesisConfig` that drives the initial state and validator set
     /// when no existing chain data is found on disk.
+    ///
+    /// `allow_genesis`: if `false`, the node will refuse to create a new genesis
+    /// when no existing chain data is found. This MUST be `false` for mainnet and
+    /// testnet to prevent accidentally starting a new chain on an empty database.
+    /// Only devnet (and explicit `claw-node init`) should set this to `true`.
     pub fn new(
         data_dir: &Path,
         signing_key_bytes: [u8; 32],
         genesis_config: &GenesisConfig,
+        allow_genesis: bool,
     ) -> anyhow::Result<Self> {
         let db_path = data_dir.join("chain.redb");
         let store = ChainStore::open(&db_path)?;
@@ -127,6 +133,16 @@ impl Chain {
                 (state, block, stakes, gen_hash)
             }
             None => {
+                if !allow_genesis {
+                    anyhow::bail!(
+                        "No existing chain data found in {:?}. \
+                         Refusing to create a new genesis on mainnet/testnet. \
+                         If you intend to initialize a fresh node, run: \
+                         claw-node init --network <network> && claw-node start --network <network> --allow-genesis",
+                        db_path,
+                    );
+                }
+
                 let state = genesis::create_genesis_state(genesis_config)?;
                 let block = genesis::create_genesis_block(&state, genesis_config);
                 let gen_hash = block.hash;

@@ -68,6 +68,11 @@ enum Commands {
         /// Sync mode: full (all blocks), fast (state snapshot + recent), light (prune old blocks)
         #[arg(long, default_value = "full")]
         sync_mode: String,
+        /// Allow creating a new genesis when no chain data exists.
+        /// Default: true for devnet, false for mainnet/testnet.
+        /// This prevents accidentally starting a brand new chain on production networks.
+        #[arg(long)]
+        allow_genesis: bool,
     },
     /// Show node status
     Status,
@@ -383,6 +388,7 @@ async fn main() -> Result<()> {
             bootstrap,
             single,
             sync_mode,
+            allow_genesis,
         } => {
             let sync_mode = sync::SyncMode::parse(&sync_mode);
             // Resolve network: CLI > config.toml > default devnet
@@ -432,7 +438,9 @@ async fn main() -> Result<()> {
                 Some(&cfg.address),
             )?;
 
-            let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes, &genesis_cfg)?;
+            // Devnet always allows genesis creation; mainnet/testnet require --allow-genesis flag.
+            let effective_allow_genesis = allow_genesis || resolved_network == Network::Devnet;
+            let chain = chain::Chain::new(&data_dir, cfg.signing_key_bytes, &genesis_cfg, effective_allow_genesis)?;
 
             // Fast sync: enable state snapshot request on first peer connection
             if sync_mode == sync::SyncMode::Fast {
