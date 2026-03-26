@@ -489,6 +489,13 @@ async fn handle_rpc(
         "claw_getValidators" => {
             Ok(serde_json::json!(chain.get_validators()))
         }
+        "claw_getUserDelegations" => {
+            let addr = parse_address(&req.params, 0);
+            match addr {
+                Ok(a) => Ok(serde_json::json!(chain.get_user_delegations(&a))),
+                Err(e) => Err(e),
+            }
+        }
         "claw_getValidatorDetail" => {
             let addr = parse_address(&req.params, 0);
             match addr {

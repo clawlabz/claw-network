@@ -1651,6 +1651,27 @@ impl Chain {
             .copied()
     }
 
+    /// Get all delegations for a user address (Cosmos-style query).
+    /// Returns a list of { validator, amount, commission_bps } objects.
+    pub fn get_user_delegations(&self, addr: &[u8; 32]) -> Vec<serde_json::Value> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let user_entry = match inner.state.user_delegations.get(addr) {
+            Some(entry) => entry,
+            None => return vec![],
+        };
+        user_entry
+            .iter()
+            .map(|(validator, amount)| {
+                let commission_bps = inner.state.stake_commissions.get(validator).copied().unwrap_or(10000);
+                serde_json::json!({
+                    "validator": hex::encode(validator),
+                    "amount": amount.to_string(),
+                    "commission_bps": commission_bps,
+                })
+            })
+            .collect()
+    }
+
     /// Get active validators with their stakes and weights.
     pub fn get_validators(&self) -> Vec<serde_json::Value> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");

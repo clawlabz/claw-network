@@ -1014,6 +1014,11 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
     // Record commission rate for this validator
     state.stake_commissions.insert(validator_addr, commission_bps);
 
+    // Track per-user delegation (Cosmos-style: delegator → validator → amount)
+    let user_entry = state.user_delegations.entry(tx.from).or_default();
+    let prev_user_stake = user_entry.get(&validator_addr).copied().unwrap_or(0);
+    user_entry.insert(validator_addr, prev_user_stake + amount);
+
     Ok(())
 }
 
@@ -1148,11 +1153,24 @@ pub fn handle_stake_withdraw(state: &mut WorldState, tx: &Transaction) -> Result
     // Update or remove stake
     if remaining == 0 {
         state.stakes.remove(&validator_addr);
-        // Clean up delegation and commission mappings when fully unstaked
         state.stake_delegations.remove(&validator_addr);
         state.stake_commissions.remove(&validator_addr);
     } else {
         state.stakes.insert(validator_addr, remaining);
+    }
+
+    // Update per-user delegation tracking
+    if let Some(user_entry) = state.user_delegations.get_mut(&tx.from) {
+        let prev = user_entry.get(&validator_addr).copied().unwrap_or(0);
+        let user_remaining = prev.saturating_sub(payload.amount);
+        if user_remaining == 0 {
+            user_entry.remove(&validator_addr);
+            if user_entry.is_empty() {
+                state.user_delegations.remove(&tx.from);
+            }
+        } else {
+            user_entry.insert(validator_addr, user_remaining);
+        }
     }
 
     // Cap unbonding entries per address to prevent spam
