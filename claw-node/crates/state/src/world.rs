@@ -104,17 +104,18 @@ pub struct WorldState {
     pub miners: BTreeMap<[u8; 32], claw_types::state::MinerInfo>,
     /// Miner heartbeat deduplication tracker: (address, interval_window) → true.
     pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
-    /// Per-user delegation tracking (Cosmos-style):
-    /// delegator_address → { validator_address → staked_amount }.
-    /// Enables querying "how much has user X staked, and to which validators?"
-    /// Added in v0.4.8 — backward compatible (empty map for pre-existing state).
-    pub user_delegations: BTreeMap<[u8; 32], BTreeMap<[u8; 32], u128>>,
-
     /// Transaction receipts: tx_hash → receipt (populated for contract txs).
     /// Skipped from borsh serialization — receipts are an in-memory runtime
     /// cache rebuilt per block, not persisted to the chain state DB.
     #[borsh(skip)]
     pub receipts: BTreeMap<[u8; 32], claw_types::TransactionReceipt>,
+
+    /// Per-user delegation tracking (Cosmos-style):
+    /// delegator_address → { validator_address → staked_amount }.
+    /// Added in v0.4.8. Skipped from borsh to maintain backward compat with
+    /// existing chain snapshots. Persisted separately via `store.put_user_delegations`.
+    #[borsh(skip)]
+    pub user_delegations: BTreeMap<[u8; 32], BTreeMap<[u8; 32], u128>>,
 }
 
 impl WorldState {

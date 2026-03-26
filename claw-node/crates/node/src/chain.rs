@@ -81,7 +81,15 @@ impl Chain {
                 let state_bytes = store
                     .get_state_snapshot()?
                     .expect("snapshot must exist if blocks exist");
-                let state: WorldState = borsh::from_slice(&state_bytes)?;
+                let mut state: WorldState = borsh::from_slice(&state_bytes)?;
+
+                // Restore user_delegations from separate storage (borsh(skip) in WorldState)
+                if let Ok(Some(ud_bytes)) = store.get_user_delegations() {
+                    if let Ok(ud) = borsh::from_slice(&ud_bytes) {
+                        state.user_delegations = ud;
+                        tracing::info!(entries = state.user_delegations.len(), "Restored user_delegations");
+                    }
+                }
                 let block = store.get_block(height)?.expect("block must exist");
                 tracing::info!(height, "Loaded chain from storage");
 
@@ -588,6 +596,9 @@ impl Chain {
                     if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
                         tracing::error!(error = %e, "Failed to store post-epoch state snapshot");
                     }
+                    if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
+                        let _ = inner.store.put_user_delegations(&ud);
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Post-epoch state serialization failed: {e}");
@@ -876,7 +887,10 @@ impl Chain {
             match borsh::to_vec(&inner.state) {
                 Ok(state_bytes) => {
                     if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                        tracing::error!(error = %e, "Failed to store post-epoch state snapshot");
+                        tracing::error!(error = %e, "Failed to store post-epoch state snapshot (apply_block)");
+                    }
+                    if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
+                        let _ = inner.store.put_user_delegations(&ud);
                     }
                 }
                 Err(e) => {

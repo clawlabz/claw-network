@@ -300,6 +300,28 @@ impl ChainStore {
         Ok(())
     }
 
+    /// Store user_delegations separately (borsh-serialized BTreeMap).
+    /// This is stored outside the main state snapshot for backward compatibility.
+    pub fn put_user_delegations(&self, data: &[u8]) -> Result<(), StoreError> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut meta = write_txn.open_table(META)?;
+            meta.insert("user_delegations", data)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Get user_delegations data.
+    pub fn get_user_delegations(&self) -> Result<Option<Vec<u8>>, StoreError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(META)?;
+        match table.get("user_delegations")? {
+            Some(data) => Ok(Some(data.value().to_vec())),
+            None => Ok(None),
+        }
+    }
+
     /// Get the latest state snapshot.
     pub fn get_state_snapshot(&self) -> Result<Option<Vec<u8>>, StoreError> {
         let read_txn = self.db.begin_read()?;
