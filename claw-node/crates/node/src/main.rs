@@ -94,29 +94,30 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
-    /// Stake CLAW to become a validator
+    /// Stake CLAW as a validator (self-stake or single-owner delegation)
     Stake {
         /// Amount in CLAW to stake (e.g. "10000")
         amount: String,
-        /// Delegate to a different validator address (hex, 64 chars).
-        /// If omitted, the staker is also the block-producing validator (self-stake).
+        /// Assign a specific validator key to produce blocks on your behalf (hex, 64 chars).
+        /// If omitted, your own key is the block-producing validator (self-stake).
+        /// This is single-owner delegation — each validator has at most one owner.
         #[arg(long)]
         validator_key: Option<String>,
-        /// Commission rate in basis points (0-10000). The validator keeps this
-        /// percentage of block rewards; the delegator gets the rest.
-        /// Default: 8000 (80% to validator, 20% to delegator).
+        /// Commission rate in basis points (0-10000). The validator operator keeps
+        /// this percentage of block rewards; the stake owner gets the rest.
+        /// Default: 8000 (80% to validator operator, 20% to stake owner).
         #[arg(long, default_value = "8000")]
         commission: u16,
         /// RPC endpoint URL
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
-    /// Unstake (unbond) CLAW from validator
+    /// Unstake (unbond) CLAW from a validator position
     Unstake {
         /// Amount in CLAW to unstake (e.g. "5000")
         amount: String,
         /// Validator address to unstake from (hex, 64 chars).
-        /// Required when unstaking as a delegator (Owner Key).
+        /// Required when unstaking as a stake owner (i.e. you delegated to this validator).
         #[arg(long)]
         validator_key: Option<String>,
         /// RPC endpoint URL
@@ -129,11 +130,11 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
-    /// Change delegation of a validator stake to a new owner
+    /// Transfer ownership of a validator stake to a new single owner
     ChangeDelegation {
-        /// Validator address to change delegation for (hex, 64 chars)
+        /// Validator address to transfer ownership for (hex, 64 chars)
         validator_key: String,
-        /// New owner/delegator address (hex, 64 chars)
+        /// New stake owner address (hex, 64 chars). Only one owner per validator.
         new_owner: String,
         /// New commission rate in basis points (0-10000)
         #[arg(long, default_value = "8000")]

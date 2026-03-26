@@ -825,12 +825,9 @@ impl Chain {
             return Err("state_root mismatch".into());
         }
 
-        // Accept the block
-        inner.state = state_clone;
-
-        // Supply integrity check BEFORE epoch boundary processing.
+        // Supply integrity check BEFORE accepting the block.
         // Slashing burns tokens, so we must check before slashing runs.
-        let supply_after = inner.state.total_supply();
+        let supply_after = state_clone.total_supply();
         let proposer_share = total_fees * 50 / 100;
         let ecosystem_share = total_fees * 20 / 100;
         let expected_burn = total_fees - proposer_share - ecosystem_share;
@@ -845,7 +842,11 @@ impl Chain {
                 total_fees,
                 "SUPPLY INTEGRITY VIOLATION in apply_remote_block"
             );
+            return Err("supply integrity violation: total supply mismatch after applying block".into());
         }
+
+        // Accept the block
+        inner.state = state_clone;
 
         // Atomically persist block + state snapshot in a single transaction.
         Self::sync_slashing_to_world_state(&mut inner);

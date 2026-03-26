@@ -1007,12 +1007,25 @@ pub fn handle_stake_deposit(state: &mut WorldState, tx: &Transaction) -> Result<
     *state.balances.entry(tx.from).or_insert(0) -= amount;
     state.stakes.insert(validator_addr, new_stake);
 
-    // Record delegation: validator → owner (for reward routing).
-    // Only set if not already delegated (first staker is the owner).
+    // Single-owner delegation: validator → owner (for reward routing).
+    // Only the owner or the validator itself may add stake.
+    let existing_owner = state.stake_delegations.get(&validator_addr).copied();
+    if let Some(owner) = existing_owner {
+        if tx.from != owner && tx.from != validator_addr {
+            // Refund the balance deduction before returning error
+            *state.balances.entry(tx.from).or_insert(0) += amount;
+            state.stakes.insert(validator_addr, current_stake);
+            return Err(StateError::StakeError(
+                "validator already has a different delegation owner".into(),
+            ));
+        }
+    }
     state.stake_delegations.entry(validator_addr).or_insert(tx.from);
 
-    // Record commission rate for this validator
-    state.stake_commissions.insert(validator_addr, commission_bps);
+    // Only update commission if sender is the validator or the delegation owner
+    if tx.from == validator_addr || existing_owner.is_none() || existing_owner == Some(tx.from) {
+        state.stake_commissions.insert(validator_addr, commission_bps);
+    }
 
     // Track per-user delegation (Cosmos-style: delegator → validator → amount)
     let user_entry = state.user_delegations.entry(tx.from).or_default();
