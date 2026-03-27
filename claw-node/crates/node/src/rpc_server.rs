@@ -842,6 +842,7 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool) -> anyhow::Res
 
     let cors = {
         let allow_origin = match std::env::var("CLAW_RPC_CORS_ORIGINS") {
+            Ok(val) if val.trim() == "*" => AllowOrigin::any(),
             Ok(val) if !val.is_empty() => {
                 let origins: Vec<axum::http::HeaderValue> = val
                     .split(',')
@@ -850,7 +851,7 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool) -> anyhow::Res
                 AllowOrigin::list(origins)
             }
             // Default: localhost only (safe default for production).
-            // Set CLAW_RPC_CORS_ORIGINS to explicitly allow other origins.
+            // Set CLAW_RPC_CORS_ORIGINS=* for any origin, or comma-separated list.
             _ => AllowOrigin::list([
                 "http://localhost:3000".parse().unwrap(),
                 "http://localhost:9710".parse().unwrap(),

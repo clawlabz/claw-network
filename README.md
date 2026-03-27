@@ -232,7 +232,7 @@ Blocks include `BlockEvent::RewardDistributed` events that track all reward flow
 | Variable | Description |
 |----------|-------------|
 | `CLAW_KEY_PASSWORD` | Password for key.json encryption (AES-256-GCM) |
-| `CLAW_RPC_CORS_ORIGINS` | Comma-separated allowed CORS origins |
+| `CLAW_RPC_CORS_ORIGINS` | Comma-separated allowed CORS origins (default: localhost only; use `*` for public RPC) |
 
 ### config.toml
 
