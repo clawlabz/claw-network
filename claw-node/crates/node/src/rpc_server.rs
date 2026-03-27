@@ -849,7 +849,14 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool) -> anyhow::Res
                     .collect();
                 AllowOrigin::list(origins)
             }
-            _ => AllowOrigin::any(),
+            // Default: localhost only (safe default for production).
+            // Set CLAW_RPC_CORS_ORIGINS to explicitly allow other origins.
+            _ => AllowOrigin::list([
+                "http://localhost:3000".parse().unwrap(),
+                "http://localhost:9710".parse().unwrap(),
+                "http://127.0.0.1:3000".parse().unwrap(),
+                "http://127.0.0.1:9710".parse().unwrap(),
+            ]),
         };
         CorsLayer::new()
             .allow_origin(allow_origin)

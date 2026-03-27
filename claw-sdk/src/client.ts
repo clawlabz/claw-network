@@ -60,7 +60,7 @@ class AgentModule {
 
   /** Look up an agent by address (hex). */
   async get(address: string): Promise<AgentIdentity | null> {
-    return this.rpc.call<AgentIdentity | null>('clw_getAgent', [address]);
+    return this.rpc.call<AgentIdentity | null>('claw_getAgent', [address]);
   }
 }
 
@@ -93,7 +93,7 @@ class TokenModule {
 
   /** Get custom token balance. */
   async getBalance(address: string, tokenId: string): Promise<bigint> {
-    const result = await this.rpc.call<string>('clw_getTokenBalance', [
+    const result = await this.rpc.call<string>('claw_getTokenBalance', [
       address,
       tokenId,
     ]);
@@ -102,7 +102,7 @@ class TokenModule {
 
   /** Get token definition info. */
   async getInfo(tokenId: string): Promise<TokenDef | null> {
-    return this.rpc.call<TokenDef | null>('clw_getTokenInfo', [tokenId]);
+    return this.rpc.call<TokenDef | null>('claw_getTokenInfo', [tokenId]);
   }
 }
 
@@ -126,7 +126,7 @@ class ReputationModule {
 
   /** Get all reputation attestations for an address. */
   async get(address: string): Promise<ReputationAttestation[]> {
-    return this.rpc.call<ReputationAttestation[]>('clw_getReputation', [
+    return this.rpc.call<ReputationAttestation[]>('claw_getReputation', [
       address,
     ]);
   }
@@ -156,7 +156,7 @@ class ServiceModule {
     const params: unknown[] = filter?.serviceType
       ? [filter.serviceType]
       : [];
-    return this.rpc.call<ServiceEntry[]>('clw_getServices', params);
+    return this.rpc.call<ServiceEntry[]>('claw_getServices', params);
   }
 }
 
@@ -165,12 +165,12 @@ class BlockModule {
 
   /** Get the latest block number (height). */
   async getLatest(): Promise<number> {
-    return this.rpc.call<number>('clw_blockNumber');
+    return this.rpc.call<number>('claw_blockNumber');
   }
 
   /** Get a block by height. */
   async getByNumber(height: number): Promise<BlockInfo | null> {
-    return this.rpc.call<BlockInfo | null>('clw_getBlockByNumber', [height]);
+    return this.rpc.call<BlockInfo | null>('claw_getBlockByNumber', [height]);
   }
 }
 
@@ -213,13 +213,13 @@ export class ClawClient {
 
   /** Get native CLAW balance for an address (hex). */
   async getBalance(address: string): Promise<bigint> {
-    const result = await this.rpc.call<string>('clw_getBalance', [address]);
+    const result = await this.rpc.call<string>('claw_getBalance', [address]);
     return BigInt(result);
   }
 
   /** Get the current nonce for an address (hex). */
   async getNonce(address: string): Promise<number> {
-    return this.rpc.call<number>('clw_getNonce', [address]);
+    return this.rpc.call<number>('claw_getNonce', [address]);
   }
 
   /** Get a transaction receipt by hash (hex). */
@@ -227,7 +227,7 @@ export class ClawClient {
     txHash: string,
   ): Promise<TransactionReceipt | null> {
     return this.rpc.call<TransactionReceipt | null>(
-      'clw_getTransactionReceipt',
+      'claw_getTransactionReceipt',
       [txHash],
     );
   }
@@ -264,6 +264,6 @@ export class ClawClient {
     // Serialize and send
     const serialized = serializeTransaction(tx);
     const hex = toHex(serialized);
-    return this.rpc.call<string>('clw_sendTransaction', [hex]);
+    return this.rpc.call<string>('claw_sendTransaction', [hex]);
   }
 }

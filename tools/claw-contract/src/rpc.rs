@@ -38,8 +38,8 @@ pub async fn fetch_nonce(rpc_url: &str, pubkey_hex: &str) -> Result<u64> {
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0",
-        method: "get_nonce",
-        params: json!({ "address": pubkey_hex }),
+        method: "claw_getNonce",
+        params: json!([pubkey_hex]),
         id: 1,
     };
 
@@ -72,8 +72,8 @@ pub async fn submit_transaction(rpc_url: &str, tx: &SignedTransaction) -> Result
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0",
-        method: "submit_transaction",
-        params: json!({ "tx_hex": tx_hex }),
+        method: "claw_sendTransaction",
+        params: json!([tx_hex]),
         id: 2,
     };
 
@@ -119,8 +119,8 @@ pub async fn poll_confirmation(rpc_url: &str, tx_hash: &str, max_seconds: u64) -
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0",
-            method: "get_transaction",
-            params: json!({ "hash": tx_hash }),
+            method: "claw_getTransactionByHash",
+            params: json!([tx_hash]),
             id: 3,
         };
 

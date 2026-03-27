@@ -341,17 +341,17 @@ JSON-RPC 2.0 over HTTP (default port 9710) and WebSocket.
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `clw_blockNumber` | — | `u64` |
-| `clw_getBlockByNumber` | `height: u64` | `Block \| null` |
-| `clw_getBalance` | `address: hex` | `u128` (string) |
-| `clw_getTokenBalance` | `address: hex, token_id: hex` | `u128` (string) |
-| `clw_getAgent` | `address: hex` | `AgentIdentity \| null` |
-| `clw_getReputation` | `address: hex` | `Vec<ReputationAttestation>` |
-| `clw_getServices` | `service_type?: string` | `Vec<ServiceEntry>` |
-| `clw_getTransactionReceipt` | `tx_hash: hex` | `TxReceipt \| null` |
-| `clw_sendTransaction` | `tx: hex (borsh bytes)` | `tx_hash: hex` |
-| `clw_getNonce` | `address: hex` | `u64` |
-| `clw_getTokenInfo` | `token_id: hex` | `TokenDef \| null` |
+| `claw_blockNumber` | — | `u64` |
+| `claw_getBlockByNumber` | `height: u64` | `Block \| null` |
+| `claw_getBalance` | `address: hex` | `u128` (string) |
+| `claw_getTokenBalance` | `address: hex, token_id: hex` | `u128` (string) |
+| `claw_getAgent` | `address: hex` | `AgentIdentity \| null` |
+| `claw_getReputation` | `address: hex` | `Vec<ReputationAttestation>` |
+| `claw_getServices` | `service_type?: string` | `Vec<ServiceEntry>` |
+| `claw_getTransactionReceipt` | `tx_hash: hex` | `TxReceipt \| null` |
+| `claw_sendTransaction` | `tx: hex (borsh bytes)` | `tx_hash: hex` |
+| `claw_getNonce` | `address: hex` | `u64` |
+| `claw_getTokenInfo` | `token_id: hex` | `TokenDef \| null` |
 
 ### 12.2 WebSocket Subscriptions
 

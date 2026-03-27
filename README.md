@@ -33,7 +33,7 @@ claw-node start --network mainnet --bootstrap /ip4/178.156.162.162/tcp/9711/p2p/
 
 - **3-second block time** with single-block finality
 - **≤32MB RAM** for light nodes
-- **14 native transaction types** (see below)
+- **19 native transaction types** (see below)
 - **PoS + Agent Score** hybrid consensus
 - **CLAW token**: 1B total supply, 40% node incentives, gas burned (deflationary)
 - **Delegated staking** with session key model and commission system
@@ -59,6 +59,11 @@ claw-node start --network mainnet --bootstrap /ip4/178.156.162.162/tcp/9711/p2p/
 | 11 | `PlatformActivityReport` | Report agent activity (requires >= 50k CLAW stake) |
 | 12 | `TokenApprove` | Approve spender for custom token allowance |
 | 13 | `TokenBurn` | Burn (destroy) custom tokens |
+| 14 | `ChangeDelegation` | Transfer delegation of validator stake to new owner |
+| 15 | `MinerRegister` | Register as a miner (tier, IP, name) |
+| 16 | `MinerHeartbeat` | Submit miner heartbeat (latest synced block) |
+| 17 | `ContractUpgradeAnnounce` | Announce intent to upgrade a contract (starts timelock) |
+| 18 | `ContractUpgradeExecute` | Execute a previously announced contract upgrade |
 
 ## CLI Commands
 
@@ -178,32 +183,32 @@ JSON-RPC 2.0 over HTTP. Default port: 9710.
 
 | Method | Params | Description |
 |--------|--------|-------------|
-| `clw_blockNumber` | — | Current block height |
-| `clw_getBlockByNumber` | `[height]` | Block by height (includes tx hashes) |
-| `clw_getBalance` | `[address]` | Native CLAW balance |
-| `clw_getTokenBalance` | `[address, tokenId]` | Custom token balance |
-| `clw_getTokenInfo` | `[tokenId]` | Custom token metadata |
-| `clw_getNonce` | `[address]` | Account nonce |
-| `clw_getAgent` | `[address]` | Agent registration info |
-| `clw_getReputation` | `[address]` | Reputation data |
-| `clw_getAgentScore` | `[address]` | On-chain Agent Score (5 dimensions + decay) |
-| `clw_getServices` | `[serviceType?]` | List registered services |
-| `clw_sendTransaction` | `[txHex]` | Submit a signed transaction |
-| `clw_getTransactionReceipt` | `[txHash]` | Transaction receipt (block height + index) |
-| `clw_getTransactionByHash` | `[txHash]` | Full transaction details |
-| `clw_getTransactionsByAddress` | `[address, limit?, offset?]` | Transaction history for an address |
-| `clw_getStake` | `[address]` | Staked amount |
-| `clw_getUnbonding` | `[address]` | Unbonding entries |
-| `clw_getStakeDelegation` | `[validatorAddr]` | Delegation owner (null if self-staked) |
-| `clw_getValidators` | — | Active validator set |
-| `clw_getValidatorDetail` | `[address]` | Validator detail (stake, score, delegation) |
-| `clw_getBlockRewards` | `[height]` | Block reward events (recipients, amounts, types) |
-| `clw_estimateFee` | — | Current transaction fee |
-| `clw_getContractInfo` | `[address]` | Smart contract metadata |
-| `clw_getContractStorage` | `[address, keyHex]` | Contract storage value |
-| `clw_getContractCode` | `[address]` | Contract Wasm bytecode |
-| `clw_callContractView` | `[address, method, argsHex?]` | Read-only contract call |
-| `clw_faucet` | `[address]` | Testnet/devnet faucet (1hr cooldown) |
+| `claw_blockNumber` | — | Current block height |
+| `claw_getBlockByNumber` | `[height]` | Block by height (includes tx hashes) |
+| `claw_getBalance` | `[address]` | Native CLAW balance |
+| `claw_getTokenBalance` | `[address, tokenId]` | Custom token balance |
+| `claw_getTokenInfo` | `[tokenId]` | Custom token metadata |
+| `claw_getNonce` | `[address]` | Account nonce |
+| `claw_getAgent` | `[address]` | Agent registration info |
+| `claw_getReputation` | `[address]` | Reputation data |
+| `claw_getAgentScore` | `[address]` | On-chain Agent Score (5 dimensions + decay) |
+| `claw_getServices` | `[serviceType?]` | List registered services |
+| `claw_sendTransaction` | `[txHex]` | Submit a signed transaction |
+| `claw_getTransactionReceipt` | `[txHash]` | Transaction receipt (block height + index) |
+| `claw_getTransactionByHash` | `[txHash]` | Full transaction details |
+| `claw_getTransactionsByAddress` | `[address, limit?, offset?]` | Transaction history for an address |
+| `claw_getStake` | `[address]` | Staked amount |
+| `claw_getUnbonding` | `[address]` | Unbonding entries |
+| `claw_getStakeDelegation` | `[validatorAddr]` | Delegation owner (null if self-staked) |
+| `claw_getValidators` | — | Active validator set |
+| `claw_getValidatorDetail` | `[address]` | Validator detail (stake, score, delegation) |
+| `claw_getBlockRewards` | `[height]` | Block reward events (recipients, amounts, types) |
+| `claw_estimateFee` | — | Current transaction fee |
+| `claw_getContractInfo` | `[address]` | Smart contract metadata |
+| `claw_getContractStorage` | `[address, keyHex]` | Contract storage value |
+| `claw_getContractCode` | `[address]` | Contract Wasm bytecode |
+| `claw_callContractView` | `[address, method, argsHex?]` | Read-only contract call |
+| `claw_faucet` | `[address]` | Testnet/devnet faucet (1hr cooldown). Returns `{address, amount, txHash}` |
 
 ### Block Reward Events
 
@@ -247,6 +252,14 @@ single = false
 format = "text"   # or "json"
 filter = "claw=info"
 ```
+
+## Nonce Policy
+
+The current transaction pool enforces **strict sequential nonce ordering**: each transaction must have `nonce == current_nonce + 1`. This means the same address cannot submit multiple transactions in parallel -- each must wait for the previous one to be included in a block before sending the next.
+
+**Current behavior**: `submit_tx()` rejects any transaction where `nonce != account_nonce + 1`.
+
+**Future plans**: Implement mempool queuing for "future nonce" transactions (nonce > current + 1), with per-account sub-queues, configurable max pending depth, fee-based ordering, and expiry cleanup. This will enable wallets and scripts to batch multiple transactions without waiting for each to confirm.
 
 ## Economics
 

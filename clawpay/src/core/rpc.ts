@@ -105,50 +105,50 @@ export class RpcClient {
 
   /** Get the current block height. */
   async getBlockNumber(): Promise<number> {
-    return this.call<number>('clw_blockNumber');
+    return this.call<number>('claw_blockNumber');
   }
 
   /** Get the native CLAW balance for an address (returned as string of base units). */
   async getBalance(address: string): Promise<bigint> {
-    const result = await this.call<string>('clw_getBalance', [address]);
+    const result = await this.call<string>('claw_getBalance', [address]);
     return BigInt(result);
   }
 
   /** Get the current nonce for an address. */
   async getNonce(address: string): Promise<bigint> {
-    const result = await this.call<number>('clw_getNonce', [address]);
+    const result = await this.call<number>('claw_getNonce', [address]);
     return BigInt(result);
   }
 
   /** Submit a signed transaction (hex-encoded Borsh bytes). Returns tx hash hex. */
   async sendTransaction(txHex: string): Promise<string> {
-    return this.call<string>('clw_sendTransaction', [txHex]);
+    return this.call<string>('claw_sendTransaction', [txHex]);
   }
 
   /** Get a transaction receipt by hash. Returns null if not found. */
   async getTransactionReceipt(txHash: string): Promise<TransactionReceipt | null> {
-    return this.call<TransactionReceipt | null>('clw_getTransactionReceipt', [txHash]);
+    return this.call<TransactionReceipt | null>('claw_getTransactionReceipt', [txHash]);
   }
 
   /** Get transaction details by hash. Returns null if not found. */
   async getTransactionByHash(txHash: string): Promise<TransactionInfo | null> {
-    return this.call<TransactionInfo | null>('clw_getTransactionByHash', [txHash]);
+    return this.call<TransactionInfo | null>('claw_getTransactionByHash', [txHash]);
   }
 
   /** Get registered agent identity. Returns null if not registered. */
   async getAgent(address: string): Promise<AgentIdentity | null> {
-    return this.call<AgentIdentity | null>('clw_getAgent', [address]);
+    return this.call<AgentIdentity | null>('claw_getAgent', [address]);
   }
 
   /** Get registered services, optionally filtered by type. */
   async getServices(serviceType?: string): Promise<ServiceEntry[]> {
     const params = serviceType ? [serviceType] : [];
-    return this.call<ServiceEntry[]>('clw_getServices', params);
+    return this.call<ServiceEntry[]>('claw_getServices', params);
   }
 
   /** Get token balance for a specific token. */
   async getTokenBalance(address: string, tokenId: string): Promise<bigint> {
-    const result = await this.call<string>('clw_getTokenBalance', [address, tokenId]);
+    const result = await this.call<string>('claw_getTokenBalance', [address, tokenId]);
     return BigInt(result);
   }
 

@@ -272,7 +272,7 @@ claw-node contract deploy <wasm_file> [--init-method init]
 # Via RPC (JSON-RPC 2.0)
 curl -X POST http://localhost:9710 -d '{
   "jsonrpc": "2.0",
-  "method": "clw_sendTransaction",
+  "method": "claw_sendTransaction",
   "params": ["<signed_tx_hex>"],
   "id": 1
 }'
@@ -416,17 +416,17 @@ pub extern "C" fn pay_service(provider_ptr: i32, _provider_len: i32) {
 
 | Method | Parameters | Description |
 |--------|-----------|-------------|
-| `clw_getContractInfo` | `(address)` | Get contract metadata (creator, code hash, deploy height) |
-| `clw_getContractCode` | `(address)` | Get Wasm bytecode and size |
-| `clw_getContractStorage` | `(address, key_hex)` | Read a storage slot |
-| `clw_callContractView` | `(address, method, args_hex)` | Execute read-only call (no state mutation) |
+| `claw_getContractInfo` | `(address)` | Get contract metadata (creator, code hash, deploy height) |
+| `claw_getContractCode` | `(address)` | Get Wasm bytecode and size |
+| `claw_getContractStorage` | `(address, key_hex)` | Read a storage slot |
+| `claw_callContractView` | `(address, method, args_hex)` | Execute read-only call (no state mutation) |
 
 ### Example: Read-Only Call
 
 ```bash
 curl -s http://localhost:9710 -d '{
   "jsonrpc": "2.0",
-  "method": "clw_callContractView",
+  "method": "claw_callContractView",
   "params": ["<contract_address_hex>", "get_balance", ""],
   "id": 1
 }'
