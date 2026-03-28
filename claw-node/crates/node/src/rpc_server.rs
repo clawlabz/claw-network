@@ -824,6 +824,15 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
                 (None, None)
             }
         }
+        claw_types::TxType::ChangeDelegation => {
+            // payload = [validator: 32 bytes][new_owner: 32 bytes][commission_bps: 2 bytes]
+            if tx.payload.len() >= 64 {
+                let new_owner: [u8; 32] = tx.payload[32..64].try_into().unwrap();
+                (Some(new_owner), None)
+            } else {
+                (None, None)
+            }
+        }
         claw_types::TxType::AgentRegister
         | claw_types::TxType::TokenCreate
         | claw_types::TxType::ServiceRegister
@@ -832,7 +841,6 @@ fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option
         | claw_types::TxType::PlatformActivityReport
         | claw_types::TxType::TokenApprove
         | claw_types::TxType::TokenBurn
-        | claw_types::TxType::ChangeDelegation
         | claw_types::TxType::MinerRegister
         | claw_types::TxType::MinerHeartbeat
         | claw_types::TxType::ContractUpgradeAnnounce
