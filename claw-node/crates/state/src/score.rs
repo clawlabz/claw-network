@@ -47,6 +47,16 @@ pub fn compute_agent_score(state: &WorldState, address: &[u8; 32]) -> AgentScore
     let platform = compute_platform_score(state, address);
     let decay = compute_decay_factor(state, address);
 
+    // Clamp each sub-score to [0, 10000] before computing the weighted average.
+    // Some sub-scores (especially economic) can exceed 10000 when the address is
+    // not in the agents registry, causing the normalization denominator to be too
+    // small. Without clamping, a single inflated dimension would dominate the total.
+    let activity = activity.min(10000);
+    let uptime = uptime.min(10000);
+    let block_prod = block_prod.min(10000);
+    let economic = economic.min(10000);
+    let platform = platform.min(10000);
+
     let is_validator = state.stakes.get(address).copied().unwrap_or(0) >= 10_000_000_000_000
         && (uptime > 0 || block_prod > 0);
 
@@ -145,11 +155,14 @@ fn compute_economic_score(state: &WorldState, address: &[u8; 32]) -> u64 {
         + (balance / 1_000_000_000) as u64
         + gas / 1_000_000 * 2;
 
-    // Find max across all addresses
-    let max_value = state.agents.keys().map(|addr| {
-        let s = state.stakes.get(addr).copied().unwrap_or(0);
-        let b = state.balances.get(addr).copied().unwrap_or(0);
-        let g = state.activity_stats.get(addr)
+    // Find max across ALL addresses with stake or balance (not just agents),
+    // so that validators who are not registered agents still get a correctly
+    // normalized score.
+    let all_addresses = state.stakes.keys().chain(state.balances.keys()).collect::<std::collections::BTreeSet<_>>();
+    let max_value = all_addresses.iter().map(|addr| {
+        let s = state.stakes.get(*addr).copied().unwrap_or(0);
+        let b = state.balances.get(*addr).copied().unwrap_or(0);
+        let g = state.activity_stats.get(*addr)
             .map(|st| st.gas_consumed)
             .unwrap_or(0);
         (s / 1_000_000_000) as u64 * 3
