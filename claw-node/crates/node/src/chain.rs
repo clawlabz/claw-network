@@ -1821,6 +1821,56 @@ impl Chain {
     /// Testnet faucet: build a real TokenTransfer transaction from the node's
     /// validator keypair to the given address and submit it to the mempool.
     /// Returns the tx hash on success.
+    /// Get the most recent transactions from the chain, iterating backwards from
+    /// the current height. Returns Vec of (block_height, tx_index, Transaction, block_timestamp).
+    pub fn get_recent_transactions(&self, limit: usize) -> Vec<(u64, u32, claw_types::Transaction, u64)> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let height = inner.latest_block.height;
+        let mut results = Vec::with_capacity(limit);
+
+        for h in (0..=height).rev() {
+            let block = if h == inner.latest_block.height {
+                Some(inner.latest_block.clone())
+            } else {
+                inner.store.get_block(h).ok().flatten()
+            };
+            if let Some(block) = block {
+                for (i, tx) in block.transactions.iter().enumerate().rev() {
+                    results.push((h, i as u32, tx.clone(), block.timestamp));
+                    if results.len() >= limit {
+                        return results;
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Get all token definitions from the world state.
+    pub fn get_tokens(&self) -> Vec<claw_types::state::TokenDef> {
+        self.inner
+            .lock()
+            .expect("chain state mutex poisoned")
+            .state
+            .tokens
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Get all holders and their balances for a specific token.
+    /// Returns Vec of (address_bytes, balance).
+    pub fn get_token_holders(&self, token_id: &[u8; 32]) -> Vec<([u8; 32], u128)> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner
+            .state
+            .token_balances
+            .iter()
+            .filter(|((_, tid), bal)| tid == token_id && **bal > 0)
+            .map(|((addr, _), bal)| (*addr, *bal))
+            .collect()
+    }
+
     pub fn faucet_drip(&self, to: &[u8; 32]) -> Result<[u8; 32], String> {
         use claw_types::transaction::{TokenTransferPayload, TxType};
 

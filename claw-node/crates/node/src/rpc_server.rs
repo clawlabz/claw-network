@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -298,10 +298,15 @@ async fn handle_rpc(
             match addr {
                 Ok(a) => {
                     let txs = chain.get_transactions_by_address(&a, limit, offset);
-                    let results: Vec<serde_json::Value> = txs.into_iter().map(|(height, _tx_idx, tx, timestamp)| {
+                    let mut seen = HashSet::new();
+                    let results: Vec<serde_json::Value> = txs.into_iter().filter_map(|(height, _tx_idx, tx, timestamp)| {
+                        let hash_hex = hex::encode(tx.hash());
+                        if !seen.insert(hash_hex.clone()) {
+                            return None; // duplicate tx (address is both sender and receiver)
+                        }
                         let (to, amount) = extract_to_and_amount(&tx);
-                        serde_json::json!({
-                            "hash": hex::encode(tx.hash()),
+                        Some(serde_json::json!({
+                            "hash": hash_hex,
                             "txType": tx.tx_type,
                             "from": hex::encode(tx.from),
                             "to": to,
@@ -309,7 +314,7 @@ async fn handle_rpc(
                             "blockHeight": height,
                             "timestamp": timestamp,
                             "nonce": tx.nonce,
-                        })
+                        }))
                     }).collect();
                     Ok(serde_json::json!(results))
                 }
@@ -580,6 +585,61 @@ async fn handle_rpc(
         }
         "claw_getMiningStats" => {
             Ok(chain.get_mining_stats())
+        }
+        "claw_getRecentTransactions" => {
+            let limit = req.params.get(0)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50)
+                .min(200) as usize;
+            let txs = chain.get_recent_transactions(limit);
+            let results: Vec<serde_json::Value> = txs.into_iter().map(|(height, _tx_idx, tx, timestamp)| {
+                let tx_hash = tx.hash();
+                let type_name = tx_type_name(tx.tx_type);
+                let (to, amount) = parse_tx_recipient(&tx);
+                serde_json::json!({
+                    "hash": hex::encode(tx_hash),
+                    "txType": tx.tx_type as u8,
+                    "typeName": type_name,
+                    "from": hex::encode(tx.from),
+                    "to": to.map(|addr| hex::encode(addr)),
+                    "amount": amount.map(|a| a.to_string()),
+                    "nonce": tx.nonce,
+                    "blockHeight": height,
+                    "timestamp": timestamp,
+                    "fee": "1000000",
+                })
+            }).collect();
+            Ok(serde_json::json!(results))
+        }
+        "claw_getTokens" => {
+            let tokens = chain.get_tokens();
+            let results: Vec<serde_json::Value> = tokens.into_iter().map(|t| {
+                serde_json::json!({
+                    "token_id": hex::encode(t.id),
+                    "name": t.name,
+                    "symbol": t.symbol,
+                    "decimals": t.decimals,
+                    "total_supply": t.total_supply.to_string(),
+                    "creator": hex::encode(t.issuer),
+                })
+            }).collect();
+            Ok(serde_json::json!(results))
+        }
+        "claw_getTokenHolders" => {
+            let token_id = parse_address(&req.params, 0);
+            match token_id {
+                Ok(tid) => {
+                    let holders = chain.get_token_holders(&tid);
+                    let results: Vec<serde_json::Value> = holders.into_iter().map(|(addr, balance)| {
+                        serde_json::json!({
+                            "address": hex::encode(addr),
+                            "balance": balance.to_string(),
+                        })
+                    }).collect();
+                    Ok(serde_json::json!(results))
+                }
+                Err(e) => Err(e),
+            }
         }
         _ => Err(format!("method not found: {}", req.method)),
     };
