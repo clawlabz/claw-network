@@ -706,18 +706,39 @@ fn extract_to_and_amount(tx: &claw_types::Transaction) -> (Option<String>, Optio
         }
         TxType::StakeDeposit => {
             match borsh::from_slice::<claw_types::transaction::StakeDepositPayload>(&tx.payload) {
-                Ok(p) => (None, Some(p.amount.to_string())),
+                Ok(p) => {
+                    // If validator is all-zeros, it's self-stake; otherwise show the validator address
+                    let to = if p.validator == [0u8; 32] {
+                        None
+                    } else {
+                        Some(hex::encode(p.validator))
+                    };
+                    (to, Some(p.amount.to_string()))
+                }
                 Err(_) => (None, None),
             }
         }
         TxType::StakeWithdraw => {
             match borsh::from_slice::<claw_types::transaction::StakeWithdrawPayload>(&tx.payload) {
-                Ok(p) => (None, Some(p.amount.to_string())),
+                Ok(p) => {
+                    // Show validator being unstaked from (None if self / all-zeros)
+                    let to = if p.validator == [0u8; 32] {
+                        None
+                    } else {
+                        Some(hex::encode(p.validator))
+                    };
+                    (to, Some(p.amount.to_string()))
+                }
                 Err(_) => (None, None),
             }
         }
-        TxType::ChangeDelegation
-        | TxType::MinerRegister
+        TxType::ChangeDelegation => {
+            match borsh::from_slice::<claw_types::transaction::ChangeDelegationPayload>(&tx.payload) {
+                Ok(p) => (Some(hex::encode(p.new_owner)), None),
+                Err(_) => (None, None),
+            }
+        }
+        TxType::MinerRegister
         | TxType::MinerHeartbeat
         | TxType::ContractUpgradeAnnounce
         | TxType::ContractUpgradeExecute => (None, None),
