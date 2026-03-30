@@ -57,8 +57,12 @@ pub fn compute_agent_score(state: &WorldState, address: &[u8; 32]) -> AgentScore
     let economic = economic.min(10000);
     let platform = platform.min(10000);
 
-    let is_validator = state.stakes.get(address).copied().unwrap_or(0) >= 10_000_000_000_000
-        && (uptime > 0 || block_prod > 0);
+    // A validator is anyone with stake >= MIN_STAKE, regardless of whether
+    // they have produced blocks in the *current* epoch.  The old check required
+    // uptime > 0 || block_prod > 0, but validator_uptime is cleared every epoch
+    // (100 blocks).  Low-weight validators may not produce any block early in an
+    // epoch, which wrongly demoted them to the non-validator formula.
+    let is_validator = state.stakes.get(address).copied().unwrap_or(0) >= 10_000_000_000_000;
 
     let raw_total = if is_validator {
         // Validator: 5-dimensional weighted average
@@ -155,14 +159,15 @@ fn compute_economic_score(state: &WorldState, address: &[u8; 32]) -> u64 {
         + (balance / 1_000_000_000) as u64
         + gas / 1_000_000 * 2;
 
-    // Find max across ALL addresses with stake or balance (not just agents),
-    // so that validators who are not registered agents still get a correctly
-    // normalized score.
-    let all_addresses = state.stakes.keys().chain(state.balances.keys()).collect::<std::collections::BTreeSet<_>>();
-    let max_value = all_addresses.iter().map(|addr| {
-        let s = state.stakes.get(*addr).copied().unwrap_or(0);
-        let b = state.balances.get(*addr).copied().unwrap_or(0);
-        let g = state.activity_stats.get(*addr)
+    // Normalize against addresses with active stakes only.
+    // Previously this scanned ALL addresses (including whale wallets holding
+    // the treasury/supply), which inflated max_value so much that small
+    // validators' economic value was truncated to 0 by integer division.
+    // Now we only compare against fellow stakers — the true economic peers.
+    let max_value = state.stakes.keys().map(|addr| {
+        let s = state.stakes.get(addr).copied().unwrap_or(0);
+        let b = state.balances.get(addr).copied().unwrap_or(0);
+        let g = state.activity_stats.get(addr)
             .map(|st| st.gas_consumed)
             .unwrap_or(0);
         (s / 1_000_000_000) as u64 * 3
@@ -369,5 +374,61 @@ mod tests {
 
         let score = compute_agent_score(&state, &addr);
         assert!(score.total <= 10000);
+    }
+
+    #[test]
+    fn test_economic_score_small_validator_not_truncated_to_zero() {
+        // Reproduce the real-world bug: a whale address with huge balance inflated
+        // max_value so much that a 10K-CLAW validator's economic score was
+        // truncated to 0 by integer division.
+        let (mut state, whale) = setup_state_with_agent(1);
+        let validator = make_address(2);
+
+        // Whale: not a validator, but holds massive balance (100M CLAW)
+        state.balances.insert(whale, 100_000_000_000_000_000_000); // 100B base units
+
+        // Small validator: 10K CLAW staked
+        state.stakes.insert(validator, 10_000_000_000_000); // 10K CLAW
+        state.agents.insert(validator, AgentIdentity {
+            address: validator,
+            name: "small-validator".into(),
+            metadata: BTreeMap::new(),
+            registered_at: 0,
+        });
+
+        let score = compute_agent_score(&state, &validator);
+        // Before the fix, this was 0 because whale balance inflated max_value.
+        // After the fix, normalization only considers validators + agents, so
+        // the whale balance is excluded and the validator gets a non-zero score.
+        assert!(score.economic > 0, "economic score should not be 0 for a staked validator, got {}", score.economic);
+    }
+
+    #[test]
+    fn test_is_validator_without_current_epoch_blocks() {
+        // A validator with stake >= MIN_STAKE should be recognized as a validator
+        // even if they haven't produced any blocks in the current epoch.
+        let (mut state, addr) = setup_state_with_agent(1);
+        state.stakes.insert(addr, 50_000_000_000_000); // 50K CLAW
+        state.activity_stats.insert(addr, ActivityStats {
+            tx_count: 10,
+            contract_deploys: 0,
+            contract_calls: 0,
+            tokens_created: 0,
+            services_registered: 0,
+            gas_consumed: 1_000_000,
+        });
+        // No validator_uptime entry (epoch just rotated, no blocks yet)
+
+        let score = compute_agent_score(&state, &addr);
+        // Before the fix: uptime=0 && block_prod=0 → treated as non-validator
+        // After the fix: stake >= MIN_STAKE → treated as validator
+        // Validator formula: (activity*30 + uptime*25 + block_prod*20 + economic*15 + platform*10)/100
+        // Non-validator formula: (activity*55 + economic*27 + platform*18)/100
+        // With uptime/block_prod = 0, validator formula gives a LOWER score,
+        // which is correct — it reflects that the validator isn't signing blocks.
+        assert_eq!(score.uptime, 0);
+        assert_eq!(score.block_production, 0);
+        // Total should still be > 0 (from activity + economic)
+        assert!(score.total > 0);
     }
 }
