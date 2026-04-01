@@ -431,10 +431,8 @@ impl P2pNetwork {
                             break;
                         }
                         tracing::info!(%peer_id, %addr, "mDNS: discovered peer");
-                        self.swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .add_explicit_peer(&peer_id);
+                        // Dial the peer; gossipsub mesh membership is handled
+                        // automatically via subscription exchange after connection.
                         self.peers.insert(peer_id);
                         let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
                     }
@@ -443,10 +441,6 @@ impl P2pNetwork {
                     peers,
                 ))) => {
                     for (peer_id, _) in peers {
-                        self.swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .remove_explicit_peer(&peer_id);
                         self.peers.remove(&peer_id);
                         let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
                     }
@@ -465,10 +459,10 @@ impl P2pNetwork {
                             );
                         } else {
                             tracing::info!(%peer_id, "Peer connected");
-                            self.swarm
-                                .behaviour_mut()
-                                .gossipsub
-                                .add_explicit_peer(&peer_id);
+                            // Do NOT add_explicit_peer — explicit peers are excluded from
+                            // the gossipsub mesh and only receive flood-published messages.
+                            // Let gossipsub naturally manage mesh membership via subscription
+                            // exchange and GRAFT/PRUNE during heartbeats.
                             self.peers.insert(peer_id);
                             let _ = self.event_tx.send(NetworkEvent::PeerConnected(peer_id));
                         }
@@ -478,10 +472,6 @@ impl P2pNetwork {
                     // Only remove when last connection to this peer closes
                     if num_established == 0 {
                         tracing::info!(%peer_id, "Peer disconnected");
-                        self.swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .remove_explicit_peer(&peer_id);
                         self.peers.remove(&peer_id);
                         let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer_id));
                     }
