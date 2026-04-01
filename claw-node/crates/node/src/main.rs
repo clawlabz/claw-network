@@ -268,6 +268,21 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
+    /// Register as a miner to earn mining rewards (35% of block rewards)
+    RegisterMiner {
+        /// Miner name
+        #[arg(long)]
+        name: String,
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Submit a miner heartbeat (proves liveness for mining rewards)
+    MinerHeartbeat {
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -465,14 +480,13 @@ async fn main() -> Result<()> {
                 None
             };
 
-            // Start RPC server
-            let rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled).await?;
-            tracing::info!(port = resolved_rpc_port, "RPC server listening");
-
             // Determine if we should run in single-node mode
             let run_single = resolved_single || net_cfg.is_local;
 
             if run_single {
+                // Start RPC without P2P (no tx gossip needed in single-node mode)
+                let rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled, None).await?;
+                tracing::info!(port = resolved_rpc_port, "RPC server listening");
                 tracing::info!("Running in single-node mode (no P2P)");
                 chain.run_block_loop(None).await;
             } else {
@@ -518,6 +532,10 @@ async fn main() -> Result<()> {
                     Ok((mut p2p, event_rx, command_tx)) => {
                         tracing::info!(port = resolved_p2p_port, peers = all_bootstrap.len(), "P2P network started");
 
+                        // Start RPC with P2P sender so transactions are broadcast to validators
+                        let _rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled, Some(command_tx.clone())).await?;
+                        tracing::info!(port = resolved_rpc_port, "RPC server listening");
+
                         let p2p_handle = tokio::spawn(async move {
                             p2p.run().await;
                         });
@@ -537,12 +555,11 @@ async fn main() -> Result<()> {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to start P2P, falling back to single-node");
+                        let _rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled, None).await?;
                         chain.run_block_loop(None).await;
                     }
                 }
             }
-
-            rpc_handle.abort();
         }
         Commands::Status => {
             println!("claw-node status: use RPC at http://localhost:9710");
@@ -640,6 +657,12 @@ async fn main() -> Result<()> {
         }
         Commands::Contract { action, rpc } => {
             handle_contract_cli(action, &rpc).await?;
+        }
+        Commands::RegisterMiner { name, rpc } => {
+            handle_register_miner_cli(&data_dir, &name, &rpc).await?;
+        }
+        Commands::MinerHeartbeat { rpc } => {
+            handle_miner_heartbeat_cli(&data_dir, &rpc).await?;
         }
     }
 
@@ -1297,5 +1320,63 @@ async fn handle_contract_cli(action: ContractAction, rpc_url: &str) -> Result<()
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }
+    Ok(())
+}
+
+async fn handle_register_miner_cli(
+    data_dir: &std::path::Path,
+    name: &str,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{MinerRegisterPayload, TxType};
+
+    let cfg = config::load_config(data_dir)?;
+    let from_hex = hex::encode(cfg.address);
+
+    println!("Register Miner");
+    println!("  Name:    {}", name);
+    println!("  Address: {}", from_hex);
+
+    let payload = MinerRegisterPayload {
+        tier: 1, // MinerTier::Online
+        ip_addr: vec![0, 0, 0, 0], // placeholder, not used for reward calculation
+        name: name.to_string(),
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::MinerRegister, payload_bytes).await?;
+    println!("  TX:     {}", tx_hash);
+    println!("  Status: submitted (miner registered, start earning 35% mining rewards)");
+
+    Ok(())
+}
+
+async fn handle_miner_heartbeat_cli(
+    data_dir: &std::path::Path,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::transaction::{MinerHeartbeatPayload, TxType};
+
+    // Get current block info from RPC
+    let block_number = rpc_call(rpc, "claw_blockNumber", vec![]).await?;
+    let height = block_number.as_u64().unwrap_or(0);
+    let block = rpc_call(rpc, "claw_getBlockByNumber", vec![height.into()]).await?;
+    let hash_hex = block.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+    let mut latest_block_hash = [0u8; 32];
+    if hash_hex.len() == 64 {
+        if let Ok(bytes) = hex::decode(hash_hex) {
+            latest_block_hash.copy_from_slice(&bytes);
+        }
+    }
+
+    let payload = MinerHeartbeatPayload {
+        latest_block_hash,
+        latest_height: height,
+    };
+    let payload_bytes = borsh::to_vec(&payload)?;
+
+    let tx_hash = submit_tx(data_dir, rpc, TxType::MinerHeartbeat, payload_bytes).await?;
+    println!("Miner heartbeat sent (height={}, tx={})", height, tx_hash);
+
     Ok(())
 }

@@ -1129,8 +1129,12 @@ impl Chain {
         match response {
             SyncResponse::Blocks(blocks) => {
                 if blocks.is_empty() {
-                    tracing::debug!("Received empty blocks response — sync complete or peer has no more blocks");
-                    return None;
+                    // Peer returned no blocks — likely pruned historical blocks (light mode).
+                    // Fall back to state snapshot sync to jump to the latest state.
+                    tracing::info!(
+                        "Peer returned empty blocks — requesting state snapshot (peer may have pruned history)"
+                    );
+                    return Some(SyncRequest::GetStateSnapshot);
                 }
                 let batch_count = blocks.len();
                 let mut applied = 0;
@@ -1172,17 +1176,31 @@ impl Chain {
             SyncResponse::Status { height } => {
                 let our_height = self.get_block_number();
                 if *height > our_height {
-                    let count = std::cmp::min((*height - our_height) as u32, 20);
-                    tracing::info!(
-                        our_height,
-                        peer_height = height,
-                        requesting_blocks = count,
-                        "Peer is ahead — requesting missing blocks"
-                    );
-                    Some(SyncRequest::GetBlocks {
-                        from_height: our_height + 1,
-                        count,
-                    })
+                    let gap = *height - our_height;
+                    // For large gaps (>1000 blocks), use state snapshot sync instead of
+                    // block-by-block sync. Peers running light mode may have pruned the
+                    // historical blocks we need, making block sync impossible.
+                    if gap > 1000 {
+                        tracing::info!(
+                            our_height,
+                            peer_height = height,
+                            gap,
+                            "Large sync gap — requesting state snapshot instead of blocks"
+                        );
+                        Some(SyncRequest::GetStateSnapshot)
+                    } else {
+                        let count = std::cmp::min(gap as u32, 20);
+                        tracing::info!(
+                            our_height,
+                            peer_height = height,
+                            requesting_blocks = count,
+                            "Peer is ahead — requesting missing blocks"
+                        );
+                        Some(SyncRequest::GetBlocks {
+                            from_height: our_height + 1,
+                            count,
+                        })
+                    }
                 } else {
                     tracing::debug!(
                         our_height,
@@ -1337,6 +1355,27 @@ impl Chain {
 
     pub fn get_block_number(&self) -> u64 {
         self.inner.lock().expect("chain state mutex poisoned").latest_block.height
+    }
+
+    /// Prune old blocks from storage (for Light mode).
+    /// Reuses the already-open ChainStore handle — avoids the redb exclusive lock error.
+    pub fn prune_old_blocks(&self, keep_blocks: u64) {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let current_height = inner.latest_block.height;
+        let prune_below = current_height.saturating_sub(keep_blocks);
+        if prune_below <= 1 {
+            return;
+        }
+        let pruned = inner.store.prune_blocks_below(prune_below);
+        if pruned > 0 {
+            tracing::info!(
+                pruned_count = pruned,
+                below_height = prune_below,
+                current_height,
+                keep_blocks,
+                "Light node: pruned old blocks"
+            );
+        }
     }
 
     /// Full supply audit: enumerate all balances, stakes, and unbonding.

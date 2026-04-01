@@ -74,6 +74,7 @@ impl RpcResponse {
 
 /// Whether the faucet RPC is enabled (testnet/devnet only).
 static FAUCET_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static P2P_COMMAND_TX: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<claw_p2p::P2pCommand>> = std::sync::OnceLock::new();
 
 /// Per-address faucet cooldown tracking.
 const FAUCET_COOLDOWN_SECS: u64 = 3600;
@@ -255,10 +256,16 @@ async fn handle_rpc(
                     match hex::decode(h) {
                         Ok(bytes) => {
                             match borsh::from_slice::<claw_types::Transaction>(&bytes) {
-                                Ok(tx) => match chain.submit_tx(tx) {
-                                    Ok(hash) => Ok(serde_json::json!(hex::encode(hash))),
-                                    Err(e) => Err(e),
-                                },
+                                Ok(tx) => {
+                                    // Broadcast via gossipsub so validators can include it
+                                    if let Some(p2p_tx) = P2P_COMMAND_TX.get() {
+                                        let _ = p2p_tx.send(claw_p2p::P2pCommand::BroadcastTx(tx.clone()));
+                                    }
+                                    match chain.submit_tx(tx) {
+                                        Ok(hash) => Ok(serde_json::json!(hex::encode(hash))),
+                                        Err(e) => Err(e),
+                                    }
+                                }
                                 Err(e) => Err(format!("decode tx: {e}")),
                             }
                         }
@@ -908,7 +915,11 @@ async fn handle_health(State(chain): State<Chain>) -> Json<Value> {
 }
 
 /// Start the RPC server. Returns a JoinHandle.
-pub async fn start(chain: Chain, port: u16, faucet_enabled: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+pub async fn start(chain: Chain, port: u16, faucet_enabled: bool, p2p_tx: Option<tokio::sync::mpsc::UnboundedSender<claw_p2p::P2pCommand>>) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    // Store P2P sender for transaction gossip
+    if let Some(tx) = p2p_tx {
+        let _ = P2P_COMMAND_TX.set(tx);
+    }
     let _ = FAUCET_ENABLED.set(faucet_enabled);
 
     // Record start time for uptime tracking

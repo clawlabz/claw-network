@@ -159,11 +159,16 @@ mod tests {
         let mut state = WorldState::default();
         state.balances.insert(addr, GAS_FEE - 1); // not enough for gas
 
-        let payload = AgentRegisterPayload {
-            name: "agent".into(),
-            metadata: BTreeMap::new(),
+        // Use ServiceRegister (charges gas) instead of AgentRegister (gas-free)
+        let payload = ServiceRegisterPayload {
+            service_type: "test".into(),
+            description: "test".into(),
+            endpoint: "http://test".into(),
+            price_token: [0u8; 32],
+            price_amount: 0,
+            active: true,
         };
-        let tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
+        let tx = make_tx(&sk, 1, TxType::ServiceRegister, &payload);
         assert!(matches!(
             state.apply_tx(&tx, 0),
             Err(StateError::InsufficientBalance { .. })
@@ -173,14 +178,23 @@ mod tests {
     #[test]
     fn gas_burned_on_success() {
         let (mut state, sk, addr) = setup();
-        let initial = state.get_balance(&addr);
-        let payload = AgentRegisterPayload {
-            name: "agent".into(),
-            metadata: BTreeMap::new(),
+        // Register agent first (gas-free)
+        let reg = AgentRegisterPayload { name: "agent".into(), metadata: BTreeMap::new() };
+        state.apply_tx(&make_tx(&sk, 1, TxType::AgentRegister, &reg), 0).unwrap();
+        let balance_after_reg = state.get_balance(&addr);
+
+        // ServiceRegister charges gas
+        let payload = ServiceRegisterPayload {
+            service_type: "test".into(),
+            description: "test".into(),
+            endpoint: "http://test".into(),
+            price_token: [0u8; 32],
+            price_amount: 0,
+            active: true,
         };
-        let tx = make_tx(&sk, 1, TxType::AgentRegister, &payload);
+        let tx = make_tx(&sk, 2, TxType::ServiceRegister, &payload);
         state.apply_tx(&tx, 0).unwrap();
-        assert_eq!(state.get_balance(&addr), initial - GAS_FEE);
+        assert_eq!(state.get_balance(&addr), balance_after_reg - GAS_FEE);
     }
 
     #[test]
@@ -641,9 +655,10 @@ mod tests {
         let stats = state.activity_stats.get(&addr).unwrap();
 
         assert_eq!(stats.tx_count, 1);
-        assert!(stats.gas_consumed > 0);
+        // AgentRegister is gas-free, so gas_consumed is 0 after first tx
+        assert_eq!(stats.gas_consumed, 0);
 
-        // Token create (should also increment tokens_created)
+        // Token create (should also increment tokens_created, and charges gas)
         let create = TokenCreatePayload {
             name: "Test".into(),
             symbol: "T".into(),

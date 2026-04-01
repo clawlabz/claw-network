@@ -7,8 +7,6 @@
 
 use std::path::Path;
 
-use claw_storage::ChainStore;
-
 use crate::chain::Chain;
 
 /// Default number of recent blocks to retain in Light mode.
@@ -49,40 +47,12 @@ impl std::fmt::Display for SyncMode {
     }
 }
 
-/// For Light Node mode: prune old blocks from storage, keeping the most recent
-/// `keep_blocks` blocks. Genesis (height 0) is always preserved.
-pub fn prune_old_blocks(store: &ChainStore, current_height: u64, keep_blocks: u64) {
-    let prune_below = current_height.saturating_sub(keep_blocks);
-    if prune_below <= 1 {
-        return;
-    }
-
-    let pruned = store.prune_blocks_below(prune_below);
-    if pruned > 0 {
-        tracing::info!(
-            pruned_count = pruned,
-            below_height = prune_below,
-            current_height,
-            keep_blocks,
-            "Light node: pruned old blocks"
-        );
-    }
-}
-
 /// Run a periodic pruning loop for Light mode.
 ///
-/// Opens a separate `ChainStore` handle to the same database and periodically
-/// checks the current chain height (via `Chain`) to prune old blocks.
-pub async fn run_light_pruning_loop(chain: Chain, data_dir: &Path) {
-    let db_path = data_dir.join("chain.redb");
-    let store = match ChainStore::open(&db_path) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, "Light mode: failed to open store for pruning");
-            return;
-        }
-    };
-
+/// Reuses the Chain's already-open ChainStore handle to avoid redb exclusive
+/// lock errors. The old approach of opening a second ChainStore handle caused
+/// "Database already open. Cannot acquire lock." failures.
+pub async fn run_light_pruning_loop(chain: Chain, _data_dir: &Path) {
     tracing::info!(
         keep_blocks = LIGHT_MODE_KEEP_BLOCKS,
         "Light mode: pruning loop started"
@@ -93,8 +63,7 @@ pub async fn run_light_pruning_loop(chain: Chain, data_dir: &Path) {
 
     loop {
         interval.tick().await;
-        let current_height = chain.get_block_number();
-        prune_old_blocks(&store, current_height, LIGHT_MODE_KEEP_BLOCKS);
+        chain.prune_old_blocks(LIGHT_MODE_KEEP_BLOCKS);
     }
 }
 

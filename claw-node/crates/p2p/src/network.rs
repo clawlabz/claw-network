@@ -56,6 +56,8 @@ pub enum P2pCommand {
     BroadcastBlock(claw_types::block::Block),
     /// Broadcast a BFT vote to the network.
     BroadcastVote(BlockVote),
+    /// Broadcast a transaction to the network (for non-validator nodes to propagate txs).
+    BroadcastTx(claw_types::Transaction),
 }
 
 /// P2P Network handle for interacting with the swarm.
@@ -330,6 +332,9 @@ impl P2pNetwork {
                         }
                         P2pCommand::BroadcastVote(vote) => {
                             self.broadcast_vote(&vote);
+                        }
+                        P2pCommand::BroadcastTx(tx) => {
+                            self.broadcast_tx(&tx);
                         }
                     }
                 }

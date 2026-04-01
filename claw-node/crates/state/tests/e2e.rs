@@ -131,11 +131,12 @@ fn full_e2e_all_six_tx_types() {
     let root = state.state_root();
     assert_ne!(root, [0u8; 32]);
 
-    // Gas accounting: addr1 used 5 successful txs (rep attest failed, no gas charged)
-    // addr1: 10B - 2B transfer - 5 * GAS_FEE
-    assert_eq!(state.get_balance(&addr1), 10_000_000_000 - 2_000_000_000 - 5 * GAS_FEE);
-    // addr2: 10B + 2B transfer - 1 * GAS_FEE (agent register only; rep attest failed)
-    assert_eq!(state.get_balance(&addr2), 10_000_000_000 + 2_000_000_000 - 1 * GAS_FEE);
+    // Gas accounting: AgentRegister is gas-free; other txs charge GAS_FEE each.
+    // addr1: AgentRegister(free) + Transfer(gas) + TokenCreate(gas) + TokenTransfer(gas) + ServiceRegister(gas) = 4 * GAS_FEE
+    // rep attest failed = no gas charged
+    assert_eq!(state.get_balance(&addr1), 10_000_000_000 - 2_000_000_000 - 4 * GAS_FEE);
+    // addr2: AgentRegister(free) + rep attest failed = 0 gas charged
+    assert_eq!(state.get_balance(&addr2), 10_000_000_000 + 2_000_000_000);
 
     println!("\n=== E2E Test Summary ===");
     println!("Transactions: 7 (2 register + 1 CLAW transfer + 1 token create + 1 custom transfer + 1 service; 2 rep attests rejected)");

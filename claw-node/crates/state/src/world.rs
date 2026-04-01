@@ -156,8 +156,11 @@ impl WorldState {
             });
         }
 
-        // 3. Deduct gas (MinerHeartbeat is gas-free to encourage liveness)
-        let gas_free = matches!(tx.tx_type, TxType::MinerHeartbeat);
+        // 3. Deduct gas (identity + mining txs are gas-free to lower onboarding barrier)
+        let gas_free = matches!(
+            tx.tx_type,
+            TxType::AgentRegister | TxType::MinerRegister | TxType::MinerHeartbeat
+        );
         if !gas_free {
             let balance = self.balances.get(&tx.from).copied().unwrap_or(0);
             if balance < GAS_FEE {
