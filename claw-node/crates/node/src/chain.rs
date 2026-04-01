@@ -61,6 +61,9 @@ struct ChainInner {
     /// Monotonic timestamp of when the latest block was received/produced.
     /// Immune to system clock manipulation since `Instant` is monotonic.
     latest_block_received: Instant,
+    /// Total number of transactions ever processed on chain.
+    /// Accumulated during startup from stored blocks and incremented on each new block.
+    total_tx_count: u64,
 }
 
 impl Chain {
@@ -211,6 +214,15 @@ impl Chain {
             ..Default::default()
         };
 
+        // Compute total transaction count from all stored blocks.
+        // Iterate from block 0 to latest_block.height, accumulating transaction counts.
+        let mut total_tx_count: u64 = 0;
+        for height in 0..=latest_block.height {
+            if let Ok(Some(block)) = store.get_block(height) {
+                total_tx_count += block.transactions.len() as u64;
+            }
+        }
+
         Ok(Self {
             inner: Arc::new(Mutex::new(ChainInner {
                 state,
@@ -228,6 +240,7 @@ impl Chain {
                 fast_sync_pending: false,
                 bootstrap_peer_ids: Vec::new(),
                 latest_block_received: Instant::now(),
+                total_tx_count,
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -580,6 +593,9 @@ impl Chain {
             }
         }
 
+        // Increment total transaction count
+        inner.total_tx_count += block.transactions.len() as u64;
+
         // Epoch boundary: validator set rotation (no downtime slashing)
         if ValidatorSet::is_epoch_boundary(new_height) {
             // Identify offline validators — excluded from rewards in the NEXT epoch.
@@ -880,6 +896,9 @@ impl Chain {
                 return Err(format!("state serialization failed: {e}"));
             }
         }
+
+        // Increment total transaction count
+        inner.total_tx_count += block.transactions.len() as u64;
 
         // Epoch rotation (no downtime slashing — only reward exclusion)
         if ValidatorSet::is_epoch_boundary(block.height) {
@@ -1355,6 +1374,11 @@ impl Chain {
 
     pub fn get_block_number(&self) -> u64 {
         self.inner.lock().expect("chain state mutex poisoned").latest_block.height
+    }
+
+    /// Get the total number of transactions ever processed on chain.
+    pub fn get_transaction_count(&self) -> u64 {
+        self.inner.lock().expect("chain state mutex poisoned").total_tx_count
     }
 
     /// Prune old blocks from storage (for Light mode).

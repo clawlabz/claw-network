@@ -128,6 +128,10 @@ async fn handle_rpc(
             let height = chain.get_block_number();
             Ok(serde_json::json!(height))
         }
+        "claw_getTransactionCount" => {
+            let count = chain.get_transaction_count();
+            Ok(serde_json::json!(count))
+        }
         "claw_getBlockByNumber" => {
             let height = req.params.get(0)
                 .and_then(|v| v.as_u64())
