@@ -1,0 +1,61 @@
+{
+  "name": "@clawlabz/clawnetwork",
+  "version": "0.1.0",
+  "description": "Run a ClawNetwork blockchain node inside OpenClaw. Every agent is a blockchain node.",
+  "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "ClawLabz"
+  },
+  "homepage": "https://github.com/clawlabz/claw-network",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clawlabz/claw-network.git",
+    "directory": "clawnetwork-openclaw"
+  },
+  "bugs": {
+    "url": "https://github.com/clawlabz/claw-network/issues"
+  },
+  "keywords": [
+    "clawnetwork",
+    "openclaw",
+    "blockchain",
+    "agent",
+    "node",
+    "web3"
+  ],
+  "private": false,
+  "main": "./index.ts",
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "skills/",
+    "README.md"
+  ],
+  "dependencies": {
+    "@clawlabz/clawnetwork-sdk": "^0.1.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "install": {
+      "npmSpec": "@clawlabz/clawnetwork",
+      "defaultChoice": "npm"
+    },
+    "compat": {
+      "pluginApi": ">=2026.3.24"
+    },
+    "build": {
+      "openclawVersion": "2026.3.28"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "echo 'no build step'",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "node -e \"process.exit(0)\""
+  }
+}

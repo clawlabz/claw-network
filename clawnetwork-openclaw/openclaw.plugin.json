@@ -1,0 +1,63 @@
+{
+  "id": "clawnetwork",
+  "name": "ClawNetwork Node",
+  "description": "Run a ClawNetwork blockchain node inside OpenClaw. Every agent is a node.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "network": {
+        "type": "string",
+        "enum": ["mainnet", "testnet", "devnet"],
+        "default": "mainnet"
+      },
+      "autoStart": {
+        "type": "boolean",
+        "default": true
+      },
+      "autoDownload": {
+        "type": "boolean",
+        "default": true
+      },
+      "autoRegisterAgent": {
+        "type": "boolean",
+        "default": true
+      },
+      "rpcPort": {
+        "type": "number",
+        "default": 9710
+      },
+      "p2pPort": {
+        "type": "number",
+        "default": 9711
+      },
+      "syncMode": {
+        "type": "string",
+        "enum": ["full", "fast", "light"],
+        "default": "light"
+      },
+      "healthCheckSeconds": {
+        "type": "number",
+        "default": 30
+      },
+      "uiPort": {
+        "type": "number",
+        "default": 19877
+      }
+    }
+  },
+  "skills": ["skills/clawnetwork.md"],
+  "uiHints": {
+    "network": {
+      "label": "Network",
+      "placeholder": "mainnet"
+    },
+    "autoStart": {
+      "label": "Auto-start node when Gateway launches"
+    },
+    "syncMode": {
+      "label": "Sync Mode (light recommended for agents)"
+    }
+  }
+}
