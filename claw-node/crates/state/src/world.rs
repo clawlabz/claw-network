@@ -103,7 +103,18 @@ pub struct WorldState {
     /// Registered miners: address → MinerInfo.
     pub miners: BTreeMap<[u8; 32], claw_types::state::MinerInfo>,
     /// Miner heartbeat deduplication tracker: (address, interval_window) → true.
+    /// Used by V1 heartbeat logic; retained for backward compat until V2 activates.
     pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
+    /// Current epoch's miner check-ins: address → true (V2 heartbeat).
+    /// Transient — cleared every epoch boundary. Skipped from borsh to
+    /// maintain backward compatibility with pre-V2 snapshots.
+    #[borsh(skip)]
+    pub epoch_checkins: BTreeMap<[u8; 32], bool>,
+    /// Accumulated mining rewards for the current epoch bucket (V2 heartbeat).
+    /// Transient — drained every epoch boundary. Skipped from borsh to
+    /// maintain backward compatibility with pre-V2 snapshots.
+    #[borsh(skip)]
+    pub epoch_reward_bucket: u128,
     /// Transaction receipts: tx_hash → receipt (populated for contract txs).
     /// Skipped from borsh serialization — receipts are an in-memory runtime
     /// cache rebuilt per block, not persisted to the chain state DB.
@@ -118,7 +129,102 @@ pub struct WorldState {
     pub user_delegations: BTreeMap<[u8; 32], BTreeMap<[u8; 32], u128>>,
 }
 
+/// V1 WorldState layout — identical to WorldState except `miners` uses `MinerInfoV1`.
+/// Used only for deserializing pre-Heartbeat-V2 snapshots; the result is immediately
+/// converted to the current WorldState via `WorldState::from_v1`.
+#[derive(Debug, Clone, Default, BorshDeserialize)]
+struct WorldStateV1 {
+    pub balances: BTreeMap<[u8; 32], u128>,
+    pub token_balances: BTreeMap<([u8; 32], [u8; 32]), u128>,
+    pub nonces: BTreeMap<[u8; 32], u64>,
+    pub agents: BTreeMap<[u8; 32], AgentIdentity>,
+    pub tokens: BTreeMap<[u8; 32], TokenDef>,
+    pub reputation: Vec<ReputationAttestation>,
+    pub services: BTreeMap<([u8; 32], String), ServiceEntry>,
+    pub block_height: u64,
+    pub block_timestamp: u64,
+    pub contracts: BTreeMap<[u8; 32], claw_vm::ContractInstance>,
+    pub contract_storage: BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
+    pub contract_code: BTreeMap<[u8; 32], Vec<u8>>,
+    pub stakes: BTreeMap<[u8; 32], u128>,
+    pub unbonding_queue: Vec<UnbondingEntry>,
+    pub activity_stats: BTreeMap<[u8; 32], ActivityStats>,
+    pub validator_uptime: BTreeMap<[u8; 32], ValidatorUptime>,
+    pub platform_activity: BTreeMap<[u8; 32], PlatformActivityAgg>,
+    pub platform_report_tracker: BTreeMap<([u8; 32], u64), bool>,
+    pub stake_delegations: BTreeMap<[u8; 32], [u8; 32]>,
+    pub stake_commissions: BTreeMap<[u8; 32], u16>,
+    pub token_allowances: BTreeMap<([u8; 32], [u8; 32], [u8; 32]), u128>,
+    pub jailed_validators: BTreeMap<[u8; 32], u64>,
+    pub validator_missed_slots: BTreeMap<[u8; 32], u64>,
+    pub validator_assigned_slots: BTreeMap<[u8; 32], u64>,
+    pub processed_evidence: BTreeSet<[u8; 32]>,
+    /// V1 miners with the old MinerInfo layout (no pending/attendance fields).
+    pub miners: BTreeMap<[u8; 32], MinerInfoV1>,
+    pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
+}
+
 impl WorldState {
+    /// Deserialize a WorldState from borsh bytes, migrating from V1 if needed.
+    ///
+    /// Tries the current (V2) layout first. If that fails — typically because
+    /// MinerInfo gained new fields — falls back to `WorldStateV1` and converts
+    /// each `MinerInfoV1` to the current `MinerInfo`.
+    pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        // Try current layout first (fast path for already-migrated nodes)
+        match borsh::from_slice::<WorldState>(bytes) {
+            Ok(state) => Ok(state),
+            Err(_v2_err) => {
+                // Fall back to V1 layout
+                let v1 = borsh::from_slice::<WorldStateV1>(bytes)?;
+                Ok(Self::from_v1(v1))
+            }
+        }
+    }
+
+    /// Convert a V1 WorldState to the current layout.
+    fn from_v1(v1: WorldStateV1) -> Self {
+        let miners = v1.miners.into_iter()
+            .map(|(addr, m)| (addr, MinerInfo::from(m)))
+            .collect();
+
+        Self {
+            balances: v1.balances,
+            token_balances: v1.token_balances,
+            nonces: v1.nonces,
+            agents: v1.agents,
+            tokens: v1.tokens,
+            reputation: v1.reputation,
+            services: v1.services,
+            block_height: v1.block_height,
+            block_timestamp: v1.block_timestamp,
+            contracts: v1.contracts,
+            contract_storage: v1.contract_storage,
+            contract_code: v1.contract_code,
+            stakes: v1.stakes,
+            unbonding_queue: v1.unbonding_queue,
+            activity_stats: v1.activity_stats,
+            validator_uptime: v1.validator_uptime,
+            platform_activity: v1.platform_activity,
+            platform_report_tracker: v1.platform_report_tracker,
+            stake_delegations: v1.stake_delegations,
+            stake_commissions: v1.stake_commissions,
+            token_allowances: v1.token_allowances,
+            jailed_validators: v1.jailed_validators,
+            validator_missed_slots: v1.validator_missed_slots,
+            validator_assigned_slots: v1.validator_assigned_slots,
+            processed_evidence: v1.processed_evidence,
+            miners,
+            miner_heartbeat_tracker: v1.miner_heartbeat_tracker,
+            // V2 transient fields — default values are correct
+            epoch_checkins: BTreeMap::new(),
+            epoch_reward_bucket: 0,
+            // borsh(skip) fields
+            receipts: BTreeMap::new(),
+            user_delegations: BTreeMap::new(),
+        }
+    }
+
     /// Apply a transaction to the state.
     ///
     /// Returns `(gas_fee, contract_events)` on success:
@@ -491,12 +597,28 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
-        // Miner heartbeat tracker
+        // Miner heartbeat tracker (V1)
         for ((addr, window), _) in &self.miner_heartbeat_tracker {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"minerbeat:");
             entry.extend_from_slice(addr);
             entry.extend_from_slice(&window.to_le_bytes());
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Epoch check-ins (V2 heartbeat)
+        for (addr, _) in &self.epoch_checkins {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"epochcheckin:");
+            entry.extend_from_slice(addr);
+            leaves.push(*blake3::hash(&entry).as_bytes());
+        }
+
+        // Epoch reward bucket (V2 heartbeat)
+        if self.epoch_reward_bucket > 0 {
+            let mut entry = Vec::new();
+            entry.extend_from_slice(b"epochbucket:");
+            entry.extend_from_slice(&self.epoch_reward_bucket.to_le_bytes());
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -510,7 +632,11 @@ impl WorldState {
         let total_balances: u128 = self.balances.values().sum();
         let total_stakes: u128 = self.stakes.values().sum();
         let total_unbonding: u128 = self.unbonding_queue.iter().map(|e| e.amount).sum();
-        total_balances + total_stakes + total_unbonding
+        // epoch_reward_bucket holds mining rewards deducted from pool but not yet
+        // distributed — must be counted to preserve supply invariant.
+        let pending_mining: u128 = self.epoch_reward_bucket
+            + self.miners.values().map(|m| m.pending_rewards).sum::<u128>();
+        total_balances + total_stakes + total_unbonding + pending_mining
     }
 
     /// Get CLAW balance for an address.

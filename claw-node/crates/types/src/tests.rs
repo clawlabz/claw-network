@@ -261,6 +261,10 @@ mod tests {
             ip_prefix: vec![192, 168, 1],
             active: true,
             reputation_bps: 2000,
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         };
         roundtrip(&info);
     }

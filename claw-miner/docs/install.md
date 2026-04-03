@@ -91,7 +91,7 @@ claw-miner start
 
 The miner will:
 1. Register on-chain (if not already registered)
-2. Send heartbeats every ~50 minutes
+2. Send heartbeats every ~5 minutes
 3. Earn CLAW rewards proportional to uptime and tier
 
 ### Step 5: Verify
@@ -156,7 +156,7 @@ Ensure your wallet has enough CLAW for the registration transaction gas fee.
 
 ### Heartbeat failed
 
-Network hiccup — the miner will retry automatically on the next cycle (~50 minutes).
+Network hiccup — the miner will retry automatically on the next cycle (~5 minutes).
 
 ### `ModuleNotFoundError`
 

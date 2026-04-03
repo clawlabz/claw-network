@@ -1,10 +1,10 @@
 {
-  "latest": "0.4.20",
-  "minimum": "0.4.19",
-  "critical_minimum": null,
-  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.20",
-  "changelog": "Fix mDNS cross-network peer contamination, graceful shutdown for critical version check",
-  "announcement": null,
+  "latest": "0.4.21",
+  "minimum": "0.4.21",
+  "critical_minimum": "0.4.21",
+  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.21",
+  "changelog": "Heartbeat V2: epoch-based scoring, delayed settlement, reputation decay — fixes miner free-riding vulnerability",
+  "announcement": "BREAKING: All nodes must upgrade to v0.4.21 before block 225,001. Miners must update client (claw-miner/openclaw plugin) for new 310s heartbeat interval.",
   "halt_height": null,
   "halt_message": null,
   "updated_at": "2026-04-03T00:00:00Z"

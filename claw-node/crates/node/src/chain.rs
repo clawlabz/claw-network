@@ -95,7 +95,8 @@ impl Chain {
                 let state_bytes = store
                     .get_state_snapshot()?
                     .expect("snapshot must exist if blocks exist");
-                let mut state: WorldState = borsh::from_slice(&state_bytes)?;
+                let mut state: WorldState = WorldState::from_snapshot_bytes(&state_bytes)
+                    .map_err(|e| anyhow::anyhow!("snapshot deserialization failed: {e}"))?;
 
                 // Restore user_delegations from separate storage (borsh(skip) in WorldState)
                 if let Ok(Some(ud_bytes)) = store.get_user_delegations() {
@@ -498,8 +499,8 @@ impl Chain {
             new_height,
         );
 
-        // Distribute mining rewards (35% to active miners after upgrade height)
-        let mining_events = claw_state::rewards::distribute_mining_rewards(
+        // Accumulate mining rewards (V2: into epoch bucket; V1: direct distribution)
+        let mining_events = claw_state::rewards::accumulate_mining_reward(
             &mut inner.state,
             new_height,
         );
@@ -512,7 +513,7 @@ impl Chain {
         );
 
         // Collect all block events (contract events first, then reward/fee events)
-        let block_events = [tx_contract_events, reward_events, mining_events, fee_events].concat();
+        let mut block_events = [tx_contract_events, reward_events, mining_events, fee_events].concat();
 
         // Update validator uptime tracking (B3):
         // - The block proposer gets a produced_blocks increment
@@ -539,6 +540,17 @@ impl Chain {
         // Reuse the timestamp captured before tx execution so the block header
         // and the state's block_timestamp are consistent.
         let timestamp = block_timestamp_now;
+
+        // V2 heartbeat: process miner epoch boundary BEFORE state_root
+        // so pending reward settlements are included in the committed state.
+        let epoch_events = claw_state::rewards::process_miner_epoch_boundary(
+            &mut inner.state,
+            new_height,
+        );
+        block_events.extend(epoch_events);
+
+        // V1 heartbeat: deactivate miners who missed heartbeats (no-op after V2 height)
+        claw_state::rewards::update_miner_activity(&mut inner.state, new_height);
 
         // Sync slashing state to WorldState BEFORE computing state_root
         // so the root commits to current slashing data
@@ -610,8 +622,8 @@ impl Chain {
 
             inner.slashing.unjail_expired(new_height);
 
-            // Update miner activity — deactivate miners who missed heartbeats
-            claw_state::rewards::update_miner_activity(&mut inner.state, new_height);
+            // Note: update_miner_activity + process_miner_epoch_boundary already
+            // ran BEFORE state_root() above, so we don't repeat them here.
 
             // Recalculate active set
             let stakes = inner.state.stakes.clone();
@@ -814,8 +826,8 @@ impl Chain {
             block.height,
         );
 
-        // Distribute mining rewards (35% to active miners after upgrade height)
-        let _ = claw_state::rewards::distribute_mining_rewards(
+        // Accumulate mining rewards (V2: into epoch bucket; V1: direct distribution)
+        let _ = claw_state::rewards::accumulate_mining_reward(
             &mut state_clone,
             block.height,
         );
@@ -850,6 +862,15 @@ impl Chain {
             // asynchronously), so including them would cause state_root divergence
             // between live nodes and syncing nodes.
         }
+
+        // V2 heartbeat: process miner epoch boundary BEFORE state_root
+        let _ = claw_state::rewards::process_miner_epoch_boundary(
+            &mut state_clone,
+            block.height,
+        );
+
+        // V1 heartbeat: deactivate miners who missed heartbeats (no-op after V2 height)
+        claw_state::rewards::update_miner_activity(&mut state_clone, block.height);
 
         // Sync slashing state to state_clone BEFORE computing state_root
         state_clone.jailed_validators = inner.slashing.jailed.clone();
@@ -907,8 +928,8 @@ impl Chain {
             inner.offline_validators = inner.slashing.process_downtime_penalties();
             inner.slashing.unjail_expired(block.height);
 
-            // Update miner activity — deactivate miners who missed heartbeats
-            claw_state::rewards::update_miner_activity(&mut inner.state, block.height);
+            // Note: update_miner_activity + process_miner_epoch_boundary already
+            // ran BEFORE state_root() above, so we don't repeat them here.
 
             // Recalculate active set
             let stakes = inner.state.stakes.clone();
@@ -1351,7 +1372,7 @@ impl Chain {
                     }
                 }
 
-                match borsh::from_slice::<claw_state::WorldState>(state_data) {
+                match claw_state::WorldState::from_snapshot_bytes(state_data) {
                     Ok(state) => {
                         // Verify state_root matches the BLOCK's state_root (not the response field).
                         // The response's state_root could be manipulated independently.

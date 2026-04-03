@@ -17,8 +17,10 @@ TIER_NAMES: dict[int, str] = {
     TIER_ARCHIVE: "Archive",
 }
 
-# Heartbeat interval in seconds (~50 minutes, matching ~300 blocks at 10s/block)
-HEARTBEAT_INTERVAL_SECONDS: int = 50 * 60
+# Heartbeat interval in seconds.
+# V2 chain requires 100 blocks × 3s = 300s minimum between heartbeats.
+# Use 310s to provide margin for block time variance.
+HEARTBEAT_INTERVAL_SECONDS: int = 310
 
 # Default RPC endpoint
 DEFAULT_RPC_ENDPOINT: str = "https://rpc.clawlabz.xyz"

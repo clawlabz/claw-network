@@ -1295,6 +1295,11 @@ pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result
             ip_prefix,
             active: true,
             reputation_bps: REPUTATION_NEWCOMER_BPS,
+            // V2 fields
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         },
     );
 
@@ -1305,6 +1310,8 @@ pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result
 ///
 /// Gas-free. Updates last_heartbeat, deduplicates by interval window,
 /// and upgrades reputation based on miner age.
+///
+/// After HEARTBEAT_V2_HEIGHT, uses epoch-based check-in with shorter interval.
 pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
     let _payload = MinerHeartbeatPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
@@ -1315,43 +1322,76 @@ pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Resul
         .get(&tx.from)
         .ok_or(StateError::MinerNotRegistered)?;
 
-    // Enforce heartbeat interval
-    let next_allowed = miner.last_heartbeat + MINER_HEARTBEAT_INTERVAL;
-    if state.block_height < next_allowed {
-        return Err(StateError::HeartbeatTooEarly {
-            next_allowed,
-            current: state.block_height,
-        });
-    }
+    if state.block_height >= HEARTBEAT_V2_HEIGHT {
+        // --- V2 logic: epoch-based check-in ---
+        let interval = MINER_HEARTBEAT_INTERVAL; // 100 blocks
+        let next_allowed = miner.last_heartbeat + interval;
+        if state.block_height < next_allowed {
+            return Err(StateError::HeartbeatTooEarly {
+                next_allowed,
+                current: state.block_height,
+            });
+        }
 
-    // Deduplicate: one heartbeat per interval window
-    let window = state.block_height / MINER_HEARTBEAT_INTERVAL;
-    if state.miner_heartbeat_tracker.contains_key(&(tx.from, window)) {
-        return Err(StateError::HeartbeatTooEarly {
-            next_allowed,
-            current: state.block_height,
-        });
-    }
+        // Deduplicate: one check-in per epoch
+        let epoch = state.block_height / MINER_EPOCH_LENGTH;
+        if state.epoch_checkins.contains_key(&tx.from) {
+            return Err(StateError::HeartbeatTooEarly {
+                next_allowed,
+                current: state.block_height,
+            });
+        }
 
-    // Compute reputation upgrade based on miner age
-    let registered_at = miner.registered_at;
-    let age = state.block_height.saturating_sub(registered_at);
-    let new_reputation = if age >= BLOCKS_30_DAYS {
-        REPUTATION_VETERAN_BPS
-    } else if age >= BLOCKS_7_DAYS {
-        REPUTATION_ESTABLISHED_BPS
+        // Update miner state
+        let miner = state.miners.get_mut(&tx.from).expect("miner existence validated above");
+        miner.last_heartbeat = state.block_height;
+
+        // Record epoch check-in (settlement happens at epoch boundary)
+        state.epoch_checkins.insert(tx.from, true);
+
+        // Also record in V1 tracker for backward compat during transition
+        let v1_window = state.block_height / MINER_HEARTBEAT_INTERVAL_V1;
+        state.miner_heartbeat_tracker.insert((tx.from, v1_window), true);
+
+        let _ = epoch; // suppress unused warning
     } else {
-        REPUTATION_NEWCOMER_BPS
-    };
+        // --- V1 logic: legacy heartbeat ---
+        let next_allowed = miner.last_heartbeat + MINER_HEARTBEAT_INTERVAL_V1;
+        if state.block_height < next_allowed {
+            return Err(StateError::HeartbeatTooEarly {
+                next_allowed,
+                current: state.block_height,
+            });
+        }
 
-    // Update miner state
-    let miner = state.miners.get_mut(&tx.from).expect("miner existence validated above");
-    miner.last_heartbeat = state.block_height;
-    miner.active = true;
-    miner.reputation_bps = new_reputation;
+        let window = state.block_height / MINER_HEARTBEAT_INTERVAL_V1;
+        if state.miner_heartbeat_tracker.contains_key(&(tx.from, window)) {
+            return Err(StateError::HeartbeatTooEarly {
+                next_allowed,
+                current: state.block_height,
+            });
+        }
 
-    // Record heartbeat in tracker
-    state.miner_heartbeat_tracker.insert((tx.from, window), true);
+        // Compute reputation upgrade based on miner age
+        let registered_at = miner.registered_at;
+        let age = state.block_height.saturating_sub(registered_at);
+        let new_reputation = if age >= BLOCKS_30_DAYS {
+            REPUTATION_VETERAN_BPS
+        } else if age >= BLOCKS_7_DAYS {
+            REPUTATION_ESTABLISHED_BPS
+        } else {
+            REPUTATION_NEWCOMER_BPS
+        };
+
+        // Update miner state
+        let miner = state.miners.get_mut(&tx.from).expect("miner existence validated above");
+        miner.last_heartbeat = state.block_height;
+        miner.active = true;
+        miner.reputation_bps = new_reputation;
+
+        // Record heartbeat in tracker
+        state.miner_heartbeat_tracker.insert((tx.from, window), true);
+    }
 
     Ok(())
 }

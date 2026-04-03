@@ -20,7 +20,7 @@ claw-miner start
 ## How It Works
 
 1. **Register**: The miner sends a `MinerRegister` transaction to the chain with your chosen tier and name.
-2. **Heartbeat**: Every ~50 minutes, the miner sends a `MinerHeartbeat` transaction proving it is online and synced.
+2. **Heartbeat**: Every ~5 minutes, the miner sends a `MinerHeartbeat` transaction proving it is online and synced.
 3. **Earn**: Each block, 35% of the block reward is distributed to active miners proportional to their tier weight and reputation score.
 4. **Reputation**: Consistent uptime builds reputation (0-100), which increases your share of rewards.
 

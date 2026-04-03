@@ -733,9 +733,9 @@ async function autoRegisterAgent(cfg: PluginConfig, wallet: WalletData, api: Ope
 // Mining: Auto Miner Registration + Heartbeat Loop
 // ============================================================
 
-// Heartbeat interval: MINER_GRACE_BLOCKS is 2000, at 3s/block = ~6000s.
-// Send heartbeat every ~1000 blocks (~50 min) to stay well within grace period.
-const MINER_HEARTBEAT_INTERVAL_MS = 50 * 60 * 1000 // 50 minutes
+// V2 heartbeat: chain requires 100 blocks × 3s = 300s minimum between heartbeats.
+// Use 310s to provide margin for block time variance.
+const MINER_HEARTBEAT_INTERVAL_MS = 310 * 1000 // 310 seconds (~5.2 minutes)
 let minerHeartbeatTimer: unknown = null
 
 async function autoRegisterMiner(cfg: PluginConfig, wallet: WalletData, api: OpenClawApi): Promise<void> {

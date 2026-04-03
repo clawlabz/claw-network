@@ -4,7 +4,7 @@
 //! and follow a decay schedule over 10+ years.
 
 use claw_types::block::BlockEvent;
-use claw_types::state::{MINER_GRACE_BLOCKS};
+use claw_types::state::*;
 use crate::WorldState;
 
 /// Blocks per year assuming 3-second block time: 365.25 * 86400 / 3.
@@ -337,12 +337,190 @@ pub fn distribute_mining_rewards(
 }
 
 /// Mark miners as inactive if they haven't sent a heartbeat within the grace period.
+/// Used by V1 heartbeat logic (before HEARTBEAT_V2_HEIGHT).
 pub fn update_miner_activity(world: &mut WorldState, current_height: u64) {
+    if current_height >= HEARTBEAT_V2_HEIGHT {
+        return; // V2 handles deactivation via epoch boundary processing
+    }
     for miner in world.miners.values_mut() {
         if miner.active && miner.last_heartbeat + MINER_GRACE_BLOCKS < current_height {
             miner.active = false;
         }
     }
+}
+
+// --- Heartbeat V2: Epoch-based mining rewards ---
+
+/// Accumulate the mining share of block rewards into the epoch bucket.
+///
+/// Called every block (replaces direct `distribute_mining_rewards` after V2 activation).
+/// The bucket is distributed at epoch boundaries by `process_miner_epoch_boundary`.
+pub fn accumulate_mining_reward(world: &mut WorldState, height: u64) -> Vec<BlockEvent> {
+    if height < HEARTBEAT_V2_HEIGHT {
+        return distribute_mining_rewards(world, height);
+    }
+
+    if height < MINING_UPGRADE_HEIGHT {
+        return Vec::new();
+    }
+
+    let pool_addr = genesis_address(NODE_INCENTIVE_POOL_INDEX);
+    let pool_balance = world.balances.get(&pool_addr).copied().unwrap_or(0);
+    if pool_balance == 0 {
+        return Vec::new();
+    }
+
+    let base_reward = reward_per_block(height);
+    let mining_reward = base_reward * MINING_REWARD_BPS / 10000;
+    let actual = mining_reward.min(pool_balance);
+    if actual == 0 {
+        return Vec::new();
+    }
+
+    // Deduct from pool, accumulate into epoch bucket
+    *world.balances.entry(pool_addr).or_insert(0) -= actual;
+    world.epoch_reward_bucket += actual;
+
+    Vec::new() // No per-block events; rewards are emitted at epoch boundary
+}
+
+/// Process epoch boundary: settle pending rewards, update attendance, decay reputation.
+///
+/// Must be called at every block where `height % MINER_EPOCH_LENGTH == 0` and
+/// `height >= HEARTBEAT_V2_HEIGHT`. Must run BEFORE `state_root()` computation.
+pub fn process_miner_epoch_boundary(world: &mut WorldState, height: u64) -> Vec<BlockEvent> {
+    let mut events = Vec::new();
+
+    if height < HEARTBEAT_V2_HEIGHT {
+        return events;
+    }
+    if height % MINER_EPOCH_LENGTH != 0 {
+        return events;
+    }
+
+    let current_epoch = height / MINER_EPOCH_LENGTH;
+    let pool_addr = genesis_address(NODE_INCENTIVE_POOL_INDEX);
+
+    // Snapshot check-ins so we can iterate miners mutably
+    let checkins = world.epoch_checkins.clone();
+
+    // --- Phase 1: Settle previous epoch's pending + update attendance ---
+    let miner_addrs: Vec<[u8; 32]> = world.miners.keys().copied().collect();
+    for addr in &miner_addrs {
+        let checked_in = checkins.contains_key(addr);
+        let miner = world.miners.get_mut(addr).unwrap();
+
+        if checked_in {
+            // Confirm previous epoch's pending rewards
+            if miner.pending_epoch + 1 == current_epoch && miner.pending_rewards > 0 {
+                let confirmed = miner.pending_rewards;
+                *world.balances.entry(*addr).or_insert(0) += confirmed;
+                events.push(BlockEvent::RewardDistributed {
+                    recipient: *addr,
+                    amount: confirmed,
+                    reward_type: "mining_reward_confirmed".into(),
+                });
+            }
+
+            // Reactivate + reset counters
+            miner.active = true;
+            miner.consecutive_misses = 0;
+            miner.epoch_attendance = (miner.epoch_attendance << 1) | 1;
+
+            // Upgrade reputation based on miner age
+            let age = height.saturating_sub(miner.registered_at);
+            if age >= BLOCKS_30_DAYS {
+                miner.reputation_bps = miner.reputation_bps.max(REPUTATION_VETERAN_BPS);
+            } else if age >= BLOCKS_7_DAYS {
+                miner.reputation_bps = miner.reputation_bps.max(REPUTATION_ESTABLISHED_BPS);
+            }
+        } else {
+            // Forfeit previous epoch's pending rewards → return to pool
+            if miner.pending_rewards > 0 {
+                let forfeited = miner.pending_rewards;
+                *world.balances.entry(pool_addr).or_insert(0) += forfeited;
+                events.push(BlockEvent::RewardDistributed {
+                    recipient: pool_addr,
+                    amount: forfeited,
+                    reward_type: "mining_reward_forfeited".into(),
+                });
+            }
+
+            // Absence penalty
+            miner.consecutive_misses = miner.consecutive_misses.saturating_add(1);
+            miner.epoch_attendance = miner.epoch_attendance << 1; // LSB = 0
+
+            // Reputation decay: -1% per missed epoch, floor at NEWCOMER
+            let decayed = (miner.reputation_bps as u32) * (10000 - REPUTATION_DECAY_BPS as u32) / 10000;
+            miner.reputation_bps = (decayed as u16).max(REPUTATION_NEWCOMER_BPS);
+
+            // Deactivate after too many consecutive misses
+            if miner.consecutive_misses >= MINER_GRACE_EPOCHS {
+                miner.active = false;
+            }
+        }
+
+        // Reset pending for this epoch (will be filled in Phase 2)
+        let miner = world.miners.get_mut(addr).unwrap();
+        miner.pending_rewards = 0;
+        miner.pending_epoch = current_epoch;
+    }
+
+    // --- Phase 2: Distribute epoch bucket to qualified miners as pending ---
+    let bucket = world.epoch_reward_bucket;
+    if bucket > 0 {
+        // Collect qualified miners with their weights
+        let qualified: Vec<([u8; 32], u128)> = world
+            .miners
+            .iter()
+            .filter(|(_, m)| m.active)
+            .filter_map(|(addr, m)| {
+                let attendance_bits = m.epoch_attendance & 0x0FFF; // low 12 bits
+                let count = attendance_bits.count_ones();
+                if count < MINER_MIN_UPTIME_FOR_REWARD {
+                    return None;
+                }
+                let uptime_mult = miner_uptime_multiplier(count);
+                let tier_weight: u128 = match m.tier {
+                    MinerTier::Online => 1,
+                };
+                let weight = tier_weight * (m.reputation_bps as u128) * uptime_mult;
+                if weight > 0 {
+                    Some((*addr, weight))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if qualified.is_empty() {
+            // No qualified miners — return bucket to pool
+            *world.balances.entry(pool_addr).or_insert(0) += bucket;
+        } else {
+            let total_weight: u128 = qualified.iter().map(|(_, w)| *w).sum();
+            let mut distributed: u128 = 0;
+            let count = qualified.len();
+
+            for (i, (addr, weight)) in qualified.iter().enumerate() {
+                let share = if i == count - 1 {
+                    bucket - distributed
+                } else {
+                    bucket * weight / total_weight
+                };
+                if share > 0 {
+                    world.miners.get_mut(addr).unwrap().pending_rewards = share;
+                    distributed += share;
+                }
+            }
+        }
+
+        world.epoch_reward_bucket = 0;
+    }
+
+    // --- Phase 3: Clear epoch check-ins ---
+    world.epoch_checkins.clear();
+
+    events
 }
 
 #[cfg(test)]

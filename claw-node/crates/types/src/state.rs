@@ -161,7 +161,20 @@ pub enum MinerTier {
     Online = 1,
 }
 
-/// On-chain state for a registered miner.
+/// Legacy V1 miner info — used only for deserializing pre-V2 snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, BorshDeserialize)]
+pub struct MinerInfoV1 {
+    pub address: [u8; 32],
+    pub tier: MinerTier,
+    pub name: String,
+    pub registered_at: u64,
+    pub last_heartbeat: u64,
+    pub ip_prefix: Vec<u8>,
+    pub active: bool,
+    pub reputation_bps: u16,
+}
+
+/// On-chain state for a registered miner (V2: epoch scoring + delayed settlement).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct MinerInfo {
     /// Miner's Ed25519 public key / address.
@@ -180,16 +193,68 @@ pub struct MinerInfo {
     pub active: bool,
     /// Reputation score in basis points (0-10000).
     pub reputation_bps: u16,
+    // --- V2 fields (heartbeat redesign) ---
+    /// Pending rewards awaiting confirmation by next epoch's heartbeat.
+    pub pending_rewards: u128,
+    /// Epoch number that pending_rewards corresponds to.
+    pub pending_epoch: u64,
+    /// Bitmap of attendance for the last 16 epochs (LSB = most recent).
+    pub epoch_attendance: u16,
+    /// Number of consecutive epochs missed.
+    pub consecutive_misses: u16,
 }
 
-/// Heartbeat interval in blocks. Miners must send a heartbeat at least this often.
-pub const MINER_HEARTBEAT_INTERVAL: u64 = 1_000;
+impl From<MinerInfoV1> for MinerInfo {
+    fn from(v1: MinerInfoV1) -> Self {
+        Self {
+            address: v1.address,
+            tier: v1.tier,
+            name: v1.name,
+            registered_at: v1.registered_at,
+            last_heartbeat: v1.last_heartbeat,
+            ip_prefix: v1.ip_prefix,
+            active: v1.active,
+            reputation_bps: v1.reputation_bps,
+            pending_rewards: 0,
+            pending_epoch: 0,
+            // Active miners get full attendance history; inactive get none.
+            epoch_attendance: if v1.active { 0xFFFF } else { 0 },
+            consecutive_misses: if v1.active { 0 } else { MINER_GRACE_EPOCHS },
+        }
+    }
+}
+
+/// Legacy heartbeat interval in blocks (used before HEARTBEAT_V2_HEIGHT).
+pub const MINER_HEARTBEAT_INTERVAL_V1: u64 = 1_000;
+
+/// V2 heartbeat interval: one heartbeat per epoch.
+pub const MINER_HEARTBEAT_INTERVAL: u64 = 100;
 
 /// Maximum number of miners allowed per /24 subnet.
 pub const MAX_MINERS_PER_SUBNET: usize = 3;
 
-/// Grace period in blocks before an inactive miner is deactivated.
+/// Legacy grace period in blocks (used before HEARTBEAT_V2_HEIGHT).
 pub const MINER_GRACE_BLOCKS: u64 = 2_000;
+
+/// Miner epoch length in blocks (~5 minutes at 3s block time).
+pub const MINER_EPOCH_LENGTH: u64 = 100;
+
+/// Number of past epochs to evaluate for uptime scoring.
+pub const MINER_UPTIME_WINDOW: u32 = 12;
+
+/// Minimum epochs with attendance (out of MINER_UPTIME_WINDOW) to qualify for rewards.
+pub const MINER_MIN_UPTIME_FOR_REWARD: u32 = 6;
+
+/// Consecutive missed epochs before a miner is deactivated.
+pub const MINER_GRACE_EPOCHS: u16 = 6;
+
+/// Reputation decay per missed epoch in basis points (1% = 100 bps).
+pub const REPUTATION_DECAY_BPS: u16 = 100;
+
+/// Block height at which Heartbeat V2 logic activates.
+/// Before this height, legacy heartbeat interval and grace period apply.
+/// Must NOT be divisible by MINER_EPOCH_LENGTH to avoid a zero-length first epoch.
+pub const HEARTBEAT_V2_HEIGHT: u64 = 225_001;
 
 /// Reputation: newcomer tier (0-7 days), 20% reward weight.
 pub const REPUTATION_NEWCOMER_BPS: u16 = 2_000;
@@ -205,3 +270,13 @@ pub const BLOCKS_7_DAYS: u64 = 201_600;
 
 /// Number of blocks in 30 days at 3-second block time (30 * 24 * 3600 / 3).
 pub const BLOCKS_30_DAYS: u64 = 864_000;
+
+/// Uptime tier multiplier (out of 100) based on epoch attendance count.
+pub fn miner_uptime_multiplier(attendance_count: u32) -> u128 {
+    match attendance_count {
+        12 => 100,     // 1.0x — perfect attendance
+        9..=11 => 80,  // 0.8x — occasional disconnects
+        6..=8 => 50,   // 0.5x — unstable
+        _ => 0,        // below 50% — no rewards
+    }
+}

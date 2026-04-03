@@ -784,7 +784,7 @@ mod tests {
     fn test_miner_heartbeat_success() {
         let (mut state, sk, addr) = setup_miner();
         // Advance block_height past the heartbeat interval
-        state.block_height = MINER_HEARTBEAT_INTERVAL + 1;
+        state.block_height = MINER_HEARTBEAT_INTERVAL_V1 + 1;
 
         let payload = MinerHeartbeatPayload {
             latest_block_hash: [0u8; 32],
@@ -794,7 +794,7 @@ mod tests {
         state.apply_tx(&tx, 0).unwrap();
 
         let miner = state.miners.get(&addr).unwrap();
-        assert_eq!(miner.last_heartbeat, MINER_HEARTBEAT_INTERVAL + 1);
+        assert_eq!(miner.last_heartbeat, MINER_HEARTBEAT_INTERVAL_V1 + 1);
         assert!(miner.active);
     }
 
@@ -814,7 +814,7 @@ mod tests {
     fn test_miner_heartbeat_too_early() {
         let (mut state, sk, _) = setup_miner();
         // Don't advance block_height past interval (miner registered at height 0)
-        state.block_height = 500; // < MINER_HEARTBEAT_INTERVAL
+        state.block_height = 500; // < MINER_HEARTBEAT_INTERVAL_V1
 
         let payload = MinerHeartbeatPayload {
             latest_block_hash: [0u8; 32],
@@ -831,7 +831,7 @@ mod tests {
     fn test_miner_heartbeat_gas_free() {
         let (mut state, sk, addr) = setup_miner();
         let balance_before = state.get_balance(&addr);
-        state.block_height = MINER_HEARTBEAT_INTERVAL + 1;
+        state.block_height = MINER_HEARTBEAT_INTERVAL_V1 + 1;
 
         let payload = MinerHeartbeatPayload {
             latest_block_hash: [0u8; 32],
@@ -847,35 +847,39 @@ mod tests {
     }
 
     #[test]
-    fn test_miner_heartbeat_updates_reputation() {
+    fn test_miner_heartbeat_updates_reputation_v1() {
+        // V1 heartbeat handler upgrades reputation based on miner age.
+        // Only tests newcomer stage since established/veteran heights exceed
+        // HEARTBEAT_V2_HEIGHT and use a different code path (epoch boundary).
         let (mut state, sk, addr) = setup_miner();
 
-        // At newcomer stage (< 7 days)
-        state.block_height = MINER_HEARTBEAT_INTERVAL + 1;
+        state.block_height = MINER_HEARTBEAT_INTERVAL_V1 + 1;
         let hb = MinerHeartbeatPayload {
             latest_block_hash: [0u8; 32],
             latest_height: state.block_height,
         };
         state.apply_tx(&make_tx(&sk, 2, TxType::MinerHeartbeat, &hb), 0).unwrap();
         assert_eq!(state.miners.get(&addr).unwrap().reputation_bps, REPUTATION_NEWCOMER_BPS);
+    }
 
-        // Advance to established stage (>= 7 days from registration)
-        state.block_height = BLOCKS_7_DAYS + MINER_HEARTBEAT_INTERVAL + 1;
-        let hb2 = MinerHeartbeatPayload {
-            latest_block_hash: [0u8; 32],
-            latest_height: state.block_height,
-        };
-        state.apply_tx(&make_tx(&sk, 3, TxType::MinerHeartbeat, &hb2), 0).unwrap();
-        assert_eq!(state.miners.get(&addr).unwrap().reputation_bps, REPUTATION_ESTABLISHED_BPS);
+    #[test]
+    fn test_v2_epoch_boundary_upgrades_reputation() {
+        // V2: reputation is upgraded at epoch boundary, not in the heartbeat handler.
+        use crate::rewards::process_miner_epoch_boundary;
 
-        // Advance to veteran stage (>= 30 days from registration)
-        state.block_height = BLOCKS_30_DAYS + MINER_HEARTBEAT_INTERVAL + 1;
-        let hb3 = MinerHeartbeatPayload {
-            latest_block_hash: [0u8; 32],
-            latest_height: state.block_height,
-        };
-        state.apply_tx(&make_tx(&sk, 4, TxType::MinerHeartbeat, &hb3), 0).unwrap();
-        assert_eq!(state.miners.get(&addr).unwrap().reputation_bps, REPUTATION_VETERAN_BPS);
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+        let height = epoch_start + MINER_EPOCH_LENGTH;
+
+        // Set registered_at so age >= BLOCKS_7_DAYS (established tier)
+        state.miners.get_mut(&addr).unwrap().registered_at = height - BLOCKS_7_DAYS - 1;
+        state.miners.get_mut(&addr).unwrap().reputation_bps = REPUTATION_NEWCOMER_BPS;
+
+        state.block_height = height;
+        state.epoch_checkins.insert(addr, true);
+        process_miner_epoch_boundary(&mut state, height);
+
+        // Should be upgraded from newcomer to at least established
+        assert!(state.miners.get(&addr).unwrap().reputation_bps >= REPUTATION_ESTABLISHED_BPS);
     }
 
     // === Reward System (Mining Upgrade) ===
@@ -933,6 +937,10 @@ mod tests {
             ip_prefix: vec![10, 0, 0],
             active: true,
             reputation_bps: 10_000, // 1.0x
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         });
         state.miners.insert(addr2, MinerInfo {
             address: addr2,
@@ -943,6 +951,10 @@ mod tests {
             ip_prefix: vec![10, 0, 1],
             active: true,
             reputation_bps: 10_000, // 1.0x
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         });
 
         let events = distribute_mining_rewards(&mut state, MINING_UPGRADE_HEIGHT);
@@ -986,6 +998,10 @@ mod tests {
             ip_prefix: vec![10, 0, 0],
             active: true,
             reputation_bps: REPUTATION_VETERAN_BPS, // 10000 = 1.0x
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         });
         state.miners.insert(addr2, MinerInfo {
             address: addr2,
@@ -996,6 +1012,10 @@ mod tests {
             ip_prefix: vec![10, 0, 1],
             active: true,
             reputation_bps: REPUTATION_NEWCOMER_BPS, // 2000 = 0.2x
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         });
 
         distribute_mining_rewards(&mut state, MINING_UPGRADE_HEIGHT);
@@ -1055,6 +1075,10 @@ mod tests {
             ip_prefix: vec![10, 0, 0],
             active: true,
             reputation_bps: REPUTATION_NEWCOMER_BPS,
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         });
 
         // At height 100 + MINER_GRACE_BLOCKS - 1: still active
@@ -1064,6 +1088,221 @@ mod tests {
         // At height 100 + MINER_GRACE_BLOCKS + 1: deactivated
         update_miner_activity(&mut state, 100 + MINER_GRACE_BLOCKS + 1);
         assert!(!state.miners.get(&addr).unwrap().active);
+    }
+
+    // ======================== Heartbeat V2 Tests ========================
+
+    /// First epoch boundary at or after HEARTBEAT_V2_HEIGHT.
+    fn first_v2_epoch_boundary() -> u64 {
+        let h = HEARTBEAT_V2_HEIGHT;
+        if h % MINER_EPOCH_LENGTH == 0 { h } else { h + (MINER_EPOCH_LENGTH - h % MINER_EPOCH_LENGTH) }
+    }
+
+    /// Helper: create a WorldState at V2 height with pool funds and one active miner.
+    /// Returns (state, miner_address, first_epoch_boundary).
+    fn setup_v2_miner() -> (WorldState, [u8; 32], u64) {
+        use crate::rewards::{genesis_address_pub, NODE_INCENTIVE_POOL_INDEX};
+
+        let epoch_start = first_v2_epoch_boundary();
+
+        let mut state = WorldState::default();
+        let pool_addr = genesis_address_pub(NODE_INCENTIVE_POOL_INDEX);
+        state.balances.insert(pool_addr, 1_000_000_000_000_000);
+
+        let addr = [42u8; 32];
+        state.miners.insert(addr, MinerInfo {
+            address: addr,
+            tier: MinerTier::Online,
+            name: "v2-miner".into(),
+            registered_at: HEARTBEAT_V2_HEIGHT,
+            last_heartbeat: HEARTBEAT_V2_HEIGHT,
+            ip_prefix: vec![10, 0, 0],
+            active: true,
+            reputation_bps: REPUTATION_VETERAN_BPS,
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0xFFF,
+            consecutive_misses: 0,
+        });
+
+        state.block_height = HEARTBEAT_V2_HEIGHT;
+        (state, addr, epoch_start)
+    }
+
+    #[test]
+    fn test_v2_accumulate_fills_epoch_bucket() {
+        use crate::rewards::accumulate_mining_reward;
+
+        let (mut state, _addr, _) = setup_v2_miner();
+        assert_eq!(state.epoch_reward_bucket, 0);
+
+        let _ = accumulate_mining_reward(&mut state, HEARTBEAT_V2_HEIGHT);
+        assert!(state.epoch_reward_bucket > 0);
+
+        let bucket_after_1 = state.epoch_reward_bucket;
+        let _ = accumulate_mining_reward(&mut state, HEARTBEAT_V2_HEIGHT + 1);
+        assert_eq!(state.epoch_reward_bucket, bucket_after_1 * 2);
+    }
+
+    #[test]
+    fn test_v2_epoch_boundary_pending_then_confirm() {
+        use crate::rewards::{accumulate_mining_reward, process_miner_epoch_boundary};
+
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+
+        // Accumulate for one full epoch leading up to the boundary
+        let boundary = epoch_start + MINER_EPOCH_LENGTH;
+        for h in epoch_start..boundary {
+            accumulate_mining_reward(&mut state, h);
+        }
+        state.epoch_checkins.insert(addr, true);
+        state.block_height = boundary;
+        process_miner_epoch_boundary(&mut state, boundary);
+
+        let miner = state.miners.get(&addr).unwrap();
+        assert!(miner.pending_rewards > 0);
+        assert_eq!(state.epoch_reward_bucket, 0);
+
+        let balance_after_epoch1 = state.get_balance(&addr);
+
+        // Next epoch: confirm previous pending
+        let boundary2 = boundary + MINER_EPOCH_LENGTH;
+        for h in boundary..boundary2 {
+            accumulate_mining_reward(&mut state, h);
+        }
+        state.epoch_checkins.insert(addr, true);
+        state.block_height = boundary2;
+        let events2 = process_miner_epoch_boundary(&mut state, boundary2);
+
+        let balance_after_epoch2 = state.get_balance(&addr);
+        assert!(balance_after_epoch2 > balance_after_epoch1);
+        assert!(events2.iter().any(|e| matches!(e,
+            claw_types::BlockEvent::RewardDistributed { reward_type, .. } if reward_type == "mining_reward_confirmed"
+        )));
+    }
+
+    #[test]
+    fn test_v2_missed_epoch_forfeits_pending() {
+        use crate::rewards::{accumulate_mining_reward, process_miner_epoch_boundary, genesis_address_pub, NODE_INCENTIVE_POOL_INDEX};
+
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+        let pool_addr = genesis_address_pub(NODE_INCENTIVE_POOL_INDEX);
+
+        let boundary = epoch_start + MINER_EPOCH_LENGTH;
+        for h in epoch_start..boundary {
+            accumulate_mining_reward(&mut state, h);
+        }
+        state.epoch_checkins.insert(addr, true);
+        process_miner_epoch_boundary(&mut state, boundary);
+        let pending_amount = state.miners.get(&addr).unwrap().pending_rewards;
+        assert!(pending_amount > 0);
+
+        // Epoch 2: no check-in → forfeit
+        let boundary2 = boundary + MINER_EPOCH_LENGTH;
+        for h in boundary..boundary2 {
+            accumulate_mining_reward(&mut state, h);
+        }
+        let pool_after_accumulate = state.get_balance(&pool_addr);
+
+        let events = process_miner_epoch_boundary(&mut state, boundary2);
+
+        assert!(events.iter().any(|e| matches!(e,
+            claw_types::BlockEvent::RewardDistributed { reward_type, .. } if reward_type == "mining_reward_forfeited"
+        )));
+        let pool_after_settle = state.get_balance(&pool_addr);
+        assert!(pool_after_settle > pool_after_accumulate, "forfeited pending should return to pool");
+    }
+
+    #[test]
+    fn test_v2_consecutive_misses_deactivate() {
+        use crate::rewards::process_miner_epoch_boundary;
+
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+        let mut height = epoch_start;
+
+        for _ in 0..MINER_GRACE_EPOCHS {
+            height += MINER_EPOCH_LENGTH;
+            state.block_height = height;
+            process_miner_epoch_boundary(&mut state, height);
+        }
+
+        let miner = state.miners.get(&addr).unwrap();
+        assert!(!miner.active);
+        assert_eq!(miner.consecutive_misses, MINER_GRACE_EPOCHS);
+    }
+
+    #[test]
+    fn test_v2_reactivation_after_deactivation() {
+        use crate::rewards::process_miner_epoch_boundary;
+
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+        let mut height = epoch_start;
+
+        for _ in 0..MINER_GRACE_EPOCHS {
+            height += MINER_EPOCH_LENGTH;
+            state.block_height = height;
+            process_miner_epoch_boundary(&mut state, height);
+        }
+        assert!(!state.miners.get(&addr).unwrap().active);
+
+        height += MINER_EPOCH_LENGTH;
+        state.block_height = height;
+        state.epoch_checkins.insert(addr, true);
+        process_miner_epoch_boundary(&mut state, height);
+
+        let miner = state.miners.get(&addr).unwrap();
+        assert!(miner.active);
+        assert_eq!(miner.consecutive_misses, 0);
+    }
+
+    #[test]
+    fn test_v2_reputation_decay_on_miss() {
+        use crate::rewards::process_miner_epoch_boundary;
+
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+        let rep_before = state.miners.get(&addr).unwrap().reputation_bps;
+        assert_eq!(rep_before, REPUTATION_VETERAN_BPS);
+
+        let height = epoch_start + MINER_EPOCH_LENGTH;
+        state.block_height = height;
+        process_miner_epoch_boundary(&mut state, height);
+
+        let rep_after = state.miners.get(&addr).unwrap().reputation_bps;
+        assert_eq!(rep_after, 9900);
+    }
+
+    #[test]
+    fn test_v2_uptime_below_threshold_no_reward() {
+        use crate::rewards::{accumulate_mining_reward, process_miner_epoch_boundary};
+
+        let (mut state, addr, epoch_start) = setup_v2_miner();
+        state.miners.get_mut(&addr).unwrap().epoch_attendance = 0b0000_0000_0111; // 3 bits
+
+        let boundary = epoch_start + MINER_EPOCH_LENGTH;
+        for h in epoch_start..boundary {
+            accumulate_mining_reward(&mut state, h);
+        }
+        state.epoch_checkins.insert(addr, true);
+        process_miner_epoch_boundary(&mut state, boundary);
+
+        let miner = state.miners.get(&addr).unwrap();
+        assert_eq!(miner.pending_rewards, 0);
+    }
+
+    #[test]
+    fn test_v2_heartbeat_handler_uses_epoch_checkin() {
+        let (mut state, sk, addr) = setup_miner();
+        state.block_height = HEARTBEAT_V2_HEIGHT + MINER_HEARTBEAT_INTERVAL + 1;
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = HEARTBEAT_V2_HEIGHT;
+
+        let payload = MinerHeartbeatPayload {
+            latest_block_hash: [0u8; 32],
+            latest_height: state.block_height,
+        };
+        let tx = make_tx(&sk, 2, TxType::MinerHeartbeat, &payload);
+        state.apply_tx(&tx, 0).unwrap();
+
+        assert!(state.epoch_checkins.contains_key(&addr));
     }
 
     #[test]
