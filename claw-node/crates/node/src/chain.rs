@@ -961,6 +961,7 @@ impl Chain {
     ) {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
         let mut version_check_interval = tokio::time::interval(tokio::time::Duration::from_secs(3600)); // 1 hour
+        let critical_shutdown = Arc::new(tokio::sync::Notify::new());
         let shutdown = tokio::signal::ctrl_c();
         tokio::pin!(shutdown);
         loop {
@@ -979,6 +980,7 @@ impl Chain {
                 _ = version_check_interval.tick() => {
                     // Periodically check for version updates and halt conditions
                     let chain = self.clone();
+                    let critical_shutdown = critical_shutdown.clone();
                     tokio::spawn(async move {
                         if let Some(manifest) = crate::version_check::fetch_manifest().await {
                             let current_version = env!("CARGO_PKG_VERSION");
@@ -989,8 +991,7 @@ impl Chain {
                                 crate::version_check::UpgradeLevel::Critical => {
                                     let message = crate::version_check::format_upgrade_message(&upgrade_level, &manifest);
                                     tracing::error!("{}. Initiating graceful shutdown.", message);
-                                    // Request shutdown via Ctrl+C equivalent
-                                    std::process::exit(75);
+                                    critical_shutdown.notify_one();
                                 }
                                 crate::version_check::UpgradeLevel::Required => {
                                     let message = crate::version_check::format_upgrade_message(&upgrade_level, &manifest);
@@ -1008,6 +1009,10 @@ impl Chain {
                             chain.set_version_manifest(manifest);
                         }
                     });
+                }
+                _ = critical_shutdown.notified() => {
+                    tracing::info!("Critical version issue — stopping block loop gracefully");
+                    break;
                 }
                 _ = &mut shutdown => {
                     tracing::info!("Received shutdown signal — stopping block loop gracefully");

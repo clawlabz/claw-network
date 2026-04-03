@@ -1,9 +1,9 @@
 {
-  "latest": "0.4.19",
+  "latest": "0.4.20",
   "minimum": "0.4.19",
   "critical_minimum": null,
-  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.19",
-  "changelog": "Auto-recovery for corrupted chain.redb, graceful shutdown, atomic epoch writes",
+  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.20",
+  "changelog": "Fix mDNS cross-network peer contamination, graceful shutdown for critical version check",
   "announcement": null,
   "halt_height": null,
   "halt_message": null,

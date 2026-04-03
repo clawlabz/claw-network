@@ -66,6 +66,9 @@ pub struct P2pNetwork {
     event_tx: mpsc::UnboundedSender<NetworkEvent>,
     command_rx: mpsc::UnboundedReceiver<P2pCommand>,
     peers: HashSet<PeerId>,
+    /// Peers that failed protocol negotiation (e.g. different chain_id).
+    /// Prevents mDNS from repeatedly re-adding incompatible peers.
+    incompatible_peers: HashSet<PeerId>,
     tx_topic: gossipsub::IdentTopic,
     block_topic: gossipsub::IdentTopic,
     vote_topic: gossipsub::IdentTopic,
@@ -181,6 +184,7 @@ impl P2pNetwork {
                 event_tx,
                 command_rx,
                 peers: HashSet::new(),
+                incompatible_peers: HashSet::new(),
                 tx_topic,
                 block_topic,
                 vote_topic,
@@ -404,6 +408,15 @@ impl P2pNetwork {
                     request_response::Event::OutboundFailure { peer, error, .. },
                 )) => {
                     tracing::warn!(%peer, ?error, "Sync request outbound failure");
+                    // Peer doesn't support our chain_id-scoped sync protocol —
+                    // likely a node on a different network (e.g. mainnet vs testnet).
+                    // Blacklist to prevent mDNS from re-adding it repeatedly.
+                    if matches!(error, request_response::OutboundFailure::UnsupportedProtocols) {
+                        tracing::info!(%peer, "Evicting incompatible peer (UnsupportedProtocols)");
+                        self.incompatible_peers.insert(peer);
+                        self.peers.remove(&peer);
+                        let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(peer));
+                    }
                 }
                 SwarmEvent::Behaviour(ClawBehaviourEvent::RequestResponse(
                     request_response::Event::InboundFailure { peer, error, .. },
@@ -421,6 +434,10 @@ impl P2pNetwork {
                     for (peer_id, addr) in peers {
                         // Skip already-known peers
                         if self.peers.contains(&peer_id) {
+                            continue;
+                        }
+                        // Skip peers previously identified as incompatible (different chain_id)
+                        if self.incompatible_peers.contains(&peer_id) {
                             continue;
                         }
                         if self.peers.len() >= protocol::MAX_PEER_CONNECTIONS {
