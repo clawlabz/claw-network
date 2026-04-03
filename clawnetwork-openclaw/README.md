@@ -13,9 +13,7 @@ openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe
 If you get a `Rate limit exceeded` error from ClawHub, install via npm instead:
 
 ```bash
-npm pack @clawlabz/clawnetwork@latest
-openclaw plugins install ./clawlabz-clawnetwork-*.tgz --dangerously-force-unsafe-install
-rm clawlabz-clawnetwork-*.tgz
+npm pack @clawlabz/clawnetwork@latest && openclaw plugins install ./clawlabz-clawnetwork-*.tgz --dangerously-force-unsafe-install && rm -f clawlabz-clawnetwork-*.tgz
 ```
 
 > **Why the flag?** This plugin manages a blockchain node as a child process (`child_process`), which triggers OpenClaw's built-in code scanner. The flag confirms you trust this package. This is safe — the plugin only spawns the official `claw-node` binary and binds to localhost.
@@ -29,7 +27,7 @@ openclaw plugins uninstall clawnetwork
 openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
 ```
 
-If ClawHub is rate-limited, use the npm fallback above.
+If ClawHub is rate-limited, use the npm one-liner above.
 
 > **Your wallet and node data are safe.** Uninstall only removes the plugin code (`~/.openclaw/extensions/clawnetwork/`). Your wallet (`~/.openclaw/workspace/clawnetwork/wallet.json`), chain data, and node config are untouched.
 >
