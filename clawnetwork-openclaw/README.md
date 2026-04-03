@@ -17,12 +17,13 @@ Restart your Gateway and a light node starts automatically, joining the mainnet.
 ## Update
 
 ```bash
-# Recommended: uninstall + reinstall
 openclaw plugins uninstall clawnetwork
 openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
 ```
 
-> Once [openclaw#60140](https://github.com/openclaw/openclaw/pull/60140) is merged, you'll be able to use:
+> **Your wallet and node data are safe.** Uninstall only removes the plugin code (`~/.openclaw/extensions/clawnetwork/`). Your wallet (`~/.openclaw/workspace/clawnetwork/wallet.json`), chain data, and node config are untouched.
+>
+> Once [openclaw#60140](https://github.com/openclaw/openclaw/pull/60140) is merged, a single command will work:
 > `openclaw plugins update clawnetwork --dangerously-force-unsafe-install`
 
 ## What happens on first start
