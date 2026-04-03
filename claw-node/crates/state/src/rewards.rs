@@ -388,6 +388,9 @@ pub fn accumulate_mining_reward(world: &mut WorldState, height: u64) -> Vec<Bloc
 ///
 /// Must be called at every block where `height % MINER_EPOCH_LENGTH == 0` and
 /// `height >= HEARTBEAT_V2_HEIGHT`. Must run BEFORE `state_root()` computation.
+///
+/// At the activation boundary (height == HEARTBEAT_V2_HEIGHT), performs normalization
+/// only — skips settlement to avoid penalizing V1-compliant miners.
 pub fn process_miner_epoch_boundary(world: &mut WorldState, height: u64) -> Vec<BlockEvent> {
     let mut events = Vec::new();
 
@@ -400,19 +403,52 @@ pub fn process_miner_epoch_boundary(world: &mut WorldState, height: u64) -> Vec<
 
     let current_epoch = height / MINER_EPOCH_LENGTH;
     let pool_addr = genesis_address(NODE_INCENTIVE_POOL_INDEX);
+    let is_activation = height == HEARTBEAT_V2_HEIGHT;
 
-    // Snapshot check-ins so we can iterate miners mutably
-    let checkins = world.epoch_checkins.clone();
+    // === ACTIVATION BOUNDARY: normalize only, skip settlement ===
+    if is_activation {
+        // 1. Normalize all miners' V2 fields to deterministic zeros.
+        //    This ensures all nodes agree regardless of upgrade timing.
+        for miner in world.miners.values_mut() {
+            miner.pending_rewards = 0;
+            miner.pending_epoch = 0;
+            miner.epoch_attendance = 0;
+            miner.consecutive_misses = 0;
+        }
+
+        // 2. Return any bucket accumulation from the activation block to pool.
+        //    (accumulate_mining_reward runs before this function in chain.rs)
+        if world.epoch_reward_bucket > 0 {
+            *world.balances.entry(pool_addr).or_insert(0) += world.epoch_reward_bucket;
+            world.epoch_reward_bucket = 0;
+        }
+
+        // 3. Clear epoch checkins and return — no settlement on activation.
+        //    Reason: V1 miners have last_heartbeat at 1000-block intervals,
+        //    which doesn't match 100-block epoch windows. Settling now would
+        //    incorrectly penalize all compliant V1 miners.
+        world.epoch_checkins.clear();
+        return events;
+    }
+
+    // === NORMAL SETTLEMENT (from second V2 epoch onward) ===
+
+    // The settled epoch is the one before the current boundary.
+    let settled_epoch = current_epoch - 1;
 
     // --- Phase 1: Settle previous epoch's pending + update attendance ---
     let miner_addrs: Vec<[u8; 32]> = world.miners.keys().copied().collect();
     for addr in &miner_addrs {
-        let checked_in = checkins.contains_key(addr);
+        // Determine if the miner checked in during the settled epoch
+        // using persisted last_heartbeat (not transient epoch_checkins).
+        let miner = world.miners.get(addr).unwrap();
+        let checked_in = miner.last_heartbeat / MINER_EPOCH_LENGTH == settled_epoch;
+
         let miner = world.miners.get_mut(addr).unwrap();
 
         if checked_in {
             // Confirm previous epoch's pending rewards
-            if miner.pending_epoch + 1 == current_epoch && miner.pending_rewards > 0 {
+            if miner.pending_epoch == settled_epoch && miner.pending_rewards > 0 {
                 let confirmed = miner.pending_rewards;
                 *world.balances.entry(*addr).or_insert(0) += confirmed;
                 events.push(BlockEvent::RewardDistributed {

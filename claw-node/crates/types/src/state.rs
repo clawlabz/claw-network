@@ -204,8 +204,27 @@ pub struct MinerInfo {
     pub consecutive_misses: u16,
 }
 
+impl MinerInfo {
+    /// Serialize only V1 fields for backward-compatible state_root computation.
+    /// Used before HEARTBEAT_V2_HEIGHT to produce the same hash as old nodes.
+    pub fn borsh_v1(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        BorshSerialize::serialize(&self.address, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.tier, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.name, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.registered_at, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.last_heartbeat, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.ip_prefix, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.active, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.reputation_bps, &mut buf).unwrap();
+        buf
+    }
+}
+
 impl From<MinerInfoV1> for MinerInfo {
     fn from(v1: MinerInfoV1) -> Self {
+        // V2 field values here are irrelevant — they will be overwritten by
+        // the normalization step at HEARTBEAT_V2_HEIGHT. Use simple defaults.
         Self {
             address: v1.address,
             tier: v1.tier,
@@ -217,9 +236,8 @@ impl From<MinerInfoV1> for MinerInfo {
             reputation_bps: v1.reputation_bps,
             pending_rewards: 0,
             pending_epoch: 0,
-            // Active miners get full attendance history; inactive get none.
-            epoch_attendance: if v1.active { 0xFFFF } else { 0 },
-            consecutive_misses: if v1.active { 0 } else { MINER_GRACE_EPOCHS },
+            epoch_attendance: 0,
+            consecutive_misses: 0,
         }
     }
 }
@@ -253,8 +271,12 @@ pub const REPUTATION_DECAY_BPS: u16 = 100;
 
 /// Block height at which Heartbeat V2 logic activates.
 /// Before this height, legacy heartbeat interval and grace period apply.
-/// Must NOT be divisible by MINER_EPOCH_LENGTH to avoid a zero-length first epoch.
-pub const HEARTBEAT_V2_HEIGHT: u64 = 225_001;
+/// MUST be divisible by MINER_EPOCH_LENGTH — all V2 logic activates atomically
+/// at this epoch boundary (normalization + state_root switch + heartbeat mode).
+pub const HEARTBEAT_V2_HEIGHT: u64 = 213_800; // TESTNET ONLY — change to mainnet value before release
+
+// Compile-time check: V2_HEIGHT must be aligned to epoch boundary.
+const _: () = assert!(HEARTBEAT_V2_HEIGHT % MINER_EPOCH_LENGTH == 0, "HEARTBEAT_V2_HEIGHT must be a multiple of MINER_EPOCH_LENGTH");
 
 /// Reputation: newcomer tier (0-7 days), 20% reward weight.
 pub const REPUTATION_NEWCOMER_BPS: u16 = 2_000;

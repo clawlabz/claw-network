@@ -874,8 +874,11 @@ mod tests {
         state.miners.get_mut(&addr).unwrap().registered_at = height - BLOCKS_7_DAYS - 1;
         state.miners.get_mut(&addr).unwrap().reputation_bps = REPUTATION_NEWCOMER_BPS;
 
+        // Heartbeat in the settled epoch
+        let settled_epoch_start = height - MINER_EPOCH_LENGTH;
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = settled_epoch_start + 50;
+
         state.block_height = height;
-        state.epoch_checkins.insert(addr, true);
         process_miner_epoch_boundary(&mut state, height);
 
         // Should be upgraded from newcomer to at least established
@@ -1092,18 +1095,20 @@ mod tests {
 
     // ======================== Heartbeat V2 Tests ========================
 
-    /// First epoch boundary at or after HEARTBEAT_V2_HEIGHT.
-    fn first_v2_epoch_boundary() -> u64 {
-        let h = HEARTBEAT_V2_HEIGHT;
-        if h % MINER_EPOCH_LENGTH == 0 { h } else { h + (MINER_EPOCH_LENGTH - h % MINER_EPOCH_LENGTH) }
+    /// First SETTLEMENT epoch boundary (the activation boundary only normalizes).
+    fn first_v2_settlement_boundary() -> u64 {
+        // V2_HEIGHT is the activation boundary (normalize only).
+        // First real settlement is one epoch later.
+        HEARTBEAT_V2_HEIGHT + MINER_EPOCH_LENGTH
     }
 
     /// Helper: create a WorldState at V2 height with pool funds and one active miner.
-    /// Returns (state, miner_address, first_epoch_boundary).
+    /// Runs activation normalization, then returns state ready for the first settlement epoch.
+    /// Returns (state, miner_address, first_settlement_boundary).
     fn setup_v2_miner() -> (WorldState, [u8; 32], u64) {
-        use crate::rewards::{genesis_address_pub, NODE_INCENTIVE_POOL_INDEX};
+        use crate::rewards::{genesis_address_pub, NODE_INCENTIVE_POOL_INDEX, process_miner_epoch_boundary};
 
-        let epoch_start = first_v2_epoch_boundary();
+        let epoch_start = first_v2_settlement_boundary();
 
         let mut state = WorldState::default();
         let pool_addr = genesis_address_pub(NODE_INCENTIVE_POOL_INDEX);
@@ -1126,6 +1131,14 @@ mod tests {
         });
 
         state.block_height = HEARTBEAT_V2_HEIGHT;
+
+        // Run activation normalization (resets all V2 fields to zero)
+        process_miner_epoch_boundary(&mut state, HEARTBEAT_V2_HEIGHT);
+
+        // Simulate a miner that has built up attendance over prior epochs.
+        // Without this, uptime=0% and no miner qualifies for rewards.
+        state.miners.get_mut(&addr).unwrap().epoch_attendance = 0xFFF; // 12/12
+
         (state, addr, epoch_start)
     }
 
@@ -1155,7 +1168,8 @@ mod tests {
         for h in epoch_start..boundary {
             accumulate_mining_reward(&mut state, h);
         }
-        state.epoch_checkins.insert(addr, true);
+        // Simulate heartbeat: set last_heartbeat within the settled epoch
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = epoch_start + 50;
         state.block_height = boundary;
         process_miner_epoch_boundary(&mut state, boundary);
 
@@ -1170,7 +1184,8 @@ mod tests {
         for h in boundary..boundary2 {
             accumulate_mining_reward(&mut state, h);
         }
-        state.epoch_checkins.insert(addr, true);
+        // Heartbeat in the second epoch
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = boundary + 50;
         state.block_height = boundary2;
         let events2 = process_miner_epoch_boundary(&mut state, boundary2);
 
@@ -1192,12 +1207,12 @@ mod tests {
         for h in epoch_start..boundary {
             accumulate_mining_reward(&mut state, h);
         }
-        state.epoch_checkins.insert(addr, true);
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = epoch_start + 50;
         process_miner_epoch_boundary(&mut state, boundary);
         let pending_amount = state.miners.get(&addr).unwrap().pending_rewards;
         assert!(pending_amount > 0);
 
-        // Epoch 2: no check-in → forfeit
+        // Epoch 2: no check-in (last_heartbeat stays in epoch 1) → forfeit
         let boundary2 = boundary + MINER_EPOCH_LENGTH;
         for h in boundary..boundary2 {
             accumulate_mining_reward(&mut state, h);
@@ -1247,7 +1262,9 @@ mod tests {
 
         height += MINER_EPOCH_LENGTH;
         state.block_height = height;
-        state.epoch_checkins.insert(addr, true);
+        // Miner comes back online — heartbeat in the settled epoch
+        let settled_epoch_start = height - MINER_EPOCH_LENGTH;
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = settled_epoch_start + 50;
         process_miner_epoch_boundary(&mut state, height);
 
         let miner = state.miners.get(&addr).unwrap();
@@ -1282,7 +1299,7 @@ mod tests {
         for h in epoch_start..boundary {
             accumulate_mining_reward(&mut state, h);
         }
-        state.epoch_checkins.insert(addr, true);
+        state.miners.get_mut(&addr).unwrap().last_heartbeat = epoch_start + 50;
         process_miner_epoch_boundary(&mut state, boundary);
 
         let miner = state.miners.get(&addr).unwrap();
@@ -1290,9 +1307,10 @@ mod tests {
     }
 
     #[test]
-    fn test_v2_heartbeat_handler_uses_epoch_checkin() {
+    fn test_v2_heartbeat_handler_epoch_number_admission() {
         let (mut state, sk, addr) = setup_miner();
-        state.block_height = HEARTBEAT_V2_HEIGHT + MINER_HEARTBEAT_INTERVAL + 1;
+        // Move to V2 territory, new epoch relative to last heartbeat
+        state.block_height = HEARTBEAT_V2_HEIGHT + MINER_EPOCH_LENGTH + 1;
         state.miners.get_mut(&addr).unwrap().last_heartbeat = HEARTBEAT_V2_HEIGHT;
 
         let payload = MinerHeartbeatPayload {

@@ -106,14 +106,14 @@ pub struct WorldState {
     /// Used by V1 heartbeat logic; retained for backward compat until V2 activates.
     pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
     /// Current epoch's miner check-ins: address → true (V2 heartbeat).
-    /// Transient — cleared every epoch boundary. Skipped from borsh to
-    /// maintain backward compatibility with pre-V2 snapshots.
+    /// Runtime dedup cache only — NOT used for consensus decisions (epoch boundary
+    /// uses last_heartbeat instead). Safe to lose on restart.
     #[borsh(skip)]
     pub epoch_checkins: BTreeMap<[u8; 32], bool>,
     /// Accumulated mining rewards for the current epoch bucket (V2 heartbeat).
-    /// Transient — drained every epoch boundary. Skipped from borsh to
-    /// maintain backward compatibility with pre-V2 snapshots.
-    #[borsh(skip)]
+    /// Holds funds deducted from pool but not yet distributed — MUST be persisted
+    /// to maintain supply integrity across restarts.
+    /// Note: changes WorldState borsh layout; handled by WorldStateV1 migration.
     pub epoch_reward_bucket: u128,
     /// Transaction receipts: tx_hash → receipt (populated for contract txs).
     /// Skipped from borsh serialization — receipts are an in-memory runtime
@@ -216,9 +216,9 @@ impl WorldState {
             processed_evidence: v1.processed_evidence,
             miners,
             miner_heartbeat_tracker: v1.miner_heartbeat_tracker,
-            // V2 transient fields — default values are correct
-            epoch_checkins: BTreeMap::new(),
-            epoch_reward_bucket: 0,
+            // V2 fields — 0/empty defaults are correct for migration
+            epoch_checkins: BTreeMap::new(),  // runtime cache, borsh(skip)
+            epoch_reward_bucket: 0,           // persisted, 0 before V2 activation
             // borsh(skip) fields
             receipts: BTreeMap::new(),
             user_delegations: BTreeMap::new(),
@@ -588,12 +588,19 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
-        // Miners
+        // Miners — versioned serialization for state_root compatibility.
+        // Before V2: borsh_v1() (8 fields) matches old block headers.
+        // After V2: full borsh (12 fields) includes epoch scoring state.
+        let v2_active = self.block_height >= HEARTBEAT_V2_HEIGHT;
         for (addr, miner) in &self.miners {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"miner:");
             entry.extend_from_slice(addr);
-            entry.extend_from_slice(&borsh::to_vec(miner).expect("borsh serialization of MinerInfo should never fail"));
+            if v2_active {
+                entry.extend_from_slice(&borsh::to_vec(miner).expect("borsh serialization of MinerInfo should never fail"));
+            } else {
+                entry.extend_from_slice(&miner.borsh_v1());
+            }
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
@@ -606,16 +613,11 @@ impl WorldState {
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
-        // Epoch check-ins (V2 heartbeat)
-        for (addr, _) in &self.epoch_checkins {
-            let mut entry = Vec::new();
-            entry.extend_from_slice(b"epochcheckin:");
-            entry.extend_from_slice(addr);
-            leaves.push(*blake3::hash(&entry).as_bytes());
-        }
+        // epoch_checkins: NOT in state_root (runtime dedup cache, borsh skip)
 
-        // Epoch reward bucket (V2 heartbeat)
-        if self.epoch_reward_bucket > 0 {
+        // Epoch reward bucket — only in state_root after V2 activation.
+        // Before V2 it's always 0 (mining uses old direct distribution).
+        if v2_active && self.epoch_reward_bucket > 0 {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"epochbucket:");
             entry.extend_from_slice(&self.epoch_reward_bucket.to_le_bytes());

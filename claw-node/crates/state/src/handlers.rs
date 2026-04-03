@@ -1323,21 +1323,25 @@ pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Resul
         .ok_or(StateError::MinerNotRegistered)?;
 
     if state.block_height >= HEARTBEAT_V2_HEIGHT {
-        // --- V2 logic: epoch-based check-in ---
-        let interval = MINER_HEARTBEAT_INTERVAL; // 100 blocks
-        let next_allowed = miner.last_heartbeat + interval;
-        if state.block_height < next_allowed {
+        // --- V2 logic: epoch-number based check-in ---
+        // Allow one heartbeat per epoch. No phase-locking — miners can check in
+        // at any point within the epoch regardless of when they last checked in.
+        let current_epoch = state.block_height / MINER_EPOCH_LENGTH;
+        let last_epoch = miner.last_heartbeat / MINER_EPOCH_LENGTH;
+
+        if last_epoch >= current_epoch {
+            // Already checked in during this epoch
             return Err(StateError::HeartbeatTooEarly {
-                next_allowed,
+                next_allowed: (current_epoch + 1) * MINER_EPOCH_LENGTH,
                 current: state.block_height,
             });
         }
 
-        // Deduplicate: one check-in per epoch
-        let epoch = state.block_height / MINER_EPOCH_LENGTH;
+        // Runtime dedup guard (epoch_checkins is borsh(skip), may be empty after restart,
+        // but the last_epoch check above is the authoritative guard).
         if state.epoch_checkins.contains_key(&tx.from) {
             return Err(StateError::HeartbeatTooEarly {
-                next_allowed,
+                next_allowed: (current_epoch + 1) * MINER_EPOCH_LENGTH,
                 current: state.block_height,
             });
         }
@@ -1346,14 +1350,12 @@ pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Resul
         let miner = state.miners.get_mut(&tx.from).expect("miner existence validated above");
         miner.last_heartbeat = state.block_height;
 
-        // Record epoch check-in (settlement happens at epoch boundary)
+        // Record epoch check-in (runtime dedup cache, not used for settlement)
         state.epoch_checkins.insert(tx.from, true);
 
         // Also record in V1 tracker for backward compat during transition
         let v1_window = state.block_height / MINER_HEARTBEAT_INTERVAL_V1;
         state.miner_heartbeat_tracker.insert((tx.from, v1_window), true);
-
-        let _ = epoch; // suppress unused warning
     } else {
         // --- V1 logic: legacy heartbeat ---
         let next_allowed = miner.last_heartbeat + MINER_HEARTBEAT_INTERVAL_V1;
