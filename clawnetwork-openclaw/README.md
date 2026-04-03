@@ -7,10 +7,23 @@ Official ClawNetwork plugin for OpenClaw Gateway.
 ## Install
 
 ```bash
-openclaw plugins install @clawlabz/clawnetwork@latest
+openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
 ```
 
-That's it. Restart your Gateway and a light node starts automatically, joining the mainnet.
+> **Why the flag?** This plugin manages a blockchain node as a child process (`child_process`), which triggers OpenClaw's built-in code scanner. The flag confirms you trust this package. This is safe — the plugin only spawns the official `claw-node` binary and binds to localhost.
+
+Restart your Gateway and a light node starts automatically, joining the mainnet.
+
+## Update
+
+```bash
+# Recommended: uninstall + reinstall
+openclaw plugins uninstall clawnetwork
+openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
+```
+
+> Once [openclaw#60140](https://github.com/openclaw/openclaw/pull/60140) is merged, you'll be able to use:
+> `openclaw plugins update clawnetwork --dangerously-force-unsafe-install`
 
 ## What happens on first start
 
