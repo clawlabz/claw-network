@@ -7,6 +7,7 @@ pub(crate) mod metrics;
 mod network;
 mod rpc_server;
 mod sync;
+mod version_check;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -73,6 +74,9 @@ enum Commands {
         /// This prevents accidentally starting a brand new chain on production networks.
         #[arg(long)]
         allow_genesis: bool,
+        /// Skip version check at startup (development/emergency use only)
+        #[arg(long)]
+        skip_version_check: bool,
     },
     /// Show node status
     Status,
@@ -404,7 +408,43 @@ async fn main() -> Result<()> {
             single,
             sync_mode,
             allow_genesis,
+            skip_version_check,
         } => {
+            // Version check before any other initialization
+            let mut version_manifest_for_chain: Option<version_check::VersionManifest> = None;
+            if !skip_version_check {
+                if let Some(manifest) = version_check::fetch_manifest().await {
+                    let current_version = env!("CARGO_PKG_VERSION");
+                    let upgrade_level = version_check::check_version(current_version, &manifest, None);
+
+                    match upgrade_level {
+                        version_check::UpgradeLevel::UpToDate => {
+                            tracing::info!("Node version {} is up to date", current_version);
+                        }
+                        version_check::UpgradeLevel::Recommended => {
+                            let msg = version_check::format_upgrade_message(&upgrade_level, &manifest);
+                            tracing::info!("{}", msg);
+                        }
+                        version_check::UpgradeLevel::Required => {
+                            let msg = version_check::format_upgrade_message(&upgrade_level, &manifest);
+                            tracing::warn!("{}", msg);
+                        }
+                        version_check::UpgradeLevel::Critical => {
+                            let msg = version_check::format_upgrade_message(&upgrade_level, &manifest);
+                            tracing::error!("{}", msg);
+                            tracing::error!("Node startup blocked due to critical version issue. Please upgrade immediately.");
+                            std::process::exit(75); // EX_TEMPFAIL
+                        }
+                    }
+                    // Store manifest for runtime checks and RPC endpoint
+                    version_manifest_for_chain = Some(manifest);
+                } else {
+                    tracing::debug!("Could not fetch version manifest, proceeding without version check");
+                }
+            } else {
+                tracing::info!("Version check skipped (--skip-version-check flag)");
+            }
+
             let sync_mode = sync::SyncMode::parse(&sync_mode);
             // Resolve network: CLI > config.toml > default devnet
             let resolved_network = network.unwrap_or_else(|| {
@@ -463,6 +503,11 @@ async fn main() -> Result<()> {
                 net_cfg.chain_id,
             )?;
 
+            // Store version manifest in chain for /version RPC endpoint and runtime checks
+            if let Some(manifest) = version_manifest_for_chain {
+                chain.set_version_manifest(manifest);
+            }
+
             // Fast sync: enable state snapshot request on first peer connection
             if sync_mode == sync::SyncMode::Fast {
                 sync::log_fast_sync_intent();
@@ -485,7 +530,7 @@ async fn main() -> Result<()> {
 
             if run_single {
                 // Start RPC without P2P (no tx gossip needed in single-node mode)
-                let rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled, None).await?;
+                let _rpc_handle = rpc_server::start(chain.clone(), resolved_rpc_port, net_cfg.faucet_enabled, None).await?;
                 tracing::info!(port = resolved_rpc_port, "RPC server listening");
                 tracing::info!("Running in single-node mode (no P2P)");
                 chain.run_block_loop(None).await;

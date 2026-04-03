@@ -15,6 +15,7 @@ const DEFAULT_P2P_PORT = 9711
 const DEFAULT_NETWORK = 'mainnet'
 const DEFAULT_SYNC_MODE = 'light'
 const DEFAULT_HEALTH_CHECK_SECONDS = 30
+const MIN_NODE_VERSION = '0.4.19'
 const DEFAULT_UI_PORT = 19877
 const MAX_RESTART_ATTEMPTS = 3
 
@@ -225,6 +226,16 @@ function getBinaryVersion(binaryPath: string): string | null {
     const match = output.match(/(\d+\.\d+\.\d+)/)
     return match ? match[1] : output
   } catch { return null }
+}
+
+function isVersionOlder(current: string, required: string): boolean {
+  const c = current.split('.').map(Number)
+  const r = required.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    if ((c[i] || 0) < (r[i] || 0)) return true
+    if ((c[i] || 0) > (r[i] || 0)) return false
+  }
+  return false
 }
 
 function detectPlatformTarget(): string {
@@ -807,24 +818,28 @@ function buildUiHtml(cfg: PluginConfig): string {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ClawNetwork Node Dashboard</title>
-  <link rel="icon" href="https://cdn.clawlabz.xyz/brand/favicon.png">
+  <link rel="icon" href="https://explorer.clawlabz.xyz/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0a0a12;
-      --bg-panel: #12121f;
-      --border: #1e1e3a;
-      --accent: #00ccff;
-      --accent-dim: rgba(0, 204, 255, 0.15);
-      --green: #00ff88;
-      --green-dim: rgba(0, 255, 136, 0.15);
-      --purple: #8b5cf6;
-      --text: #e0e0f0;
-      --text-dim: #666688;
-      --danger: #ff4455;
-      --font: system-ui, -apple-system, sans-serif;
-      --font-mono: 'SF Mono', 'Fira Code', Consolas, monospace;
+      --bg: #0a0705;
+      --bg-panel: #140e0a;
+      --border: #2a1c14;
+      --accent: #F96706;
+      --accent-dim: rgba(249, 103, 6, 0.15);
+      --accent-light: #FF8C3A;
+      --purple: #a855f7;
+      --purple-dim: rgba(168, 85, 247, 0.15);
+      --green: #22c55e;
+      --green-dim: rgba(34, 197, 94, 0.15);
+      --text: #fffaf5;
+      --text-dim: #8892a0;
+      --danger: #ef4444;
+      --font: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
       --radius: 10px;
-      --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+      --shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: var(--font); line-height: 1.6; min-height: 100vh; }
@@ -834,16 +849,17 @@ function buildUiHtml(cfg: PluginConfig): string {
     .header { background: var(--bg-panel); border-bottom: 1px solid var(--border); padding: 16px 0; position: sticky; top: 0; z-index: 100; }
     .header .container { display: flex; align-items: center; justify-content: space-between; }
     .logo { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
-    .logo-claw { color: var(--accent); }
-    .logo-net { color: var(--green); }
+    .logo-claw { color: #ffffff; }
+    .logo-net { color: var(--accent); }
     .header-badge { font-size: 11px; background: var(--accent-dim); color: var(--accent); padding: 2px 8px; border-radius: 4px; }
 
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 24px 0; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
     .stat-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
     .stat-label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
     .stat-value { font-size: 28px; font-weight: 700; font-family: var(--font-mono); margin-top: 4px; }
     .stat-value.green { color: var(--green); }
     .stat-value.accent { color: var(--accent); }
+    .stat-value.purple { color: var(--purple); }
     .stat-value.danger { color: var(--danger); }
 
     .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin: 16px 0; }
@@ -858,13 +874,23 @@ function buildUiHtml(cfg: PluginConfig): string {
     .status-dot.offline { background: var(--danger); }
     .status-dot.syncing { background: #ffaa00; animation: pulse 1.5s infinite; }
 
-    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--text); font-size: 13px; cursor: pointer; transition: 0.2s; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--text); font-size: 13px; cursor: pointer; transition: 0.2s; font-family: var(--font); }
     .btn:hover { border-color: var(--accent); color: var(--accent); }
     .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
     .btn.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
-    .btn-group { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
+    .node-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--border); }
+    .node-controls .spacer { flex: 1; }
 
-    .logs-box { background: #080810; border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; font-family: var(--font-mono); font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; color: var(--text-dim); line-height: 1.8; }
+    .wallet-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+    .wallet-balance { font-size: 36px; font-weight: 800; font-family: var(--font-mono); color: var(--accent); letter-spacing: -1px; line-height: 1; }
+    .wallet-balance-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .wallet-addr-wrap { flex: 1; min-width: 0; }
+    .wallet-addr-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .wallet-addr { font-family: var(--font-mono); font-size: 12px; background: var(--bg); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); word-break: break-all; display: flex; align-items: center; gap: 8px; }
+    .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--accent); white-space: nowrap; font-family: var(--font); transition: 0.2s; }
+    .copy-btn:hover { background: var(--accent-dim); }
+
+    .logs-box { background: #060402; border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; font-family: var(--font-mono); font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; color: var(--text-dim); line-height: 1.8; }
 
     .wallet-addr { font-family: var(--font-mono); font-size: 13px; background: var(--bg); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); word-break: break-all; display: flex; align-items: center; gap: 8px; }
     .copy-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 2px 6px; }
@@ -872,49 +898,118 @@ function buildUiHtml(cfg: PluginConfig): string {
 
     .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-panel); border: 1px solid var(--accent); color: var(--accent); padding: 12px 20px; border-radius: 8px; font-size: 13px; opacity: 0; transition: 0.3s; z-index: 1000; }
     .toast.show { opacity: 1; }
+
+    .quick-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 16px 0 0; }
+    .quick-action { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: 0.2s; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text); }
+    .quick-action:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+    .quick-action .qa-icon { font-size: 18px; width: 28px; text-align: center; }
+    .quick-action .qa-label { font-weight: 500; }
+    .quick-action .qa-hint { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+    .quick-action.warn:hover { border-color: var(--danger); color: var(--danger); }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 200; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 28px; max-width: 520px; width: 90%; box-shadow: var(--shadow); }
+    .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+    .modal-warn { background: rgba(255,85,85,0.1); border: 1px solid var(--danger); border-radius: 6px; padding: 10px 14px; font-size: 12px; color: var(--danger); margin-bottom: 14px; line-height: 1.5; }
+    .modal-key { font-family: var(--font-mono); font-size: 13px; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border); word-break: break-all; line-height: 1.6; user-select: all; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+    .modal-close { background: none; border: 1px solid var(--border); color: var(--text-dim); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .modal-close:hover { border-color: var(--text); color: var(--text); }
+    .modal-input { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 14px; color: var(--text); font-family: var(--font-mono); outline: none; margin-top: 4px; }
+    .modal-input:focus { border-color: var(--accent); }
+    .modal-hint { font-size: 12px; color: var(--text-dim); margin-top: 6px; line-height: 1.5; }
+
+    .upgrade-banner { padding: 14px 16px; border-radius: var(--radius); margin-bottom: 16px; font-size: 13px; line-height: 1.6; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .upgrade-banner.recommended { background: rgba(255, 170, 0, 0.1); border: 1px solid rgba(255, 170, 0, 0.3); color: #ffaa00; }
+    .upgrade-banner.recommended .upgrade-text { flex: 1; }
+    .upgrade-banner.recommended .upgrade-actions { display: flex; gap: 8px; }
+    .upgrade-banner.required { background: rgba(255, 140, 0, 0.1); border: 1px solid rgba(255, 140, 0, 0.3); color: #ff8c3a; }
+    .upgrade-banner.required .upgrade-text { flex: 1; }
+    .upgrade-banner.required .upgrade-actions { display: flex; gap: 8px; }
+    .upgrade-banner.critical { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: var(--danger); width: 100%; margin-left: calc(-20px - 1px); margin-right: calc(-20px - 1px); padding: 16px calc(20px + 1px); border-radius: 0; font-weight: 600; }
+    .upgrade-banner.critical .upgrade-text { flex: 1; }
+    .upgrade-banner.critical .upgrade-actions { display: flex; gap: 8px; }
+    .upgrade-btn { background: var(--accent); color: var(--bg); border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600; transition: 0.2s; }
+    .upgrade-btn:hover { opacity: 0.85; }
+    .upgrade-dismiss { background: none; border: 1px solid currentColor; color: currentColor; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; transition: 0.2s; }
+    .upgrade-dismiss:hover { opacity: 0.7; }
   </style>
 </head>
 <body>
   <header class="header">
     <div class="container">
       <div style="display:flex;align-items:center;gap:14px">
-        <div class="logo"><span class="logo-claw">Claw</span><span class="logo-net">Network</span></div>
+        <div class="logo"><img src="https://explorer.clawlabz.xyz/favicon.png" style="width:28px;height:28px;border-radius:6px;vertical-align:middle;margin-right:8px"><span class="logo-claw">Claw</span><span class="logo-net">Network</span></div>
         <span class="header-badge">Node Dashboard</span>
       </div>
       <span id="lastUpdate" style="font-size:12px;color:var(--text-dim)"></span>
     </div>
   </header>
 
-  <main class="container" style="padding-top:8px;padding-bottom:40px">
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-label">Status</div>
-        <div class="stat-value" id="statusValue"><span class="status-dot offline"></span>Offline</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Block Height</div>
-        <div class="stat-value accent" id="heightValue">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Peers</div>
-        <div class="stat-value" id="peersValue">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Uptime</div>
-        <div class="stat-value" id="uptimeValue">—</div>
-      </div>
-    </div>
+  <main class="container" style="padding-top:16px;padding-bottom:40px">
 
-    <div class="btn-group">
-      <button class="btn primary" onclick="doAction('start')">Start Node</button>
-      <button class="btn danger" onclick="doAction('stop')">Stop Node</button>
-      <button class="btn" onclick="doAction('faucet')">Faucet (testnet)</button>
-      <button class="btn" onclick="refreshLogs()">Refresh Logs</button>
-    </div>
+    <div id="upgradeBanner" style="display:none" class="upgrade-banner"></div>
 
     <div class="panel">
+      <div class="panel-title">Node</div>
+      <div class="stats-grid" style="margin:0 0 4px">
+        <div class="stat-card">
+          <div class="stat-label">Status</div>
+          <div class="stat-value" id="statusValue"><span class="status-dot offline"></span>Offline</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Block Height</div>
+          <div class="stat-value accent" id="heightValue">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Peers</div>
+          <div class="stat-value" id="peersValue">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Uptime</div>
+          <div class="stat-value" id="uptimeValue">—</div>
+        </div>
+      </div>
+      <div class="node-controls">
+        <button class="btn primary" id="startBtn" onclick="doAction('start')">&#x25B6; Start Node</button>
+        <button class="btn danger" id="stopBtn" onclick="doAction('stop')">&#x25A0; Stop Node</button>
+      </div>
+    </div>
+
+    <div class="panel" id="walletPanel">
       <div class="panel-title">Wallet</div>
-      <div id="walletInfo">Loading...</div>
+      <div id="walletEmpty" style="color:var(--text-dim);font-size:13px">No wallet yet — start the node to generate one</div>
+      <div id="walletLoaded" style="display:none">
+        <div class="wallet-hero">
+          <div>
+            <div class="wallet-balance-label">Balance</div>
+            <div class="wallet-balance" id="walletBalance">—</div>
+          </div>
+          <div class="wallet-addr-wrap">
+            <div class="wallet-addr-label">Address</div>
+            <div class="wallet-addr"><span id="walletAddrText" style="flex:1;min-width:0;word-break:break-all"></span><button class="copy-btn" onclick="copyText(cachedAddress)">Copy</button></div>
+          </div>
+        </div>
+        <div class="quick-actions" id="walletActions">
+          <div class="quick-action" onclick="importToExtension()" id="qaImportExt">
+            <span class="qa-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+            <div><div class="qa-label">Import to Extension</div><div class="qa-hint" id="qaImportHint">One-click import to browser wallet</div></div>
+          </div>
+          <div class="quick-action warn" onclick="showExportKey()">
+            <span class="qa-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg></span>
+            <div><div class="qa-label">Export Private Key</div><div class="qa-hint">Manual copy for backup</div></div>
+          </div>
+          <div class="quick-action" onclick="openExplorer()">
+            <span class="qa-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></span>
+            <div><div class="qa-label">View on Explorer</div><div class="qa-hint">Transaction history</div></div>
+          </div>
+          <div class="quick-action" id="qaRegister" onclick="handleRegisterAgent()">
+            <span class="qa-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/></svg></span>
+            <div><div class="qa-label" id="qaRegisterLabel">Register Agent</div><div class="qa-hint" id="qaRegisterHint">On-chain identity</div></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="panel">
@@ -923,12 +1018,70 @@ function buildUiHtml(cfg: PluginConfig): string {
     </div>
 
     <div class="panel">
-      <div class="panel-title">Recent Logs</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="panel-title" style="margin-bottom:0">Recent Logs</div>
+        <button class="btn" style="font-size:12px;padding:5px 12px" onclick="refreshLogs()">&#x21BB; Refresh</button>
+      </div>
       <div class="logs-box" id="logsBox">Loading...</div>
     </div>
   </main>
 
+  <footer style="border-top:1px solid var(--border);padding:24px 0;margin-top:16px">
+    <div class="container" style="display:flex;flex-wrap:wrap;gap:20px;align-items:center;justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:8px">
+        <img src="https://explorer.clawlabz.xyz/favicon.png" style="width:18px;height:18px;border-radius:4px;opacity:0.7">
+        <span style="font-size:12px;color:var(--text-dim)">© 2026 ClawLabz</span>
+      </div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap">
+        <a href="https://chain.clawlabz.xyz" target="_blank" style="font-size:12px;color:var(--text-dim);text-decoration:none;transition:0.2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-dim)'">Chain</a>
+        <a href="https://explorer.clawlabz.xyz" target="_blank" style="font-size:12px;color:var(--text-dim);text-decoration:none;transition:0.2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-dim)'">Explorer</a>
+        <a href="https://chrome.google.com/webstore/search/ClawNetwork" target="_blank" style="font-size:12px;color:var(--text-dim);text-decoration:none;transition:0.2s" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-dim)'">Wallet Extension</a>
+      </div>
+    </div>
+  </footer>
+
   <div class="toast" id="toast"></div>
+
+  <div class="modal-overlay" id="registerModal" onclick="if(event.target===this)closeRegisterModal()">
+    <div class="modal">
+      <div class="modal-title">Register Agent</div>
+      <p style="font-size:13px;color:var(--text-dim);margin:0 0 12px">Register your wallet as an AI Agent on ClawNetwork. The name is your on-chain identity — it does not need to be unique globally (the wallet address is what's unique). Registration is gas-free on mainnet.</p>
+      <input id="registerNameInput" class="modal-input" type="text" placeholder="my-agent-name" maxlength="32" onkeydown="if(event.key==='Enter')submitRegisterAgent()" />
+      <div class="modal-hint">Allowed: letters, numbers, hyphens, underscores. Max 32 chars.</div>
+      <div class="modal-actions">
+        <button class="modal-close" onclick="closeRegisterModal()">Cancel</button>
+        <button class="btn primary" onclick="submitRegisterAgent()">Register</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="installModal" onclick="if(event.target===this)closeInstallModal()">
+    <div class="modal">
+      <div class="modal-title">Install ClawNetwork Wallet</div>
+      <p style="font-size:13px;color:var(--text-dim);margin:0 0 16px;line-height:1.6">The ClawNetwork browser extension is not detected. Install it first, then click Import to Extension to import your node wallet.</p>
+      <div style="display:flex;gap:10px;flex-direction:column">
+        <a href="https://chrome.google.com/webstore/search/ClawNetwork" target="_blank" class="btn primary" style="text-decoration:none;justify-content:center;padding:10px 16px">Open Chrome Web Store</a>
+        <a href="https://chain.clawlabz.xyz" target="_blank" style="font-size:12px;color:var(--text-dim);text-decoration:none;text-align:center" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='var(--text-dim)'">Learn more at chain.clawlabz.xyz →</a>
+      </div>
+      <div class="modal-actions" style="margin-top:16px">
+        <button class="modal-close" onclick="closeInstallModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="exportModal" onclick="if(event.target===this)closeExportModal()">
+    <div class="modal">
+      <div class="modal-title">Export Private Key</div>
+      <div class="modal-warn">
+        &#x26A0;&#xFE0F; <strong>Never share your private key.</strong> Anyone with this key has full control of your wallet and funds. Only use this to import into your own browser extension or backup.
+      </div>
+      <div class="modal-key" id="exportKeyDisplay">Loading...</div>
+      <div class="modal-actions">
+        <button class="btn primary" onclick="copyExportKey()">Copy Private Key</button>
+        <button class="modal-close" onclick="closeExportModal()">Close</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     const API = '';
@@ -941,8 +1094,190 @@ function buildUiHtml(cfg: PluginConfig): string {
       setTimeout(() => el.classList.remove('show'), 3000);
     }
 
+    let cachedAddress = '';
+    let cachedNetwork = '';
+    let cachedKey = '';
+    let cachedAgentName = '';   // '' = not registered, string = registered name
+
     function copyText(text) {
       navigator.clipboard.writeText(text).then(() => toast('Copied!')).catch(() => {});
+    }
+
+    function copyAddress() {
+      if (!cachedAddress) { toast('No wallet address'); return; }
+      copyText(cachedAddress);
+      toast('Address copied!');
+    }
+
+    async function showExportKey() {
+      document.getElementById('exportKeyDisplay').textContent = 'Loading...';
+      document.getElementById('exportModal').classList.add('open');
+      try {
+        const res = await fetch(API + '/api/wallet/export');
+        const data = await res.json();
+        if (data.error) { document.getElementById('exportKeyDisplay').textContent = data.error; return; }
+        cachedKey = data.secretKey;
+        document.getElementById('exportKeyDisplay').textContent = data.secretKey;
+      } catch (e) { document.getElementById('exportKeyDisplay').textContent = 'Failed to load'; }
+    }
+
+    function closeExportModal() {
+      document.getElementById('exportModal').classList.remove('open');
+      cachedKey = '';
+      document.getElementById('exportKeyDisplay').textContent = '';
+    }
+
+    function copyExportKey() {
+      if (!cachedKey) return;
+      copyText(cachedKey);
+      toast('Private key copied! Paste into browser extension to import.');
+    }
+
+    function openExplorer() {
+      if (!cachedAddress) { toast('No wallet address'); return; }
+      window.open('https://explorer.clawlabz.xyz/address/' + cachedAddress, '_blank');
+    }
+
+    function openFaucet() {
+      window.open('https://chain.clawlabz.xyz/faucet', '_blank');
+    }
+
+    // Detect ClawNetwork extension provider (for enhanced flow when available)
+    let hasExtension = false;
+    function checkExtension() {
+      if (window.clawNetwork && window.clawNetwork.isClawNetwork) {
+        hasExtension = true;
+      }
+    }
+    checkExtension();
+    setTimeout(checkExtension, 1000);
+    setTimeout(checkExtension, 3000);
+
+    async function importToExtension() {
+      // Try externally_connectable direct channel first (bypasses page JS context)
+      const extIds = await detectExtensionIds();
+      if (extIds.length > 0) {
+        toast('Connecting to extension (secure channel)...');
+        try {
+          const res = await fetch(API + '/api/wallet/export');
+          const data = await res.json();
+          if (!data.secretKey) { toast('No private key found'); return; }
+          // Direct to background — private key never in page JS event loop
+          const extId = extIds[0];
+          await chromeExtSend(extId, { method: 'claw_requestAccounts' });
+          toast('Approve the import in your extension popup...');
+          await chromeExtSend(extId, { method: 'claw_importAccountKey', params: [data.secretKey, 'ClawNetwork Node'] });
+          toast('Account imported to extension!');
+          return;
+        } catch (e) { /* fall through to provider method */ }
+      }
+      // Fallback: use window.clawNetwork provider
+      if (!window.clawNetwork) {
+        document.getElementById('installModal').classList.add('open');
+        return;
+      }
+      toast('Connecting to extension...');
+      try {
+        await window.clawNetwork.request({ method: 'claw_requestAccounts' });
+        const res = await fetch(API + '/api/wallet/export');
+        const data = await res.json();
+        if (!data.secretKey) { toast('No private key found'); return; }
+        toast('Approve the import in your extension popup...');
+        await window.clawNetwork.request({ method: 'claw_importAccountKey', params: [data.secretKey, 'ClawNetwork Node'] });
+        toast('Account imported to extension!');
+      } catch (e) { toast('Import failed: ' + (e.message || e)); }
+    }
+
+    function chromeExtSend(extId, msg) {
+      return new Promise((resolve, reject) => {
+        if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) { reject(new Error('No chrome.runtime')); return; }
+        chrome.runtime.sendMessage(extId, msg, (response) => {
+          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
+          if (response && response.success === false) { reject(new Error(response.error || 'Failed')); return; }
+          resolve(response);
+        });
+      });
+    }
+
+    async function detectExtensionIds() {
+      // Try known extension IDs or probe for externally_connectable
+      // In production, the extension ID is stable after Chrome Web Store publish
+      // For dev, try to detect via management API or stored ID
+      const ids = [];
+      try {
+        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+          // Try sending a ping to see if any extension responds
+          // This requires knowing the extension ID. For now, check localStorage.
+          const stored = localStorage.getItem('clawnetwork_extension_id');
+          if (stored) ids.push(stored);
+        }
+      } catch {}
+      return ids;
+    }
+
+    async function transferFromDashboard() {
+      const to = prompt('Recipient address (64 hex chars):');
+      if (!to) return;
+      const amount = prompt('Amount (CLAW):');
+      if (!amount) return;
+      if (window.clawNetwork) {
+        try {
+          toast('Approve transfer in extension...');
+          await window.clawNetwork.request({ method: 'claw_requestAccounts' });
+          const result = await window.clawNetwork.request({ method: 'claw_transfer', params: [to, amount] });
+          toast('Transfer sent! Hash: ' + (result && result.txHash ? result.txHash.slice(0, 16) + '...' : 'submitted'));
+        } catch (e) { toast('Transfer failed: ' + (e.message || e)); }
+      } else {
+        try {
+          const res = await fetch(API + '/api/transfer', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({to, amount}) });
+          const data = await res.json();
+          toast(data.ok ? 'Transfer sent! Hash: ' + (data.txHash || '').slice(0, 16) + '...' : 'Error: ' + data.error);
+        } catch (e) { toast('Transfer failed: ' + e.message); }
+      }
+      setTimeout(fetchStatus, 3000);
+    }
+
+    function closeInstallModal() {
+      document.getElementById('installModal').classList.remove('open');
+    }
+
+    function handleRegisterAgent() {
+      if (cachedAgentName) {
+        toast('Already registered as "' + cachedAgentName + '"');
+        return;
+      }
+      openRegisterModal();
+    }
+
+    function openRegisterModal() {
+      document.getElementById('registerNameInput').value = '';
+      document.getElementById('registerModal').classList.add('open');
+      setTimeout(() => document.getElementById('registerNameInput').focus(), 50);
+    }
+
+    function closeRegisterModal() {
+      document.getElementById('registerModal').classList.remove('open');
+    }
+
+    async function submitRegisterAgent() {
+      const raw = document.getElementById('registerNameInput').value.trim();
+      const name = raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+      if (!name) { toast('Please enter an agent name'); return; }
+      closeRegisterModal();
+      if (window.clawNetwork) {
+        try {
+          toast('Approve registration in extension...');
+          await window.clawNetwork.request({ method: 'claw_requestAccounts' });
+          await window.clawNetwork.request({ method: 'claw_registerAgent', params: [name] });
+          toast('Agent "' + name + '" registered!');
+        } catch (e) { toast('Registration failed: ' + (e.message || e)); }
+      } else {
+        try {
+          const res = await fetch(API + '/api/agent/register', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name}) });
+          const data = await res.json();
+          toast(data.ok ? 'Agent "' + name + '" registered!' : 'Error: ' + data.error);
+        } catch (e) { toast('Registration failed: ' + e.message); }
+      }
     }
 
     async function fetchStatus() {
@@ -951,16 +1286,20 @@ function buildUiHtml(cfg: PluginConfig): string {
         const data = await res.json();
         renderStatus(data);
         document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error(e);
+        renderStatus({ running: false, blockHeight: null, peerCount: null, walletAddress: '', network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:19877', pluginVersion: '0.1.1', restartCount: 0, dataDir: '', balance: '', syncing: false, uptimeFormatted: '—', pid: null });
+      }
     }
 
     function renderStatus(s) {
       const statusEl = document.getElementById('statusValue');
       if (s.running) {
-        const dotClass = s.syncing ? 'syncing' : 'online';
-        const label = s.syncing ? 'Syncing' : 'Online';
+        let dotClass = 'online', label = 'Online';
+        if (s.syncing && s.peerless) { dotClass = 'syncing'; label = 'No Peers'; }
+        else if (s.syncing) { dotClass = 'syncing'; label = 'Syncing'; }
         statusEl.innerHTML = '<span class="status-dot ' + dotClass + '"></span>' + label;
-        statusEl.className = 'stat-value green';
+        statusEl.className = 'stat-value' + (s.syncing ? '' : ' green');
       } else {
         statusEl.innerHTML = '<span class="status-dot offline"></span>Offline';
         statusEl.className = 'stat-value danger';
@@ -969,20 +1308,86 @@ function buildUiHtml(cfg: PluginConfig): string {
       document.getElementById('heightValue').textContent = s.blockHeight !== null ? s.blockHeight.toLocaleString() : '—';
       document.getElementById('peersValue').textContent = s.peerCount !== null ? s.peerCount : '—';
       document.getElementById('uptimeValue').textContent = s.uptimeFormatted || '—';
+      document.getElementById('startBtn').disabled = s.running;
+      document.getElementById('stopBtn').disabled = !s.running;
+      document.getElementById('startBtn').style.opacity = s.running ? '0.4' : '1';
+      document.getElementById('stopBtn').style.opacity = !s.running ? '0.4' : '1';
+
+      // Handle upgrade banner
+      const bannerEl = document.getElementById('upgradeBanner');
+      if (s.upgradeLevel && s.upgradeLevel !== 'up_to_date' && s.upgradeLevel !== 'unknown') {
+        bannerEl.style.display = '';
+        const recommended = s.upgradeLevel === 'recommended';
+        const required = s.upgradeLevel === 'required';
+        const critical = s.upgradeLevel === 'critical';
+        bannerEl.className = 'upgrade-banner ' + s.upgradeLevel;
+        let bannerHtml = '<div class="upgrade-text">';
+        if (critical) {
+          bannerHtml += '⚠ CRITICAL UPDATE REQUIRED — ' + (s.changelog || 'Security update required') + '. Node stopped for security.';
+        } else if (required) {
+          bannerHtml += 'Update recommended: v' + (s.latestVersion || '') + ' — ' + (s.changelog || 'Update available');
+        } else if (recommended) {
+          bannerHtml += 'Update available: v' + (s.latestVersion || '') + ' — ' + (s.changelog || 'New version available');
+        }
+        bannerHtml += '</div><div class="upgrade-actions">';
+        bannerHtml += '<button class="upgrade-btn" onclick="doAction(\'upgrade\')">Update Now</button>';
+        if (recommended) {
+          bannerHtml += '<button class="upgrade-dismiss" onclick="document.getElementById(\'upgradeBanner\').style.display=\'none\'">Dismiss</button>';
+        }
+        bannerHtml += '</div>';
+        bannerEl.innerHTML = bannerHtml;
+      } else {
+        bannerEl.style.display = 'none';
+      }
 
       // Wallet
-      const wHtml = s.walletAddress
-        ? '<div class="wallet-addr">' + s.walletAddress + ' <button class="copy-btn" onclick="copyText(\\''+s.walletAddress+'\\')">Copy</button></div>' +
-          (s.balance ? '<div style="margin-top:8px;font-size:14px;color:var(--green)">' + s.balance + '</div>' : '')
-        : '<div style="color:var(--text-dim)">No wallet yet — start the node to generate one</div>';
-      document.getElementById('walletInfo').innerHTML = wHtml;
+      cachedAddress = s.walletAddress || '';
+      cachedNetwork = s.network || '';
+      if (s.walletAddress) {
+        document.getElementById('walletEmpty').style.display = 'none';
+        document.getElementById('walletLoaded').style.display = '';
+        document.getElementById('walletAddrText').textContent = s.walletAddress;
+        document.getElementById('walletBalance').textContent = s.balance || '—';
+        // Agent status
+        cachedAgentName = s.agentName || '';
+        const regCard = document.getElementById('qaRegister');
+        const regLabel = document.getElementById('qaRegisterLabel');
+        const regHint = document.getElementById('qaRegisterHint');
+        if (cachedAgentName) {
+          regLabel.textContent = 'Agent Registered';
+          regHint.innerHTML = '<span style="color:var(--green)">&#x2713; ' + cachedAgentName + '</span>';
+          regCard.style.borderColor = 'var(--green)';
+          regCard.style.opacity = '0.85';
+        } else {
+          regLabel.textContent = 'Register Agent';
+          regHint.textContent = 'On-chain identity';
+          regCard.style.borderColor = '';
+          regCard.style.opacity = '';
+        }
+        // Extension detection hint
+        const hasExt = !!(window.clawNetwork && window.clawNetwork.isClawNetwork);
+        document.getElementById('qaImportHint').textContent = hasExt ? 'Extension detected — click to import' : 'Install wallet extension first';
+      } else {
+        document.getElementById('walletEmpty').style.display = '';
+        document.getElementById('walletLoaded').style.display = 'none';
+      }
 
       // Node info
+      let versionStatusHtml = s.binaryVersion || '—';
+      if (s.upgradeLevel === 'up_to_date') {
+        versionStatusHtml = (s.binaryVersion || '—') + ' <span style="color:var(--green)">✓</span>';
+      } else if (s.upgradeLevel === 'recommended') {
+        versionStatusHtml = (s.binaryVersion || '—') + ' <span style="color:#ffaa00">→ ' + (s.latestVersion || '') + '</span>';
+      } else if (s.upgradeLevel === 'required') {
+        versionStatusHtml = (s.binaryVersion || '—') + ' <span style="color:#ff8c3a">⚠ Update recommended</span>';
+      } else if (s.upgradeLevel === 'critical') {
+        versionStatusHtml = (s.binaryVersion || '—') + ' <span style="color:var(--danger)">🔴 CRITICAL</span>';
+      }
       const rows = [
         ['Network', s.network],
         ['Sync Mode', s.syncMode],
         ['RPC URL', s.rpcUrl],
-        ['Binary Version', s.binaryVersion || '—'],
+        ['Binary Version', versionStatusHtml],
         ['Plugin Version', s.pluginVersion],
         ['PID', s.pid || '—'],
         ['Restart Count', s.restartCount],
@@ -1059,6 +1464,27 @@ function formatClaw(raw) {
   return w + '.' + f.toString().padStart(9, '0').replace(/0+$/, '') + ' CLAW';
 }
 
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => { data += chunk; });
+    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
+    req.on('error', reject);
+    setTimeout(() => reject(new Error('Body read timeout')), 10000);
+  });
+}
+
+function findNodeBinary() {
+  const binDir = path.join(os.homedir(), '.openclaw/bin');
+  const dataDir = path.join(os.homedir(), '.clawnetwork');
+  const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
+  let binary = path.join(binDir, binName);
+  if (fs.existsSync(binary)) return binary;
+  binary = path.join(dataDir, 'bin', 'claw-node');
+  if (fs.existsSync(binary)) return binary;
+  return null;
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, 'http://localhost:' + PORT);
   const p = url.pathname;
@@ -1078,26 +1504,52 @@ async function handle(req, res) {
     try {
       const h = await fetchJson('http://localhost:' + RPC_PORT + '/health');
       let balance = '';
+      let walletAddress = '';
+      let agentName = '';
+      let upgradeLevel = 'unknown';
+      let latestVersion = '';
+      let releaseUrl = '';
+      let changelog = '';
+      let announcement = null;
+      // Fetch version info if available (Phase 1 endpoint)
+      try {
+        const v = await fetchJson('http://localhost:' + RPC_PORT + '/version');
+        if (v && v.upgrade_level) {
+          upgradeLevel = v.upgrade_level;
+          latestVersion = v.latest_version || '';
+          releaseUrl = v.release_url || '';
+          changelog = v.changelog || '';
+          announcement = v.announcement || null;
+        }
+      } catch {}
       try {
         const walletPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json');
         const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
-        if (w.address) { const b = await rpcCall('claw_getBalance', [w.address]); balance = formatClaw(b); }
+        walletAddress = w.address || '';
+        if (w.address) {
+          const b = await rpcCall('claw_getBalance', [w.address]); balance = formatClaw(b);
+          try { const ag = await rpcCall('claw_getAgent', [w.address]); agentName = (ag && ag.name) ? ag.name : ''; } catch {}
+        }
       } catch {}
       json(200, {
-        running: h.status === 'ok',
+        running: h.status === 'ok' || h.status === 'degraded',
         blockHeight: h.height,
         peerCount: h.peer_count,
         network: h.chain_id,
         syncMode: 'light',
         rpcUrl: 'http://localhost:' + RPC_PORT,
-        walletAddress: (() => { try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json'), 'utf8')).address; } catch { return ''; } })(),
+        walletAddress,
         binaryVersion: h.version,
-        pluginVersion: '0.1.0',
+        pluginVersion: '0.1.1',
         uptime: h.uptime_secs,
         uptimeFormatted: h.uptime_secs < 60 ? h.uptime_secs + 's' : h.uptime_secs < 3600 ? Math.floor(h.uptime_secs/60) + 'm' : Math.floor(h.uptime_secs/3600) + 'h ' + Math.floor((h.uptime_secs%3600)/60) + 'm',
-        restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance, syncing: h.status === 'degraded',
+        restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance, agentName, syncing: h.status === 'degraded', peerless: h.peer_count === 0, lastBlockAgeSecs: h.last_block_age_secs,
+        upgradeLevel, latestVersion, releaseUrl, changelog, announcement,
       });
-    } catch { json(200, { running: false, blockHeight: null, peerCount: null }); }
+    } catch {
+        const walletAddr = (() => { try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json'), 'utf8')).address; } catch { return ''; } })();
+        json(200, { running: false, blockHeight: null, peerCount: null, walletAddress: walletAddr, network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:' + RPC_PORT, pluginVersion: '0.1.1', restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance: '', agentName: '', syncing: false, uptimeFormatted: '—', pid: null, upgradeLevel: 'unknown', latestVersion: '', releaseUrl: '', changelog: '', announcement: null });
+      }
     return;
   }
   if (p === '/api/logs') {
@@ -1106,6 +1558,104 @@ async function handle(req, res) {
       const c = fs.readFileSync(LOG_PATH, 'utf8').split('\\n');
       json(200, { logs: c.slice(-80).join('\\n') });
     } catch (e) { json(500, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/wallet/export') {
+    // Only allow from localhost (127.0.0.1) — never expose to network
+    const host = req.headers.host || '';
+    if (!host.startsWith('127.0.0.1') && !host.startsWith('localhost')) {
+      json(403, { error: 'Wallet export only available from localhost' });
+      return;
+    }
+    try {
+      const walletPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json');
+      const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
+      json(200, { address: w.address, secretKey: w.secret_key || w.secretKey || w.private_key || '' });
+    } catch (e) { json(400, { error: 'No wallet found' }); }
+    return;
+  }
+  // ── Business API endpoints (mirrors Gateway methods) ──
+  if (p === '/api/wallet/balance') {
+    try {
+      const walletPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json');
+      const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
+      const address = new URL(req.url, 'http://localhost').searchParams.get('address') || w.address;
+      const b = await rpcCall('claw_getBalance', [address]);
+      json(200, { address, balance: String(b), formatted: formatClaw(b) });
+    } catch (e) { json(400, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/transfer' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const { to, amount } = body;
+      if (!to || !amount) { json(400, { error: 'Missing params: to, amount' }); return; }
+      if (!/^[0-9a-f]{64}$/i.test(to)) { json(400, { error: 'Invalid address (64 hex chars)' }); return; }
+      if (!/^\\d+(\\.\\d+)?$/.test(amount) || parseFloat(amount) <= 0) { json(400, { error: 'Invalid amount' }); return; }
+      const bin = findNodeBinary();
+      if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
+      const { execFileSync } = require('child_process');
+      const out = execFileSync(bin, ['transfer', to, amount, '--rpc', 'http://localhost:' + RPC_PORT], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const h = out.match(/[0-9a-f]{64}/i);
+      json(200, { ok: true, txHash: h ? h[0] : '', to, amount });
+    } catch (e) { json(500, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/stake' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const { amount, action } = body;
+      if (!amount && action !== 'claim') { json(400, { error: 'Missing amount' }); return; }
+      const bin = findNodeBinary();
+      if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
+      const { execFileSync } = require('child_process');
+      const cmd = action === 'withdraw' ? 'stake withdraw' : action === 'claim' ? 'stake claim' : 'stake deposit';
+      const args = cmd.split(' ').concat(amount ? [amount] : []).concat(['--rpc', 'http://localhost:' + RPC_PORT]);
+      const out = execFileSync(bin, args, { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      json(200, { ok: true, raw: out.trim() });
+    } catch (e) { json(500, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/agent/register' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const name = (body.name || 'openclaw-agent-' + Date.now().toString(36)).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+      const bin = findNodeBinary();
+      if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
+      const { execFileSync } = require('child_process');
+      const out = execFileSync(bin, ['agent', 'register', '--name', name, '--rpc', 'http://localhost:' + RPC_PORT], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const h = out.match(/[0-9a-f]{64}/i);
+      json(200, { ok: true, txHash: h ? h[0] : '', name });
+    } catch (e) { json(500, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/service/register' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const { serviceType, endpoint, description, priceAmount } = body;
+      if (!serviceType || !endpoint) { json(400, { error: 'Missing: serviceType, endpoint' }); return; }
+      const bin = findNodeBinary();
+      if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
+      const { execFileSync } = require('child_process');
+      const out = execFileSync(bin, ['service', 'register', '--type', serviceType, '--endpoint', endpoint, '--description', description || '', '--price', priceAmount || '0', '--rpc', 'http://localhost:' + RPC_PORT], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      json(200, { ok: true, raw: out.trim() });
+    } catch (e) { json(500, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/service/search') {
+    try {
+      const t = new URL(req.url, 'http://localhost').searchParams.get('type');
+      const result = await rpcCall('claw_getServices', t ? [t] : []);
+      json(200, { services: result });
+    } catch (e) { json(500, { error: e.message }); }
+    return;
+  }
+  if (p === '/api/node/config') {
+    try {
+      const cfgPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/config.json');
+      const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) : {};
+      json(200, { ...cfg, rpcPort: RPC_PORT, uiPort: PORT });
+    } catch (e) { json(200, { rpcPort: RPC_PORT, uiPort: PORT }); }
     return;
   }
   if (p.startsWith('/api/action/') && req.method === 'POST') {
@@ -1118,7 +1668,148 @@ async function handle(req, res) {
       } catch (e) { json(400, { error: e.message }); }
       return;
     }
-    json(400, { error: 'Use CLI for start/stop: openclaw clawnetwork:start/stop' });
+    if (a === 'start') {
+      try {
+        // Check if already running — try RPC health first (covers stale PID file)
+        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        try {
+          const h = await fetchJson('http://localhost:' + RPC_PORT + '/health');
+          if (h && (h.status === 'ok' || h.status === 'degraded')) {
+            try {
+              const { execSync } = require('child_process');
+              const pgrep = execSync("pgrep -f 'claw-node start'", { encoding: 'utf8', timeout: 3000 }).trim();
+              const livePid = parseInt(pgrep.split('\\n')[0], 10);
+              if (livePid > 0) fs.writeFileSync(pidFile, String(livePid));
+            } catch {}
+            json(200, { message: 'Node already running' }); return;
+          }
+        } catch {}
+        // Fallback: check PID file
+        try {
+          const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+          if (pid > 0) { try { process.kill(pid, 0); json(200, { message: 'Node already running', pid }); return; } catch {} }
+        } catch {}
+        // Find binary
+        const binDir = path.join(os.homedir(), '.openclaw/bin');
+        const dataDir = path.join(os.homedir(), '.clawnetwork');
+        const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
+        let binary = path.join(binDir, binName);
+        if (!fs.existsSync(binary)) { binary = path.join(dataDir, 'bin', 'claw-node'); }
+        if (!fs.existsSync(binary)) { json(400, { error: 'claw-node binary not found. Run: openclaw clawnetwork:download' }); return; }
+        // Read config for network/ports
+        const cfgPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/config.json');
+        let network = 'mainnet', p2pPort = 9711, syncMode = 'light', extraPeers = [];
+        try {
+          const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+          if (cfg.network) network = cfg.network;
+          if (cfg.p2pPort) p2pPort = cfg.p2pPort;
+          if (cfg.syncMode) syncMode = cfg.syncMode;
+          if (cfg.extraBootstrapPeers) extraPeers = cfg.extraBootstrapPeers;
+        } catch {}
+        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721'], devnet: [] };
+        const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
+        const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--allow-genesis'];
+        for (const peer of peers) { args.push('--bootstrap', peer); }
+        // Spawn detached
+        const logPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.log');
+        const logFd = fs.openSync(logPath, 'a');
+        const { spawn: nodeSpawn } = require('child_process');
+        const child = nodeSpawn(binary, args, {
+          stdio: ['ignore', logFd, logFd],
+          detached: true,
+          env: { HOME: os.homedir(), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', RUST_LOG: process.env.RUST_LOG || 'claw=info' },
+        });
+        child.unref();
+        fs.closeSync(logFd);
+        fs.writeFileSync(pidFile, String(child.pid));
+        // Remove stop signal if exists
+        const stopFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/stop.signal');
+        try { fs.unlinkSync(stopFile); } catch {}
+        json(200, { message: 'Node started', pid: child.pid });
+      } catch (e) { json(500, { error: e.message }); }
+      return;
+    }
+    if (a === 'stop') {
+      try {
+        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        let pid = null;
+        try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10); } catch {}
+        if (pid && pid > 0) {
+          try { process.kill(pid, 'SIGTERM'); } catch {}
+        }
+        // Write stop signal for restart loop
+        const stopFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/stop.signal');
+        try { fs.writeFileSync(stopFile, String(Date.now())); } catch {}
+        // Also kill by name (covers orphans)
+        try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 3000 }); } catch {}
+        try { fs.unlinkSync(pidFile); } catch {}
+        json(200, { message: 'Node stopped' });
+      } catch (e) { json(500, { error: e.message }); }
+      return;
+    }
+    if (a === 'restart') {
+      json(200, { message: 'Use Stop then Start to restart the node' });
+      return;
+    }
+    if (a === 'upgrade') {
+      try {
+        // 1. Stop running node
+        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        try {
+          const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+          if (pid > 0) try { process.kill(pid, 'SIGTERM'); } catch {}
+        } catch {}
+        try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 5000 }); } catch {}
+
+        // 2. Download latest binary
+        const binDir = path.join(os.homedir(), '.openclaw/bin');
+        const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
+        const target = process.platform === 'darwin'
+          ? (process.arch === 'arm64' ? 'macos-aarch64' : 'macos-x86_64')
+          : process.platform === 'win32' ? 'windows-x86_64' : 'linux-x86_64';
+        const ext = process.platform === 'win32' ? 'zip' : 'tar.gz';
+
+        // Fetch latest release tag
+        let version = 'latest';
+        try {
+          const res = await fetch('https://api.github.com/repos/clawlabz/claw-network/releases/latest');
+          if (res.ok) { const d = await res.json(); if (d.tag_name) version = d.tag_name; }
+        } catch {}
+
+        const baseUrl = version === 'latest'
+          ? 'https://github.com/clawlabz/claw-network/releases/latest/download'
+          : 'https://github.com/clawlabz/claw-network/releases/download/' + version;
+        const downloadUrl = baseUrl + '/claw-node-' + target + '.' + ext;
+
+        const tmpFile = path.join(os.tmpdir(), 'claw-node-upgrade-' + Date.now() + '.' + ext);
+        require('child_process').execFileSync('curl', ['-sSfL', '-o', tmpFile, downloadUrl], { timeout: 120000 });
+
+        // Ensure bin directory exists
+        if (!fs.existsSync(binDir)) { fs.mkdirSync(binDir, { recursive: true }); }
+
+        // Extract binary
+        if (ext === 'tar.gz') {
+          require('child_process').execFileSync('tar', ['xzf', tmpFile, '-C', binDir], { timeout: 30000 });
+        } else {
+          // Windows zip handling
+          const AdmZip = require('adm-zip');
+          const zip = new AdmZip(tmpFile);
+          zip.extractAllTo(binDir, true);
+        }
+        fs.chmodSync(path.join(binDir, binName), 0o755);
+        try { fs.unlinkSync(tmpFile); } catch {}
+
+        // 3. Get new version
+        let newVersion = 'unknown';
+        try {
+          newVersion = require('child_process').execFileSync(path.join(binDir, binName), ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
+        } catch {}
+
+        json(200, { message: 'Upgraded to ' + newVersion + '. Restart the node from Dashboard.', newVersion });
+      } catch (e) { json(500, { error: e.message }); }
+      return;
+    }
+    json(400, { error: 'Unknown action: ' + a });
     return;
   }
   json(404, { error: 'Not found' });
@@ -1385,6 +2076,18 @@ export default function register(api: OpenClawApi) {
           out({ error: 'claw-node not found. Run: curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/claw-node/scripts/install.sh | bash' })
           return
         }
+      } else {
+        // Auto-upgrade if binary is older than required minimum
+        const currentVersion = getBinaryVersion(binary)
+        if (currentVersion && isVersionOlder(currentVersion, MIN_NODE_VERSION)) {
+          api.logger?.info?.(`[clawnetwork] claw-node ${currentVersion} is outdated (need >=${MIN_NODE_VERSION}), upgrading...`)
+          process.stdout.write(`Upgrading claw-node ${currentVersion} → ${MIN_NODE_VERSION}+...\n`)
+          try {
+            binary = await downloadBinary(api)
+          } catch (e: unknown) {
+            api.logger?.warn?.(`[clawnetwork] auto-upgrade failed: ${(e as Error).message}, continuing with ${currentVersion}`)
+          }
+        }
       }
       initNode(binary, cfg.network, api)
       startNodeProcess(binary, cfg, api)
@@ -1624,12 +2327,16 @@ export default function register(api: OpenClawApi) {
           // Check if already running (e.g. from a previous detached start)
           const state = isNodeRunning()
           if (state.running) {
-            api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid}), skipping auto-start`)
+            api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid}), skipping node start`)
             startHealthCheck(cfg, api)
+            // Still need to ensure heartbeat loop is running (may have been lost on gateway restart)
+            const wallet = ensureWallet(cfg.network, api)
+            await sleep(5_000)
+            await autoRegisterMiner(cfg, wallet, api)
             return
           }
 
-          // Step 1: Ensure binary
+          // Step 1: Ensure binary (auto-upgrade if outdated)
           let binary = findBinary()
           if (!binary) {
             if (cfg.autoDownload) {
@@ -1639,6 +2346,14 @@ export default function register(api: OpenClawApi) {
               api.logger?.error?.('[clawnetwork] claw-node not found and autoDownload is disabled')
               return
             }
+          } else if (cfg.autoDownload) {
+            const cv = getBinaryVersion(binary)
+            if (cv && isVersionOlder(cv, MIN_NODE_VERSION)) {
+              api.logger?.info?.(`[clawnetwork] claw-node ${cv} outdated (need >=${MIN_NODE_VERSION}), upgrading...`)
+              try { binary = await downloadBinary(api) } catch (e: unknown) {
+                api.logger?.warn?.(`[clawnetwork] auto-upgrade failed: ${(e as Error).message}`)
+              }
+            }
           }
 
           // Step 2: Init
@@ -1647,17 +2362,21 @@ export default function register(api: OpenClawApi) {
           // Step 3: Wallet
           const wallet = ensureWallet(cfg.network, api)
 
-          // Step 4: Start node
+          // Step 4: Save config for UI server to read
+          const cfgPath = path.join(WORKSPACE_DIR, 'config.json')
+          fs.writeFileSync(cfgPath, JSON.stringify({ network: cfg.network, rpcPort: cfg.rpcPort, p2pPort: cfg.p2pPort, syncMode: cfg.syncMode, extraBootstrapPeers: cfg.extraBootstrapPeers }))
+
+          // Step 5: Start node
           startNodeProcess(binary, cfg, api)
 
-          // Step 5: Start UI dashboard
+          // Step 6: Start UI dashboard
           startUiServer(cfg, api)
 
-          // Step 6: Wait for node to sync, then auto-register
+          // Step 7: Wait for node to sync, then auto-register
           await sleep(15_000)
           await autoRegisterAgent(cfg, wallet, api)
 
-          // Step 7: Auto-register as miner + start heartbeat loop
+          // Step 8: Auto-register as miner + start heartbeat loop
           await autoRegisterMiner(cfg, wallet, api)
 
         } catch (err: unknown) {

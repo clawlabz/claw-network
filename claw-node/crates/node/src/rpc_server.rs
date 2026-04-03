@@ -918,6 +918,47 @@ async fn handle_health(State(chain): State<Chain>) -> Json<Value> {
     }))
 }
 
+/// GET /version — Node version and upgrade status.
+async fn handle_version(State(chain): State<Chain>) -> Json<Value> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let manifest = chain.get_version_manifest();
+
+    let (upgrade_level_str, latest_version, minimum_version, release_url, changelog, announcement, halt_height) = if let Some(ref m) = manifest {
+        let height = chain.get_block_number();
+        let level = crate::version_check::check_version(current_version, m, Some(height));
+        (
+            level.as_str(),
+            m.latest.clone(),
+            m.minimum.clone(),
+            m.release_url.clone(),
+            m.changelog.clone(),
+            m.announcement.clone(),
+            m.halt_height,
+        )
+    } else {
+        (
+            crate::version_check::UpgradeLevel::UpToDate.as_str(),
+            current_version.to_string(),
+            current_version.to_string(),
+            String::new(),
+            String::new(),
+            None,
+            None,
+        )
+    };
+
+    Json(serde_json::json!({
+        "node_version": current_version,
+        "upgrade_level": upgrade_level_str,
+        "latest_version": latest_version,
+        "minimum_version": minimum_version,
+        "release_url": release_url,
+        "changelog": changelog,
+        "announcement": announcement,
+        "halt_height": halt_height,
+    }))
+}
+
 /// Start the RPC server. Returns a JoinHandle.
 pub async fn start(chain: Chain, port: u16, faucet_enabled: bool, p2p_tx: Option<tokio::sync::mpsc::UnboundedSender<claw_p2p::P2pCommand>>) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     // Store P2P sender for transaction gossip
@@ -973,6 +1014,7 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool, p2p_tx: Option
         .route("/", post(handle_rpc))
         .route("/metrics", get(handle_metrics))
         .route("/health", get(handle_health))
+        .route("/version", get(handle_version))
         .layer(ConcurrencyLimitLayer::new(100)) // max 100 concurrent requests
         .layer(cors)
         .with_state(chain);

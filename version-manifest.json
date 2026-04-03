@@ -1,0 +1,11 @@
+{
+  "latest": "0.4.19",
+  "minimum": "0.4.19",
+  "critical_minimum": null,
+  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.19",
+  "changelog": "Auto-recovery for corrupted chain.redb, graceful shutdown, atomic epoch writes",
+  "announcement": null,
+  "halt_height": null,
+  "halt_message": null,
+  "updated_at": "2026-04-03T00:00:00Z"
+}

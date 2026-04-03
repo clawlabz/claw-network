@@ -64,6 +64,8 @@ struct ChainInner {
     /// Total number of transactions ever processed on chain.
     /// Accumulated during startup from stored blocks and incremented on each new block.
     total_tx_count: u64,
+    /// Cached version manifest for /version RPC endpoint and runtime checks.
+    version_manifest: Option<crate::version_check::VersionManifest>,
 }
 
 impl Chain {
@@ -108,20 +110,24 @@ impl Chain {
                 // Verify state snapshot integrity against the latest block's state_root.
                 let computed_root = state.state_root();
                 if computed_root != block.state_root {
-                    tracing::error!(
+                    tracing::warn!(
                         block_root = %hex::encode(block.state_root),
                         computed_root = %hex::encode(computed_root),
                         height,
-                        "State snapshot does not match block state_root — data is corrupted. \
-                         Delete chain.redb and restart to resync from genesis."
+                        "State snapshot mismatch detected — auto-recovering by deleting chain.redb"
                     );
-                    anyhow::bail!(
-                        "State snapshot mismatch at height {height}: block state_root={} computed={} — \
-                         delete {:?} and restart",
-                        hex::encode(block.state_root),
-                        hex::encode(computed_root),
-                        db_path,
-                    );
+                    // Drop the DB handle before deleting the file
+                    drop(store);
+                    if let Err(e) = std::fs::remove_file(&db_path) {
+                        tracing::error!(error = %e, "Failed to delete corrupted chain.redb");
+                        anyhow::bail!(
+                            "State snapshot mismatch at height {height} and auto-delete failed: {e}. \
+                             Manually delete {:?} and restart.",
+                            db_path,
+                        );
+                    }
+                    tracing::info!("Deleted corrupted chain.redb — will re-initialize from genesis");
+                    return Self::new(data_dir, signing_key_bytes, genesis_config, allow_genesis, chain_id);
                 }
 
                 // Get genesis hash from block 0
@@ -241,6 +247,7 @@ impl Chain {
                 bootstrap_peer_ids: Vec::new(),
                 latest_block_received: Instant::now(),
                 total_tx_count,
+                version_manifest: None,
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -625,20 +632,15 @@ impl Chain {
                 "Epoch rotation"
             );
 
-            // Persist slashing state changes from epoch processing
+            // Persist slashing state changes from epoch processing.
+            // NOTE: Do NOT write a separate put_state_snapshot here — the snapshot
+            // was already atomically written with the block in put_block_and_snapshot
+            // above. A separate write here would create a crash window where the
+            // snapshot is updated but the block is from the previous state, causing
+            // state_root mismatch on restart.
             Self::sync_slashing_to_world_state(inner);
-            match borsh::to_vec(&inner.state) {
-                Ok(state_bytes) => {
-                    if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                        tracing::error!(error = %e, "Failed to store post-epoch state snapshot");
-                    }
-                    if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
-                        let _ = inner.store.put_user_delegations(&ud);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Post-epoch state serialization failed: {e}");
-                }
+            if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
+                let _ = inner.store.put_user_delegations(&ud);
             }
         }
 
@@ -922,20 +924,12 @@ impl Chain {
             // Reset uptime counters for new epoch
             inner.state.validator_uptime.clear();
 
-            // Persist slashing state changes from epoch processing
+            // Persist slashing state changes from epoch processing.
+            // Snapshot already written atomically with block above — only persist
+            // user_delegations separately (borsh(skip) field, not part of state_root).
             Self::sync_slashing_to_world_state(&mut inner);
-            match borsh::to_vec(&inner.state) {
-                Ok(state_bytes) => {
-                    if let Err(e) = inner.store.put_state_snapshot(&state_bytes) {
-                        tracing::error!(error = %e, "Failed to store post-epoch state snapshot (apply_block)");
-                    }
-                    if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
-                        let _ = inner.store.put_user_delegations(&ud);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Post-epoch state serialization failed: {e}");
-                }
+            if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
+                let _ = inner.store.put_user_delegations(&ud);
             }
         }
 
@@ -966,16 +960,58 @@ impl Chain {
         command_tx: Option<mpsc::UnboundedSender<P2pCommand>>,
     ) {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+        let mut version_check_interval = tokio::time::interval(tokio::time::Duration::from_secs(3600)); // 1 hour
+        let shutdown = tokio::signal::ctrl_c();
+        tokio::pin!(shutdown);
         loop {
-            interval.tick().await;
-            let mut inner = self.inner.lock().expect("chain state mutex poisoned");
-            if let Some(block) = Self::produce_block(&mut inner) {
-                if let Some(ref tx) = command_tx {
-                    let _ = tx.send(P2pCommand::BroadcastBlock(block.clone()));
-                    // Also broadcast our own vote for the block we just produced
-                    if let Some(vote) = Self::create_vote_for_block(&inner, &block) {
-                        let _ = tx.send(P2pCommand::BroadcastVote(vote));
+            tokio::select! {
+                _ = interval.tick() => {
+                    let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                    if let Some(block) = Self::produce_block(&mut inner) {
+                        if let Some(ref tx) = command_tx {
+                            let _ = tx.send(P2pCommand::BroadcastBlock(block.clone()));
+                            if let Some(vote) = Self::create_vote_for_block(&inner, &block) {
+                                let _ = tx.send(P2pCommand::BroadcastVote(vote));
+                            }
+                        }
                     }
+                }
+                _ = version_check_interval.tick() => {
+                    // Periodically check for version updates and halt conditions
+                    let chain = self.clone();
+                    tokio::spawn(async move {
+                        if let Some(manifest) = crate::version_check::fetch_manifest().await {
+                            let current_version = env!("CARGO_PKG_VERSION");
+                            let current_height = chain.get_block_number();
+                            let upgrade_level = crate::version_check::check_version(current_version, &manifest, Some(current_height));
+
+                            match upgrade_level {
+                                crate::version_check::UpgradeLevel::Critical => {
+                                    let message = crate::version_check::format_upgrade_message(&upgrade_level, &manifest);
+                                    tracing::error!("{}. Initiating graceful shutdown.", message);
+                                    // Request shutdown via Ctrl+C equivalent
+                                    std::process::exit(75);
+                                }
+                                crate::version_check::UpgradeLevel::Required => {
+                                    let message = crate::version_check::format_upgrade_message(&upgrade_level, &manifest);
+                                    tracing::warn!("{}", message);
+                                }
+                                crate::version_check::UpgradeLevel::Recommended => {
+                                    let message = crate::version_check::format_upgrade_message(&upgrade_level, &manifest);
+                                    tracing::info!("{}", message);
+                                }
+                                crate::version_check::UpgradeLevel::UpToDate => {
+                                    tracing::debug!("Node is up to date");
+                                }
+                            }
+                            // Update the manifest in chain state
+                            chain.set_version_manifest(manifest);
+                        }
+                    });
+                }
+                _ = &mut shutdown => {
+                    tracing::info!("Received shutdown signal — stopping block loop gracefully");
+                    break;
                 }
             }
         }
@@ -1577,6 +1613,17 @@ impl Chain {
     /// Get timestamp of the latest block.
     pub fn get_last_block_timestamp(&self) -> u64 {
         self.inner.lock().expect("chain state mutex poisoned").latest_block.timestamp
+    }
+
+    /// Set the version manifest (called once after fetching from GitHub).
+    pub fn set_version_manifest(&self, manifest: crate::version_check::VersionManifest) {
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.version_manifest = Some(manifest);
+    }
+
+    /// Get the cached version manifest, if available.
+    pub fn get_version_manifest(&self) -> Option<crate::version_check::VersionManifest> {
+        self.inner.lock().expect("chain state mutex poisoned").version_manifest.clone()
     }
 
     /// Get contract instance metadata by address.
