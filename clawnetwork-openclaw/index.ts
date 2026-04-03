@@ -15,7 +15,7 @@ const DEFAULT_P2P_PORT = 9711
 const DEFAULT_NETWORK = 'mainnet'
 const DEFAULT_SYNC_MODE = 'light'
 const DEFAULT_HEALTH_CHECK_SECONDS = 30
-const MIN_NODE_VERSION = '0.4.19'
+const MIN_NODE_VERSION = '0.4.21'
 const DEFAULT_UI_PORT = 19877
 const MAX_RESTART_ATTEMPTS = 3
 
@@ -1330,12 +1330,16 @@ function buildUiHtml(cfg: PluginConfig): string {
           bannerHtml += 'Update available: v' + (s.latestVersion || '') + ' — ' + (s.changelog || 'New version available');
         }
         bannerHtml += '</div><div class="upgrade-actions">';
-        bannerHtml += '<button class="upgrade-btn" onclick="doAction(\'upgrade\')">Update Now</button>';
+        bannerHtml += '<button class="upgrade-btn" id="upgradeBtn">Update Now</button>';
         if (recommended) {
-          bannerHtml += '<button class="upgrade-dismiss" onclick="document.getElementById(\'upgradeBanner\').style.display=\'none\'">Dismiss</button>';
+          bannerHtml += '<button class="upgrade-dismiss" id="dismissBtn">Dismiss</button>';
         }
         bannerHtml += '</div>';
         bannerEl.innerHTML = bannerHtml;
+        var ubtn = document.getElementById('upgradeBtn');
+        if (ubtn) ubtn.onclick = function() { doAction('upgrade'); };
+        var dbtn = document.getElementById('dismissBtn');
+        if (dbtn) dbtn.onclick = function() { bannerEl.style.display = 'none'; };
       } else {
         bannerEl.style.display = 'none';
       }
