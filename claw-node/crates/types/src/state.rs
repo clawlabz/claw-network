@@ -273,7 +273,7 @@ pub const REPUTATION_DECAY_BPS: u16 = 100;
 /// Before this height, legacy heartbeat interval and grace period apply.
 /// MUST be divisible by MINER_EPOCH_LENGTH — all V2 logic activates atomically
 /// at this epoch boundary (normalization + state_root switch + heartbeat mode).
-pub const HEARTBEAT_V2_HEIGHT: u64 = 213_800; // TESTNET ONLY — change to mainnet value before release
+pub const HEARTBEAT_V2_HEIGHT: u64 = 225_900;
 
 // Compile-time check: V2_HEIGHT must be aligned to epoch boundary.
 const _: () = assert!(HEARTBEAT_V2_HEIGHT % MINER_EPOCH_LENGTH == 0, "HEARTBEAT_V2_HEIGHT must be a multiple of MINER_EPOCH_LENGTH");
