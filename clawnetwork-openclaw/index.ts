@@ -2335,6 +2335,8 @@ export default function register(api: OpenClawApi) {
           if (state.running) {
             api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid}), skipping node start`)
             startHealthCheck(cfg, api)
+            // Start UI dashboard (may have been lost on gateway restart)
+            startUiServer(cfg, api)
             // Still need to ensure heartbeat loop is running (may have been lost on gateway restart)
             const wallet = ensureWallet(cfg.network, api)
             await sleep(5_000)
