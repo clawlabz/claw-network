@@ -1,21 +1,40 @@
 #!/usr/bin/env bash
 # ClawNetwork OpenClaw Plugin — One-line Installer
-# Usage: curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
+#
+# Usage:
+#   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
+#
+# Custom OpenClaw directory (for named profiles like ~/.openclaw-ludis):
+#   curl -sSf .../install.sh | bash -s -- --dir ~/.openclaw-ludis
 #
 # What this does:
 #   1. Downloads the latest plugin from npm (no ClawHub, no rate limits)
-#   2. Installs to ~/.openclaw/extensions/clawnetwork/
-#   3. Registers the plugin in ~/.openclaw/openclaw.json
+#   2. Installs to <openclaw-dir>/extensions/clawnetwork/
+#   3. Registers the plugin in <openclaw-dir>/openclaw.json
 #   4. Adds "clawnetwork" to the plugins allow list
 #
 # Safe to re-run — updates existing installation in place.
-# Your wallet and chain data (~/.openclaw/workspace/clawnetwork/) are never touched.
+# Your wallet and chain data are never touched.
 
 set -euo pipefail
 
 PLUGIN_ID="clawnetwork"
 NPM_PACKAGE="@clawlabz/clawnetwork"
+
+# Parse --dir argument
 OPENCLAW_DIR="${HOME}/.openclaw"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir)
+      OPENCLAW_DIR="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 EXTENSIONS_DIR="${OPENCLAW_DIR}/extensions/${PLUGIN_ID}"
 CONFIG_FILE="${OPENCLAW_DIR}/openclaw.json"
 

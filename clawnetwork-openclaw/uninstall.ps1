@@ -1,10 +1,15 @@
 # ClawNetwork OpenClaw Plugin — Uninstaller (Windows)
-# Usage: irm https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.ps1 | iex
+#
+# Usage:
+#   irm https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.ps1 | iex
+#
+# Custom OpenClaw directory:
+#   & { $env:OPENCLAW_DIR="$env:USERPROFILE\.openclaw-ludis"; irm .../uninstall.ps1 | iex }
 
 $ErrorActionPreference = "Stop"
 
 $PluginId = "clawnetwork"
-$OpenClawDir = Join-Path $env:USERPROFILE ".openclaw"
+$OpenClawDir = if ($env:OPENCLAW_DIR) { $env:OPENCLAW_DIR } else { Join-Path $env:USERPROFILE ".openclaw" }
 $ExtensionsDir = Join-Path $OpenClawDir "extensions\$PluginId"
 $ConfigFile = Join-Path $OpenClawDir "openclaw.json"
 

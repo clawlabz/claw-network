@@ -1,11 +1,10 @@
 # ClawNetwork OpenClaw Plugin — One-line Installer (Windows)
-# Usage: irm https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.ps1 | iex
 #
-# What this does:
-#   1. Downloads the latest plugin from npm (no ClawHub, no rate limits)
-#   2. Installs to ~/.openclaw/extensions/clawnetwork/
-#   3. Registers the plugin in ~/.openclaw/openclaw.json
-#   4. Adds "clawnetwork" to the plugins allow list
+# Usage:
+#   irm https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.ps1 | iex
+#
+# Custom OpenClaw directory (for named profiles):
+#   & { $env:OPENCLAW_DIR="$env:USERPROFILE\.openclaw-ludis"; irm .../install.ps1 | iex }
 #
 # Safe to re-run — updates existing installation in place.
 # Your wallet and chain data are never touched.
@@ -14,7 +13,7 @@ $ErrorActionPreference = "Stop"
 
 $PluginId = "clawnetwork"
 $NpmPackage = "@clawlabz/clawnetwork"
-$OpenClawDir = Join-Path $env:USERPROFILE ".openclaw"
+$OpenClawDir = if ($env:OPENCLAW_DIR) { $env:OPENCLAW_DIR } else { Join-Path $env:USERPROFILE ".openclaw" }
 $ExtensionsDir = Join-Path $OpenClawDir "extensions\$PluginId"
 $ConfigFile = Join-Path $OpenClawDir "openclaw.json"
 

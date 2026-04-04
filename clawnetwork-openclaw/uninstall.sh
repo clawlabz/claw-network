@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
 # ClawNetwork OpenClaw Plugin — Uninstaller
-# Usage: curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash
+#
+# Usage:
+#   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash
+#
+# Custom OpenClaw directory:
+#   curl -sSf .../uninstall.sh | bash -s -- --dir ~/.openclaw-ludis
 #
 # What this does:
-#   1. Removes plugin files from ~/.openclaw/extensions/clawnetwork/
-#   2. Disables the plugin in ~/.openclaw/openclaw.json (config preserved)
+#   1. Removes plugin files from <openclaw-dir>/extensions/clawnetwork/
+#   2. Disables the plugin in <openclaw-dir>/openclaw.json (config preserved)
 #
 # What is NOT removed (your data is safe):
-#   - Wallet: ~/.openclaw/workspace/clawnetwork/wallet.json
+#   - Wallet: <openclaw-dir>/workspace/clawnetwork/wallet.json
 #   - Chain data: ~/.clawnetwork/
-#   - Node binary: ~/.openclaw/bin/claw-node
-#   - Node logs: ~/.openclaw/workspace/clawnetwork/node.log
+#   - Node binary: <openclaw-dir>/bin/claw-node
+#   - Node logs: <openclaw-dir>/workspace/clawnetwork/node.log
 
 set -euo pipefail
 
 PLUGIN_ID="clawnetwork"
+
+# Parse --dir argument
 OPENCLAW_DIR="${HOME}/.openclaw"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir) OPENCLAW_DIR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
 EXTENSIONS_DIR="${OPENCLAW_DIR}/extensions/${PLUGIN_ID}"
 CONFIG_FILE="${OPENCLAW_DIR}/openclaw.json"
 
