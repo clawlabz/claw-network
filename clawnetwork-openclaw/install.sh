@@ -100,63 +100,66 @@ fi
 
 ok "Plugin files installed"
 
-# --- Upgrade node binary if outdated ---
+# --- Kill stale processes + upgrade binary ---
 
+info "Stopping old node and dashboard processes..."
+pkill -f 'claw-node start' 2>/dev/null || true
+pkill -f 'ui-server.js' 2>/dev/null || true
+sleep 2
+# Clean up ALL possible PID/port files (default + custom profile paths)
+for DIR in "${OPENCLAW_DIR}" "${HOME}/.openclaw"; do
+  rm -f "${DIR}/clawnetwork-ui-port" 2>/dev/null
+  rm -f "${DIR}/workspace/clawnetwork/node.pid" 2>/dev/null
+  rm -f "${DIR}/workspace/clawnetwork/stop.signal" 2>/dev/null
+done
+
+# Check if binary needs download/upgrade
 BINARY_PATH="${OPENCLAW_DIR}/bin/claw-node"
-# Also check default path (plugin hardcodes ~/.openclaw/ for binary)
 DEFAULT_BINARY="${HOME}/.openclaw/bin/claw-node"
-
 CURRENT_BIN=""
 if [ -f "${BINARY_PATH}" ]; then CURRENT_BIN="${BINARY_PATH}"
 elif [ -f "${DEFAULT_BINARY}" ]; then CURRENT_BIN="${DEFAULT_BINARY}"
 fi
 
+LATEST_VER=$(curl -sf https://api.github.com/repos/clawlabz/claw-network/releases/latest 2>/dev/null | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/' || true)
+CURRENT_VER=""
 if [ -n "${CURRENT_BIN}" ]; then
   CURRENT_VER=$("${CURRENT_BIN}" --version 2>/dev/null | awk '{print $2}' || true)
-  LATEST_VER=$(curl -sf https://api.github.com/repos/clawlabz/claw-network/releases/latest 2>/dev/null | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/' || true)
+fi
 
-  if [ -n "${CURRENT_VER}" ] && [ -n "${LATEST_VER}" ] && [ "${CURRENT_VER}" != "${LATEST_VER}" ]; then
-    info "Node binary ${CURRENT_VER} → ${LATEST_VER}, upgrading..."
+NEED_DOWNLOAD=false
+if [ -z "${CURRENT_BIN}" ]; then
+  NEED_DOWNLOAD=true
+elif [ -n "${LATEST_VER}" ] && [ "${CURRENT_VER}" != "${LATEST_VER}" ]; then
+  NEED_DOWNLOAD=true
+fi
 
-    # Kill old node + UI server
-    pkill -f 'claw-node start' 2>/dev/null || true
-    pkill -f 'ui-server.js' 2>/dev/null || true
-    sleep 2
-
-    # Download new binary
-    PLATFORM_TARGET=""
-    case "$(uname -s)-$(uname -m)" in
-      Linux-x86_64)  PLATFORM_TARGET="linux-x86_64" ;;
-      Linux-aarch64) PLATFORM_TARGET="linux-aarch64" ;;
-      Darwin-arm64)  PLATFORM_TARGET="macos-aarch64" ;;
-      Darwin-x86_64) PLATFORM_TARGET="macos-x86_64" ;;
-    esac
-
-    if [ -n "${PLATFORM_TARGET}" ]; then
-      DL_URL="https://github.com/clawlabz/claw-network/releases/download/v${LATEST_VER}/claw-node-${PLATFORM_TARGET}.tar.gz"
-      BIN_TMP=$(mktemp -d)
-      if curl -sSfL -o "${BIN_TMP}/claw-node.tar.gz" "${DL_URL}" 2>/dev/null; then
-        tar xzf "${BIN_TMP}/claw-node.tar.gz" -C "${BIN_TMP}"
-        mkdir -p "$(dirname "${CURRENT_BIN}")"
-        cp "${BIN_TMP}/claw-node" "${CURRENT_BIN}"
-        chmod +x "${CURRENT_BIN}"
-        ok "Node binary upgraded to ${LATEST_VER}"
-      else
-        warn "Failed to download binary (will be downloaded on gateway start)"
-      fi
-      rm -rf "${BIN_TMP}"
+if [ "${NEED_DOWNLOAD}" = true ] && [ -n "${LATEST_VER}" ]; then
+  info "Downloading node binary v${LATEST_VER}..."
+  PLATFORM_TARGET=""
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64)  PLATFORM_TARGET="linux-x86_64" ;;
+    Linux-aarch64) PLATFORM_TARGET="linux-aarch64" ;;
+    Darwin-arm64)  PLATFORM_TARGET="macos-aarch64" ;;
+    Darwin-x86_64) PLATFORM_TARGET="macos-x86_64" ;;
+  esac
+  if [ -n "${PLATFORM_TARGET}" ]; then
+    DL_URL="https://github.com/clawlabz/claw-network/releases/download/v${LATEST_VER}/claw-node-${PLATFORM_TARGET}.tar.gz"
+    BIN_TMP=$(mktemp -d)
+    DEST="${CURRENT_BIN:-${DEFAULT_BINARY}}"
+    if curl -sSfL -o "${BIN_TMP}/claw-node.tar.gz" "${DL_URL}" 2>/dev/null; then
+      tar xzf "${BIN_TMP}/claw-node.tar.gz" -C "${BIN_TMP}"
+      mkdir -p "$(dirname "${DEST}")"
+      cp "${BIN_TMP}/claw-node" "${DEST}"
+      chmod +x "${DEST}"
+      ok "Node binary: v${LATEST_VER}"
+    else
+      warn "Failed to download binary (will be downloaded on gateway start)"
     fi
-
-    # Clean up stale PID/port files
-    rm -f "${OPENCLAW_DIR}/clawnetwork-ui-port" 2>/dev/null
-    rm -f "${HOME}/.openclaw/clawnetwork-ui-port" 2>/dev/null
-    rm -f "${OPENCLAW_DIR}/workspace/clawnetwork/node.pid" 2>/dev/null
-    rm -f "${HOME}/.openclaw/workspace/clawnetwork/node.pid" 2>/dev/null
-  else
-    if [ -n "${CURRENT_VER}" ]; then
-      ok "Node binary already at ${CURRENT_VER}"
-    fi
+    rm -rf "${BIN_TMP}"
   fi
+else
+  ok "Node binary: v${CURRENT_VER:-unknown}"
 fi
 
 # --- Register in openclaw.json ---
