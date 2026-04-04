@@ -2394,11 +2394,32 @@ export default function register(api: OpenClawApi) {
           // Check if already running (e.g. from a previous detached start)
           const state = isNodeRunning()
           if (state.running) {
-            api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid}), skipping node start`)
+            api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid})`)
+
+            // Check if running binary is outdated — if so, stop + upgrade + restart
+            if (cfg.autoDownload) {
+              const binary = findBinary()
+              if (binary) {
+                const cv = getBinaryVersion(binary)
+                if (cv && isVersionOlder(cv, MIN_NODE_VERSION)) {
+                  api.logger?.info?.(`[clawnetwork] running node ${cv} outdated (need >=${MIN_NODE_VERSION}), upgrading...`)
+                  stopNodeProcess(api)
+                  await sleep(3_000)
+                  try {
+                    const newBinary = await downloadBinary(api)
+                    initNode(newBinary, cfg.network, api)
+                    startNodeProcess(newBinary, cfg, api)
+                    api.logger?.info?.(`[clawnetwork] node upgraded and restarted`)
+                  } catch (e: unknown) {
+                    api.logger?.warn?.(`[clawnetwork] auto-upgrade failed: ${(e as Error).message}, restarting old binary`)
+                    startNodeProcess(binary, cfg, api)
+                  }
+                }
+              }
+            }
+
             startHealthCheck(cfg, api)
-            // Start UI dashboard (may have been lost on gateway restart)
             startUiServer(cfg, api)
-            // Still need to ensure heartbeat loop is running (may have been lost on gateway restart)
             const wallet = ensureWallet(cfg.network, api)
             await sleep(5_000)
             await autoRegisterMiner(cfg, wallet, api)
