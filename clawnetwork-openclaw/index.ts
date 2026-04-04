@@ -23,9 +23,11 @@ const MAX_RESTART_ATTEMPTS = 3
 const BOOTSTRAP_PEERS: Record<string, string[]> = {
   mainnet: [
     '/ip4/178.156.162.162/tcp/9711',
+    '/ip4/39.102.144.231/tcp/9711',
   ],
   testnet: [
     '/ip4/178.156.162.162/tcp/9721',
+    '/ip4/39.102.144.231/tcp/9721',
   ],
   devnet: [], // local dev, no bootstrap
 }
@@ -1710,7 +1712,7 @@ async function handle(req, res) {
           if (cfg.syncMode) syncMode = cfg.syncMode;
           if (cfg.extraBootstrapPeers) extraPeers = cfg.extraBootstrapPeers;
         } catch {}
-        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721'], devnet: [] };
+        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
         const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
         const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--allow-genesis'];
         for (const peer of peers) { args.push('--bootstrap', peer); }

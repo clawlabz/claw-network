@@ -66,6 +66,8 @@ struct ChainInner {
     total_tx_count: u64,
     /// Cached version manifest for /version RPC endpoint and runtime checks.
     version_manifest: Option<crate::version_check::VersionManifest>,
+    /// Last accepted snapshot height — prevents accepting the same snapshot twice (sync loop guard).
+    last_accepted_snapshot_height: u64,
 }
 
 impl Chain {
@@ -249,6 +251,7 @@ impl Chain {
                 latest_block_received: Instant::now(),
                 total_tx_count,
                 version_manifest: None,
+                last_accepted_snapshot_height: 0,
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -1111,9 +1114,17 @@ impl Chain {
                 }
                 NetworkEvent::SyncResponse { peer, response } => {
                     if let Some(follow_up) = self.handle_sync_response(&response) {
-                        tracing::debug!(?peer, "Sending follow-up sync request");
+                        // Peer rotation: for snapshot requests, try a different peer
+                        // to avoid repeatedly requesting from a peer with stale data.
+                        let target = if matches!(follow_up, SyncRequest::GetStateSnapshot | SyncRequest::GetStatus) && known_peers.len() > 1 {
+                            // Round-robin: pick a peer that isn't the one that just responded
+                            known_peers.iter().find(|p| *p != &peer).copied().unwrap_or(peer)
+                        } else {
+                            peer
+                        };
+                        tracing::debug!(?target, "Sending follow-up sync request");
                         let _ = command_tx.send(P2pCommand::SendSyncRequest {
-                            peer,
+                            peer: target,
                             request: follow_up,
                         });
                     }
@@ -1301,6 +1312,26 @@ impl Chain {
                 // Apply the snapshot: deserialize first, then verify state_root
                 let mut inner = self.inner.lock().expect("chain state mutex poisoned");
 
+                // Guard: reject snapshots at or below our current height (prevents sync loop)
+                let our_height = inner.latest_block.height;
+                if *height <= our_height {
+                    tracing::warn!(
+                        snapshot_height = height,
+                        our_height,
+                        "Ignoring stale snapshot (height <= ours)"
+                    );
+                    return None;
+                }
+
+                // Guard: reject duplicate snapshot at the same height (prevents repeated loop)
+                if *height == inner.last_accepted_snapshot_height {
+                    tracing::warn!(
+                        snapshot_height = height,
+                        "Ignoring duplicate snapshot height, falling back to status-based sync"
+                    );
+                    return Some(SyncRequest::GetStatus);
+                }
+
                 // Verify genesis hash matches — reject snapshots from different chains
                 if *genesis_hash != inner.genesis_hash {
                     tracing::warn!(
@@ -1415,6 +1446,7 @@ impl Chain {
                         if let Err(e) = inner.store.put_block(latest_block) {
                             tracing::error!(error = %e, "Failed to store snapshot block");
                         }
+                        inner.last_accepted_snapshot_height = *height;
                         tracing::info!(height, "Fork recovery: state snapshot applied, chain reset to height {}", height);
 
                         // Request blocks after the snapshot height to continue syncing
@@ -1424,8 +1456,8 @@ impl Chain {
                         })
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, "Failed to deserialize state snapshot");
-                        None
+                        tracing::error!(error = %e, "Failed to deserialize state snapshot — falling back to status sync");
+                        Some(SyncRequest::GetStatus)
                     }
                 }
             }

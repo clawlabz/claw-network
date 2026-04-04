@@ -315,11 +315,14 @@ impl P2pNetwork {
                         let peer_id = addr.iter().find_map(|p| {
                             if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
                         });
-                        if let Some(pid) = peer_id {
-                            if !self.peers.contains(&pid) {
-                                tracing::debug!(%addr, "Redialing disconnected bootstrap peer");
-                                let _ = self.swarm.dial(addr.clone());
-                            }
+                        let should_dial = match peer_id {
+                            Some(pid) => !self.peers.contains(&pid),
+                            // No PeerID in address: dial whenever we have no peers
+                            None => self.peers.is_empty(),
+                        };
+                        if should_dial {
+                            tracing::debug!(%addr, "Redialing disconnected bootstrap peer");
+                            let _ = self.swarm.dial(addr.clone());
                         }
                     }
                 }
