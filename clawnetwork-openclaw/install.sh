@@ -5,7 +5,7 @@
 #   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
 #
 # Custom OpenClaw directory (for named profiles like ~/.openclaw-ludis):
-#   curl -sSf .../install.sh | bash -s -- --dir ~/.openclaw-ludis
+#   OPENCLAW_DIR=~/.openclaw-ludis curl -sSf .../install.sh | bash
 #
 # What this does:
 #   1. Downloads the latest plugin from npm (no ClawHub, no rate limits)
@@ -21,19 +21,7 @@ set -euo pipefail
 PLUGIN_ID="clawnetwork"
 NPM_PACKAGE="@clawlabz/clawnetwork"
 
-# Parse --dir argument
-OPENCLAW_DIR="${HOME}/.openclaw"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dir)
-      OPENCLAW_DIR="$2"
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
+OPENCLAW_DIR="${OPENCLAW_DIR:-${HOME}/.openclaw}"
 
 EXTENSIONS_DIR="${OPENCLAW_DIR}/extensions/${PLUGIN_ID}"
 CONFIG_FILE="${OPENCLAW_DIR}/openclaw.json"
