@@ -5,7 +5,7 @@
 #   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash
 #
 # Custom OpenClaw directory:
-#   OPENCLAW_DIR=~/.openclaw-myprofile curl -sSf .../uninstall.sh | bash
+#   curl -sSf .../uninstall.sh | bash -s ~/.openclaw-myprofile
 #
 # What this does:
 #   1. Removes plugin files from <openclaw-dir>/extensions/clawnetwork/
@@ -21,39 +21,37 @@ set -euo pipefail
 
 PLUGIN_ID="clawnetwork"
 
-OPENCLAW_DIR="${OPENCLAW_DIR:-${HOME}/.openclaw}"
+OPENCLAW_DIR="${1:-${OPENCLAW_DIR:-${HOME}/.openclaw}}"
 
 EXTENSIONS_DIR="${OPENCLAW_DIR}/extensions/${PLUGIN_ID}"
 CONFIG_FILE="${OPENCLAW_DIR}/openclaw.json"
 
-# Colors
-if [ -t 1 ]; then
-  GREEN='\033[0;32m'
-  YELLOW='\033[1;33m'
-  CYAN='\033[0;36m'
-  RED='\033[0;31m'
-  NC='\033[0m'
+# Colors (using $'...' for proper escape interpretation)
+if [ -t 1 ] || [ -t 0 ]; then
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[1;33m'
+  CYAN=$'\033[0;36m'
+  RED=$'\033[0;31m'
+  NC=$'\033[0m'
 else
   GREEN='' YELLOW='' CYAN='' RED='' NC=''
 fi
 
-info()  { printf "${CYAN}[clawnetwork]${NC} %s\n" "$1"; }
-ok()    { printf "${GREEN}[clawnetwork]${NC} %s\n" "$1"; }
-warn()  { printf "${YELLOW}[clawnetwork]${NC} %s\n" "$1"; }
+info()  { printf "%s[clawnetwork]%s %s\n" "$CYAN" "$NC" "$1"; }
+ok()    { printf "%s[clawnetwork]%s %s\n" "$GREEN" "$NC" "$1"; }
+warn()  { printf "%s[clawnetwork]%s %s\n" "$YELLOW" "$NC" "$1"; }
 
 # --- Stop node if running ---
 
 info "Stopping node (if running)..."
 pkill -f 'claw-node start' 2>/dev/null || true
 
-# Stop UI server
 UI_PID_FILE="${OPENCLAW_DIR}/workspace/clawnetwork/ui-server.pid"
 if [ -f "${UI_PID_FILE}" ]; then
   kill "$(cat "${UI_PID_FILE}")" 2>/dev/null || true
   rm -f "${UI_PID_FILE}"
 fi
 
-# Clean up port file
 rm -f "${OPENCLAW_DIR}/clawnetwork-ui-port" 2>/dev/null || true
 
 # --- Remove plugin files ---
@@ -91,11 +89,11 @@ echo ""
 ok "ClawNetwork plugin uninstalled."
 echo ""
 info "The following data was preserved (delete manually if needed):"
-echo "  Wallet:     ${CYAN}~/.openclaw/workspace/clawnetwork/wallet.json${NC}"
-echo "  Chain data: ${CYAN}~/.clawnetwork/${NC}"
-echo "  Binary:     ${CYAN}~/.openclaw/bin/claw-node${NC}"
-echo "  Logs:       ${CYAN}~/.openclaw/workspace/clawnetwork/node.log${NC}"
+printf "  Wallet:     %s${OPENCLAW_DIR}/workspace/clawnetwork/wallet.json%s\n" "$CYAN" "$NC"
+printf "  Chain data: %s~/.clawnetwork/%s\n" "$CYAN" "$NC"
+printf "  Binary:     %s${OPENCLAW_DIR}/bin/claw-node%s\n" "$CYAN" "$NC"
+printf "  Logs:       %s${OPENCLAW_DIR}/workspace/clawnetwork/node.log%s\n" "$CYAN" "$NC"
 echo ""
-info "Restart your Gateway: ${CYAN}openclaw gateway restart${NC}"
+printf "%s[clawnetwork]%s Restart your Gateway: %sopenclaw gateway restart%s\n" "$CYAN" "$NC" "$CYAN" "$NC"
 echo ""
-info "To reinstall: ${CYAN}curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash${NC}"
+printf "%s[clawnetwork]%s To reinstall: %scurl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash%s\n" "$CYAN" "$NC" "$CYAN" "$NC"

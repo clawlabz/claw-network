@@ -5,7 +5,7 @@
 #   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
 #
 # Custom OpenClaw directory (for named profiles like ~/.openclaw-myprofile):
-#   OPENCLAW_DIR=~/.openclaw-myprofile curl -sSf .../install.sh | bash
+#   curl -sSf .../install.sh | bash -s ~/.openclaw-myprofile
 #
 # What this does:
 #   1. Downloads the latest plugin from npm (no ClawHub, no rate limits)
@@ -21,35 +21,35 @@ set -euo pipefail
 PLUGIN_ID="clawnetwork"
 NPM_PACKAGE="@clawlabz/clawnetwork"
 
-OPENCLAW_DIR="${OPENCLAW_DIR:-${HOME}/.openclaw}"
+# First positional arg = custom openclaw dir; fallback to env var; fallback to default
+OPENCLAW_DIR="${1:-${OPENCLAW_DIR:-${HOME}/.openclaw}}"
 
 EXTENSIONS_DIR="${OPENCLAW_DIR}/extensions/${PLUGIN_ID}"
 CONFIG_FILE="${OPENCLAW_DIR}/openclaw.json"
 
-# Colors (if terminal supports them)
-if [ -t 1 ]; then
-  GREEN='\033[0;32m'
-  YELLOW='\033[1;33m'
-  CYAN='\033[0;36m'
-  RED='\033[0;31m'
-  NC='\033[0m'
+# Colors (using $'...' for proper escape interpretation)
+if [ -t 1 ] || [ -t 0 ]; then
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[1;33m'
+  CYAN=$'\033[0;36m'
+  RED=$'\033[0;31m'
+  NC=$'\033[0m'
 else
   GREEN='' YELLOW='' CYAN='' RED='' NC=''
 fi
 
-info()  { printf "${CYAN}[clawnetwork]${NC} %s\n" "$1"; }
-ok()    { printf "${GREEN}[clawnetwork]${NC} %s\n" "$1"; }
-warn()  { printf "${YELLOW}[clawnetwork]${NC} %s\n" "$1"; }
-fail()  { printf "${RED}[clawnetwork]${NC} %s\n" "$1" >&2; exit 1; }
+info()  { printf "%s[clawnetwork]%s %s\n" "$CYAN" "$NC" "$1"; }
+ok()    { printf "%s[clawnetwork]%s %s\n" "$GREEN" "$NC" "$1"; }
+warn()  { printf "%s[clawnetwork]%s %s\n" "$YELLOW" "$NC" "$1"; }
+fail()  { printf "%s[clawnetwork]%s %s\n" "$RED" "$NC" "$1" >&2; exit 1; }
 
 # --- Pre-checks ---
 
 command -v npm >/dev/null 2>&1 || fail "npm is required but not found. Install Node.js first: https://nodejs.org"
 command -v node >/dev/null 2>&1 || fail "node is required but not found. Install Node.js first: https://nodejs.org"
 
-# Check OpenClaw is installed
 if [ ! -d "${OPENCLAW_DIR}" ]; then
-  warn "~/.openclaw/ not found. Creating directory structure..."
+  warn "${OPENCLAW_DIR} not found. Creating directory structure..."
   mkdir -p "${OPENCLAW_DIR}/extensions"
 fi
 
@@ -66,7 +66,6 @@ npm pack "${NPM_PACKAGE}@latest" --silent 2>/dev/null || fail "Failed to downloa
 TARBALL=$(ls clawlabz-clawnetwork-*.tgz 2>/dev/null | head -1)
 [ -n "${TARBALL}" ] || fail "Downloaded tarball not found"
 
-# Extract version from tarball name
 VERSION=$(echo "${TARBALL}" | sed 's/clawlabz-clawnetwork-//;s/\.tgz//')
 info "Downloaded version: ${VERSION}"
 
@@ -88,10 +87,8 @@ else
 fi
 mkdir -p "${EXTENSIONS_DIR}"
 
-# Extract (npm pack creates package/ prefix inside tarball)
 tar xzf "${TARBALL}"
 
-# Copy plugin files
 cp package/index.ts "${EXTENSIONS_DIR}/"
 cp package/openclaw.plugin.json "${EXTENSIONS_DIR}/"
 cp package/package.json "${EXTENSIONS_DIR}/"
@@ -108,7 +105,6 @@ ok "Plugin files installed"
 info "Updating ${CONFIG_FILE}..."
 
 if [ ! -f "${CONFIG_FILE}" ]; then
-  # Create minimal config
   cat > "${CONFIG_FILE}" << 'INITJSON'
 {
   "plugins": {
@@ -119,19 +115,16 @@ if [ ! -f "${CONFIG_FILE}" ]; then
 INITJSON
 fi
 
-# Use node to safely merge JSON (no jq dependency)
 node -e "
 const fs = require('fs');
 const cfgPath = '${CONFIG_FILE}';
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch {}
 
-// Ensure structure
 if (!cfg.plugins) cfg.plugins = {};
 if (!cfg.plugins.entries) cfg.plugins.entries = {};
 if (!cfg.plugins.allow) cfg.plugins.allow = [];
 
-// Register plugin if not present
 if (!cfg.plugins.entries['${PLUGIN_ID}']) {
   cfg.plugins.entries['${PLUGIN_ID}'] = {
     enabled: true,
@@ -148,11 +141,9 @@ if (!cfg.plugins.entries['${PLUGIN_ID}']) {
     }
   };
 } else {
-  // Preserve existing config, just ensure enabled
   cfg.plugins.entries['${PLUGIN_ID}'].enabled = true;
 }
 
-// Add to allow list if not present
 if (!cfg.plugins.allow.includes('${PLUGIN_ID}')) {
   cfg.plugins.allow.push('${PLUGIN_ID}');
 }
@@ -169,17 +160,13 @@ if [ "${IS_UPDATE}" = true ]; then
   ok "ClawNetwork plugin updated: v${OLD_VERSION} -> v${VERSION}"
   echo ""
   info "Restart your Gateway to apply the update:"
-  echo ""
-  echo "  ${CYAN}openclaw gateway restart${NC}"
-  echo ""
+  printf "\n  %sopenclaw gateway restart%s\n\n" "$CYAN" "$NC"
   info "Your wallet, chain data, and config are unchanged."
 else
   ok "ClawNetwork plugin v${VERSION} installed successfully!"
   echo ""
   info "Restart your OpenClaw Gateway to activate the plugin:"
-  echo ""
-  echo "  ${CYAN}openclaw gateway restart${NC}"
-  echo ""
+  printf "\n  %sopenclaw gateway restart%s\n\n" "$CYAN" "$NC"
   info "After restart, the plugin will automatically:"
   echo "  1. Download the claw-node binary (SHA256 verified)"
   echo "  2. Start a light node and join mainnet"
@@ -188,7 +175,7 @@ else
   echo "  5. Begin mining and earning rewards"
 fi
 echo ""
-info "Dashboard:  ${CYAN}http://127.0.0.1:19877${NC}"
-info "Status:     ${CYAN}openclaw clawnetwork status${NC}"
+printf "%s[clawnetwork]%s Dashboard:  %shttp://127.0.0.1:19877%s\n" "$CYAN" "$NC" "$CYAN" "$NC"
+printf "%s[clawnetwork]%s Status:     %sopenclaw clawnetwork status%s\n" "$CYAN" "$NC" "$CYAN" "$NC"
 echo ""
-info "To uninstall: ${CYAN}curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash${NC}"
+printf "%s[clawnetwork]%s To uninstall: %scurl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash%s\n" "$CYAN" "$NC" "$CYAN" "$NC"
