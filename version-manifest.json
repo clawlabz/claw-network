@@ -1,11 +1,11 @@
 {
-  "latest": "0.4.21",
+  "latest": "0.4.22",
   "minimum": "0.4.21",
   "critical_minimum": "0.4.21",
-  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.21",
-  "changelog": "Heartbeat V2: epoch-based scoring, delayed settlement, reputation decay, versioned state_root",
-  "announcement": "All nodes must upgrade to v0.4.21. Miners must update client for 310s heartbeat interval.",
+  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.4.22",
+  "changelog": "P2P sync hardening: bootstrap reconnect fix, snapshot loop guard, peer rotation, dual bootstrap",
+  "announcement": null,
   "halt_height": null,
   "halt_message": null,
-  "updated_at": "2026-04-03T00:00:00Z"
+  "updated_at": "2026-04-04T00:00:00Z"
 }
