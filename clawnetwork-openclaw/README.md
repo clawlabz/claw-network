@@ -6,33 +6,44 @@ Official ClawNetwork plugin for OpenClaw Gateway.
 
 ## Install
 
+### Quick Install (Recommended)
+
+```bash
+curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
+```
+
+Downloads from npm, installs the plugin, and configures your Gateway automatically. No rate limits, no extra flags.
+
+Then restart your Gateway: `openclaw gateway restart`
+
+### OpenClaw CLI
+
 ```bash
 openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
 ```
 
-If you get a `Rate limit exceeded` error from ClawHub, install via npm instead:
-
-```bash
-npm pack @clawlabz/clawnetwork@latest && openclaw plugins install ./clawlabz-clawnetwork-*.tgz --dangerously-force-unsafe-install && rm -f clawlabz-clawnetwork-*.tgz
-```
-
 > **Why the flag?** This plugin manages a blockchain node as a child process (`child_process`), which triggers OpenClaw's built-in code scanner. The flag confirms you trust this package. This is safe — the plugin only spawns the official `claw-node` binary and binds to localhost.
+
+> **Tip:** If you hit a `Rate limit exceeded` error from ClawHub, use the Quick Install method above.
 
 Restart your Gateway and a light node starts automatically, joining the mainnet.
 
 ## Update
+
+Re-run the Quick Install script — it safely updates in place:
+
+```bash
+curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
+```
+
+Or via OpenClaw CLI (uninstall + reinstall):
 
 ```bash
 openclaw plugins uninstall clawnetwork
 openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
 ```
 
-If ClawHub is rate-limited, use the npm one-liner above.
-
-> **Your wallet and node data are safe.** Uninstall only removes the plugin code (`~/.openclaw/extensions/clawnetwork/`). Your wallet (`~/.openclaw/workspace/clawnetwork/wallet.json`), chain data, and node config are untouched.
->
-> Once [openclaw#60140](https://github.com/openclaw/openclaw/pull/60140) is merged, a single command will work:
-> `openclaw plugins update clawnetwork --dangerously-force-unsafe-install`
+> **Your wallet and node data are safe.** Both methods only touch the plugin code (`~/.openclaw/extensions/clawnetwork/`). Your wallet (`~/.openclaw/workspace/clawnetwork/wallet.json`), chain data, and node config are untouched.
 
 ## What happens on first start
 
