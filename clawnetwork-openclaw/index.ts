@@ -2396,25 +2396,39 @@ export default function register(api: OpenClawApi) {
           if (state.running) {
             api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid})`)
 
-            // Check if running binary is outdated — if so, stop + upgrade + restart
+            // Check if a newer binary is available on GitHub — if so, download + restart
             if (cfg.autoDownload) {
-              const binary = findBinary()
-              if (binary) {
-                const cv = getBinaryVersion(binary)
-                if (cv && isVersionOlder(cv, MIN_NODE_VERSION)) {
-                  api.logger?.info?.(`[clawnetwork] running node ${cv} outdated (need >=${MIN_NODE_VERSION}), upgrading...`)
-                  stopNodeProcess(api)
-                  await sleep(3_000)
+              try {
+                const binary = findBinary()
+                const runningVersion = binary ? getBinaryVersion(binary) : null
+                if (runningVersion) {
+                  // Fetch latest version from GitHub
+                  let latestVersion: string | null = null
                   try {
-                    const newBinary = await downloadBinary(api)
-                    initNode(newBinary, cfg.network, api)
-                    startNodeProcess(newBinary, cfg, api)
-                    api.logger?.info?.(`[clawnetwork] node upgraded and restarted`)
-                  } catch (e: unknown) {
-                    api.logger?.warn?.(`[clawnetwork] auto-upgrade failed: ${(e as Error).message}, restarting old binary`)
-                    startNodeProcess(binary, cfg, api)
+                    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
+                    if (res.ok) {
+                      const data = await res.json() as Record<string, unknown>
+                      if (typeof data.tag_name === 'string') latestVersion = data.tag_name.replace(/^v/, '')
+                    }
+                  } catch { /* network error, skip */ }
+
+                  if (latestVersion && isVersionOlder(runningVersion, latestVersion)) {
+                    api.logger?.info?.(`[clawnetwork] node ${runningVersion} → ${latestVersion} available, upgrading...`)
+                    stopNodeProcess(api)
+                    await sleep(3_000)
+                    try {
+                      const newBinary = await downloadBinary(api)
+                      initNode(newBinary, cfg.network, api)
+                      startNodeProcess(newBinary, cfg, api)
+                      api.logger?.info?.(`[clawnetwork] node upgraded to ${latestVersion} and restarted`)
+                    } catch (e: unknown) {
+                      api.logger?.warn?.(`[clawnetwork] auto-upgrade failed: ${(e as Error).message}, restarting old binary`)
+                      startNodeProcess(binary, cfg, api)
+                    }
                   }
                 }
+              } catch (e: unknown) {
+                api.logger?.warn?.(`[clawnetwork] upgrade check failed: ${(e as Error).message}`)
               }
             }
 
