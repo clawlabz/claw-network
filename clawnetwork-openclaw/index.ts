@@ -1902,14 +1902,11 @@ tryListen(0);
 `
 
 function startUiServer(cfg: PluginConfig, api: OpenClawApi): string | null {
-  // Check if already running
-  const existing = getDashboardUrl()
-  if (existing) {
-    api.logger?.info?.(`[clawnetwork] dashboard already running: ${existing}`)
-    return existing
-  }
+  // Always kill old UI server and restart with fresh code.
+  // The UI server is a detached process that survives gateway restarts,
+  // so we must replace it to pick up plugin updates.
+  stopUiServer()
 
-  // Write the standalone UI server script to a temp file and fork it
   const scriptPath = path.join(WORKSPACE_DIR, 'ui-server.js')
   ensureDir(WORKSPACE_DIR)
 
