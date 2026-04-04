@@ -4,7 +4,7 @@
 #   irm https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.ps1 | iex
 #
 # Custom OpenClaw directory (for named profiles):
-#   & { $env:OPENCLAW_DIR="$env:USERPROFILE\.openclaw-ludis"; irm .../install.ps1 | iex }
+#   & { $env:OPENCLAW_DIR="$env:USERPROFILE\.openclaw-myprofile"; irm .../install.ps1 | iex }
 #
 # Safe to re-run — updates existing installation in place.
 # Your wallet and chain data are never touched.

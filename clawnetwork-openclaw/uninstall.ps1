@@ -4,7 +4,7 @@
 #   irm https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.ps1 | iex
 #
 # Custom OpenClaw directory:
-#   & { $env:OPENCLAW_DIR="$env:USERPROFILE\.openclaw-ludis"; irm .../uninstall.ps1 | iex }
+#   & { $env:OPENCLAW_DIR="$env:USERPROFILE\.openclaw-myprofile"; irm .../uninstall.ps1 | iex }
 
 $ErrorActionPreference = "Stop"
 

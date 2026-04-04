@@ -5,7 +5,7 @@
 #   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash
 #
 # Custom OpenClaw directory:
-#   OPENCLAW_DIR=~/.openclaw-ludis curl -sSf .../uninstall.sh | bash
+#   OPENCLAW_DIR=~/.openclaw-myprofile curl -sSf .../uninstall.sh | bash
 #
 # What this does:
 #   1. Removes plugin files from <openclaw-dir>/extensions/clawnetwork/

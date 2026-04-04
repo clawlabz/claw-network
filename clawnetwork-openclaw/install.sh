@@ -4,8 +4,8 @@
 # Usage:
 #   curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
 #
-# Custom OpenClaw directory (for named profiles like ~/.openclaw-ludis):
-#   OPENCLAW_DIR=~/.openclaw-ludis curl -sSf .../install.sh | bash
+# Custom OpenClaw directory (for named profiles like ~/.openclaw-myprofile):
+#   OPENCLAW_DIR=~/.openclaw-myprofile curl -sSf .../install.sh | bash
 #
 # What this does:
 #   1. Downloads the latest plugin from npm (no ClawHub, no rate limits)
