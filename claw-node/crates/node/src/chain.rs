@@ -243,9 +243,9 @@ impl Chain {
                 validator_set,
                 genesis_hash,
                 chain_id: chain_id.to_string(),
+                offline_validators: slashing.process_downtime_penalties(),
                 slashing,
                 pending_votes: std::collections::HashMap::new(),
-                offline_validators: Vec::new(),
                 fast_sync_pending: false,
                 bootstrap_peer_ids: Vec::new(),
                 latest_block_received: Instant::now(),
@@ -1438,6 +1438,12 @@ impl Chain {
                             processed_evidence: state.processed_evidence.clone(),
                             ..Default::default()
                         };
+
+                        // Recompute offline_validators from restored slashing state.
+                        // Without this, apply_synced_block distributes rewards to ALL
+                        // validators (offline_validators is empty), while the producing
+                        // node excluded offline validators — causing state_root mismatch.
+                        inner.offline_validators = inner.slashing.process_downtime_penalties();
 
                         inner.state = state;
                         // Update latest_block from snapshot to re-establish chain continuity
