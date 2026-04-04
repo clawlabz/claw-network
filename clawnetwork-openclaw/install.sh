@@ -63,9 +63,22 @@ TARBALL=$(ls clawlabz-clawnetwork-*.tgz 2>/dev/null | head -1)
 VERSION=$(echo "${TARBALL}" | sed 's/clawlabz-clawnetwork-//;s/\.tgz//')
 info "Downloaded version: ${VERSION}"
 
+# --- Detect install vs update ---
+
+IS_UPDATE=false
+OLD_VERSION=""
+if [ -f "${EXTENSIONS_DIR}/package.json" ]; then
+  IS_UPDATE=true
+  OLD_VERSION=$(node -e "try{console.log(require('${EXTENSIONS_DIR}/package.json').version)}catch{}" 2>/dev/null || true)
+fi
+
 # --- Install ---
 
-info "Installing to ${EXTENSIONS_DIR}/"
+if [ "${IS_UPDATE}" = true ]; then
+  info "Updating from v${OLD_VERSION} to v${VERSION}..."
+else
+  info "Installing to ${EXTENSIONS_DIR}/..."
+fi
 mkdir -p "${EXTENSIONS_DIR}"
 
 # Extract (npm pack creates package/ prefix inside tarball)
@@ -145,20 +158,30 @@ ok "Plugin registered in config"
 # --- Done ---
 
 echo ""
-ok "ClawNetwork plugin v${VERSION} installed successfully!"
-echo ""
-info "Next step — restart your OpenClaw Gateway to activate the plugin:"
-echo ""
-echo "  ${CYAN}openclaw gateway restart${NC}"
-echo ""
-info "After restart, the plugin will automatically:"
-echo "  1. Download the claw-node binary (SHA256 verified)"
-echo "  2. Start a light node and join mainnet"
-echo "  3. Generate a wallet (if first time)"
-echo "  4. Register your Agent and Miner identity on-chain"
-echo "  5. Begin mining and earning rewards"
+if [ "${IS_UPDATE}" = true ]; then
+  ok "ClawNetwork plugin updated: v${OLD_VERSION} -> v${VERSION}"
+  echo ""
+  info "Restart your Gateway to apply the update:"
+  echo ""
+  echo "  ${CYAN}openclaw gateway restart${NC}"
+  echo ""
+  info "Your wallet, chain data, and config are unchanged."
+else
+  ok "ClawNetwork plugin v${VERSION} installed successfully!"
+  echo ""
+  info "Restart your OpenClaw Gateway to activate the plugin:"
+  echo ""
+  echo "  ${CYAN}openclaw gateway restart${NC}"
+  echo ""
+  info "After restart, the plugin will automatically:"
+  echo "  1. Download the claw-node binary (SHA256 verified)"
+  echo "  2. Start a light node and join mainnet"
+  echo "  3. Generate a wallet (if first time)"
+  echo "  4. Register your Agent and Miner identity on-chain"
+  echo "  5. Begin mining and earning rewards"
+fi
 echo ""
 info "Dashboard:  ${CYAN}http://127.0.0.1:19877${NC}"
 info "Status:     ${CYAN}openclaw clawnetwork status${NC}"
 echo ""
-info "To update later, just re-run this script."
+info "To uninstall: ${CYAN}curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash${NC}"

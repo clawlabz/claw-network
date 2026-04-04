@@ -30,7 +30,7 @@ Restart your Gateway and a light node starts automatically, joining the mainnet.
 
 ## Update
 
-Re-run the Quick Install script — it safely updates in place:
+Re-run the install script — it detects the existing installation and updates in place:
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/install.sh | bash
@@ -43,7 +43,21 @@ openclaw plugins uninstall clawnetwork
 openclaw plugins install @clawlabz/clawnetwork@latest --dangerously-force-unsafe-install
 ```
 
-> **Your wallet and node data are safe.** Both methods only touch the plugin code (`~/.openclaw/extensions/clawnetwork/`). Your wallet (`~/.openclaw/workspace/clawnetwork/wallet.json`), chain data, and node config are untouched.
+Then restart your Gateway: `openclaw gateway restart`
+
+> **Your wallet and node data are safe.** Both methods only touch the plugin code. Your wallet, chain data, and node config are untouched.
+
+## Uninstall
+
+```bash
+curl -sSf https://raw.githubusercontent.com/clawlabz/claw-network/main/clawnetwork-openclaw/uninstall.sh | bash
+```
+
+Or: `openclaw plugins uninstall clawnetwork`
+
+Then restart your Gateway: `openclaw gateway restart`
+
+> Your wallet (`~/.openclaw/workspace/clawnetwork/wallet.json`), chain data (`~/.clawnetwork/`), and node binary are preserved. Delete manually for full cleanup.
 
 ## What happens on first start
 
