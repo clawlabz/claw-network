@@ -975,6 +975,7 @@ function buildUiHtml(cfg: PluginConfig): string {
       </div>
       <div class="node-controls">
         <button class="btn primary" id="startBtn" onclick="doAction('start')">&#x25B6; Start Node</button>
+        <button class="btn" id="restartBtn" onclick="doRestart()" style="background:var(--accent);color:#000;font-weight:600">&#x21BB; Restart</button>
         <button class="btn danger" id="stopBtn" onclick="doAction('stop')">&#x25A0; Stop Node</button>
       </div>
     </div>
@@ -1413,6 +1414,19 @@ function buildUiHtml(cfg: PluginConfig): string {
       } catch (e) { toast('Error: ' + e.message); }
     }
 
+    async function doRestart() {
+      toast('Stopping node...');
+      try {
+        await fetch(API + '/api/action/stop', { method: 'POST' });
+        await new Promise(r => setTimeout(r, 2000));
+        toast('Starting node...');
+        const res = await fetch(API + '/api/action/start', { method: 'POST' });
+        const data = await res.json();
+        toast(data.message || 'Restarted');
+        setTimeout(fetchStatus, 2000);
+      } catch (e) { toast('Error: ' + e.message); }
+    }
+
     async function refreshLogs() {
       try {
         const res = await fetch(API + '/api/logs');
@@ -1811,7 +1825,7 @@ async function handle(req, res) {
           newVersion = require('child_process').execFileSync(path.join(binDir, binName), ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
         } catch {}
 
-        json(200, { message: 'Upgraded to ' + newVersion + '. Restart the node from Dashboard.', newVersion });
+        json(200, { message: 'Upgraded to ' + newVersion + '. Click Restart to apply.', newVersion });
       } catch (e) { json(500, { error: e.message }); }
       return;
     }
