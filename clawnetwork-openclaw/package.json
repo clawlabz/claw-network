@@ -1,6 +1,6 @@
 {
   "name": "@clawlabz/clawnetwork",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Run a ClawNetwork blockchain node inside OpenClaw. Every agent is a blockchain node.",
   "type": "module",
   "license": "MIT",

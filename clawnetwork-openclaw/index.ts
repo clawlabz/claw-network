@@ -1415,15 +1415,12 @@ function buildUiHtml(cfg: PluginConfig): string {
     }
 
     async function doRestart() {
-      toast('Stopping node...');
+      toast('Restarting node...');
       try {
-        await fetch(API + '/api/action/stop', { method: 'POST' });
-        await new Promise(r => setTimeout(r, 2000));
-        toast('Starting node...');
-        const res = await fetch(API + '/api/action/start', { method: 'POST' });
-        const data = await res.json();
-        toast(data.message || 'Restarted');
-        setTimeout(fetchStatus, 2000);
+        var res = await fetch(API + '/api/action/restart', { method: 'POST' });
+        var data = await res.json();
+        toast(data.message || data.error || 'Done');
+        setTimeout(fetchStatus, 3000);
       } catch (e) { toast('Error: ' + e.message); }
     }
 
@@ -1763,12 +1760,65 @@ async function handle(req, res) {
         // Also kill by name (covers orphans)
         try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 3000 }); } catch {}
         try { fs.unlinkSync(pidFile); } catch {}
+        // Wait for process to actually exit (max 5s)
+        for (let w = 0; w < 10; w++) {
+          try { require('child_process').execSync("pgrep -f 'claw-node start'", { timeout: 1000 }); } catch { break; }
+          require('child_process').execSync('sleep 0.5', { timeout: 2000 });
+        }
         json(200, { message: 'Node stopped' });
       } catch (e) { json(500, { error: e.message }); }
       return;
     }
     if (a === 'restart') {
-      json(200, { message: 'Use Stop then Start to restart the node' });
+      // Stop, wait, start — all server-side
+      try {
+        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        try {
+          const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+          if (pid > 0) try { process.kill(pid, 'SIGTERM'); } catch {}
+        } catch {}
+        const stopFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/stop.signal');
+        try { fs.writeFileSync(stopFile, String(Date.now())); } catch {}
+        try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 3000 }); } catch {}
+        try { fs.unlinkSync(pidFile); } catch {}
+        // Wait for exit
+        for (let w = 0; w < 10; w++) {
+          try { require('child_process').execSync("pgrep -f 'claw-node start'", { timeout: 1000 }); } catch { break; }
+          require('child_process').execSync('sleep 0.5', { timeout: 2000 });
+        }
+        try { fs.unlinkSync(stopFile); } catch {}
+        // Now start (reuse start logic inline)
+        const binDir = path.join(os.homedir(), '.openclaw/bin');
+        const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
+        let binary = path.join(binDir, binName);
+        if (!fs.existsSync(binary)) { binary = path.join(os.homedir(), '.clawnetwork/bin/claw-node'); }
+        if (!fs.existsSync(binary)) { json(400, { error: 'claw-node binary not found' }); return; }
+        const cfgPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/config.json');
+        let network = 'mainnet', p2pPort = 9711, syncMode = 'light', extraPeers = [];
+        try {
+          const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+          if (cfg.network) network = cfg.network;
+          if (cfg.p2pPort) p2pPort = cfg.p2pPort;
+          if (cfg.syncMode) syncMode = cfg.syncMode;
+          if (cfg.extraBootstrapPeers) extraPeers = cfg.extraBootstrapPeers;
+        } catch {}
+        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
+        const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
+        const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--allow-genesis'];
+        for (const peer of peers) { args.push('--bootstrap', peer); }
+        const logPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.log');
+        const logFd = fs.openSync(logPath, 'a');
+        const { spawn: nodeSpawn } = require('child_process');
+        const child = nodeSpawn(binary, args, {
+          stdio: ['ignore', logFd, logFd],
+          detached: true,
+          env: { HOME: os.homedir(), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin', RUST_LOG: process.env.RUST_LOG || 'claw=info' },
+        });
+        child.unref();
+        fs.closeSync(logFd);
+        fs.writeFileSync(pidFile, String(child.pid));
+        json(200, { message: 'Node restarted', pid: child.pid });
+      } catch (e) { json(500, { error: e.message }); }
       return;
     }
     if (a === 'upgrade') {
