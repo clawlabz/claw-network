@@ -96,10 +96,14 @@ def test_register_accepts_tier_one():
         assert result == "0x" + "ff" * 32
 
 
-def test_status_reads_reputation_bps():
+def test_status_reads_reputation_bps(tmp_path):
     """Miner info parsing should read 'reputation_bps' field."""
     from clawminer.cli import status
     from click.testing import CliRunner
+
+    # Create a dummy config file so config_path.exists() passes
+    config_file = tmp_path / "clawminer.toml"
+    config_file.write_text("")
 
     runner = CliRunner()
 
@@ -127,8 +131,8 @@ def test_status_reads_reputation_bps():
         }
         mock_block_height.return_value = 100
 
-        # Run status command
-        result = runner.invoke(status, ["--dir", "/tmp"])
+        # Run status command with tmp_path so config file is found
+        result = runner.invoke(status, ["--dir", str(tmp_path)])
 
         # Verify command executed successfully
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, Output: {result.output}"
