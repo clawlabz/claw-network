@@ -49,9 +49,9 @@ const txHash = await client.transfer({
 | **Agent** | `client.agent.*` | ✅ Stable | Register agents, query metadata |
 | **Service** | `client.service.*` | ✅ Stable | Register services, search registry |
 | **Reputation** | `client.reputation.*` | ⚠️ Deprecated | Use Agent Score system instead |
-| **Staking** | `client.stake.*` | 🔶 Planned | Deposit, withdraw, claim rewards (Phase 2) |
-| **Smart Contracts** | `client.contract.*` | 🔶 Planned | Deploy, call, upgrade contracts (Phase 2) |
-| **Mining** | `client.miner.*` | 🔶 Planned | Register miner, heartbeat (Phase 2) |
+| **Staking** | `client.staking.*` | ✅ Stable | Deposit, withdraw, claim, change delegation |
+| **Smart Contracts** | `client.contract.*` | ✅ Stable | Deploy, call smart contracts |
+| **Mining** | `client.miner.*` | ✅ Stable | Register miner, submit heartbeats |
 
 ## Module Reference
 
@@ -127,6 +127,75 @@ const txHash = await client.service.register({
 const services = await client.service.search({ serviceType: 'oracle-feed' })
 ```
 
+### `client.staking.*`
+
+Staking and delegation operations.
+
+```typescript
+// Deposit stake to become a validator
+const txHash = await client.staking.deposit({
+  validator: '0xvalidator...',  // validator address
+  amount: BigInt(50_000 * 1e9),  // 50,000 CLAW
+  commissionBps: 1000  // 10% commission
+})
+
+// Withdraw stake (initiates unbonding)
+const txHash = await client.staking.withdraw({
+  validator: '0xvalidator...',
+  amount: BigInt(10_000 * 1e9)
+})
+
+// Claim unbonded stake
+const txHash = await client.staking.claim()
+
+// Change delegation to a different validator
+const txHash = await client.staking.changeDelegation({
+  validator: '0xold-validator...',
+  newOwner: '0xnew-delegator...',
+  commissionBps: 500  // new commission
+})
+```
+
+### `client.contract.*`
+
+Smart contract operations.
+
+```typescript
+// Deploy a new contract
+const txHash = await client.contract.deploy({
+  code: new Uint8Array([...wasmBytecode]),
+  initMethod: 'init',  // constructor method name
+  initArgs: new Uint8Array([...constructorArgs])
+})
+
+// Call a contract method
+const txHash = await client.contract.call({
+  contract: '0xcontract-address...',
+  method: 'transfer',
+  args: new Uint8Array([...methodArgs]),
+  value: BigInt(1_000_000)  // optional native CLAW to send
+})
+```
+
+### `client.miner.*`
+
+Mining operations.
+
+```typescript
+// Register as a miner
+const txHash = await client.miner.register({
+  tier: 1,  // miner tier
+  ipAddr: new Uint8Array([192, 168, 1, 1]),  // IPv4 address
+  name: 'my-miner'
+})
+
+// Submit a heartbeat
+const txHash = await client.miner.heartbeat({
+  latestBlockHash: '0xblockhash...',
+  latestHeight: BigInt(12345)
+})
+```
+
 ### `client.block.*`
 
 Block queries.
@@ -137,6 +206,17 @@ const height = await client.block.getLatest()
 
 // Get block by height
 const block = await client.block.getByNumber(12345)
+```
+
+### `client.getTransaction(txHash)`
+
+Get full transaction details by hash.
+
+```typescript
+const tx = await client.getTransaction('0xtxhash...')
+if (tx) {
+  console.log(tx.from, tx.to, tx.amount)
+}
 ```
 
 ## Configuration
@@ -191,7 +271,7 @@ try {
 
 ## Roadmap
 
-### Phase 1 (Current — Stable)
+### Phase 1 (Stable)
 - ✅ Core transaction signing and serialization
 - ✅ Wallet & address derivation
 - ✅ Native token transfers
@@ -200,18 +280,24 @@ try {
 - ✅ Service registry
 - ✅ Block queries & transaction receipts
 
-### Phase 2 (Planned)
-- 🔶 Staking system (deposit, withdraw, claim)
-- 🔶 Smart contracts (deploy, call, upgrade)
-- 🔶 Mining operations (register, heartbeat)
-- 🔶 Enhanced RPC queries (logs, filters)
-- 🔶 Transaction building utilities
+### Phase 2 (Current — Stable)
+- ✅ Staking system (deposit, withdraw, claim, change delegation)
+- ✅ Smart contracts (deploy, call)
+- ✅ Mining operations (register, heartbeat)
+- ✅ Transaction queries (getTransaction, getTransactionReceipt)
+- ✅ Full transaction serialization for all 19 tx types
 
-### Phase 3 (Future)
+### Phase 3 (Planned)
+- 🔶 Enhanced RPC queries (logs, filters, event streaming)
+- 🔶 Transaction building utilities
+- 🔶 Contract upgrade operations (announce, execute)
+- 🔶 Batch transaction utilities
+
+### Phase 4 (Future)
 - 📋 Multi-signature transactions
 - 📋 Account abstraction
-- 📋 WebSocket support for event streaming
-- 📋 Batch transaction utilities
+- 📋 WebSocket support for real-time event streaming
+- 📋 Advanced contract introspection
 
 ## License
 

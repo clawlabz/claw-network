@@ -170,6 +170,93 @@ export function encodeServiceRegisterPayload(
   return new Uint8Array(buf);
 }
 
+export function encodeStakeDepositPayload(
+  amount: bigint,
+  validator: Uint8Array,
+  commissionBps: number,
+): Uint8Array {
+  const buf: number[] = [];
+  writeU128LE(buf, amount);
+  writeFixedBytes(buf, validator); // [u8; 32]
+  writeU16LE(buf, commissionBps);
+  return new Uint8Array(buf);
+}
+
+export function encodeStakeWithdrawPayload(
+  amount: bigint,
+  validator: Uint8Array,
+): Uint8Array {
+  const buf: number[] = [];
+  writeU128LE(buf, amount);
+  writeFixedBytes(buf, validator); // [u8; 32]
+  return new Uint8Array(buf);
+}
+
+export function encodeStakeClaimPayload(): Uint8Array {
+  // Empty payload for StakeClaim
+  return new Uint8Array([]);
+}
+
+export function encodeChangeDelegationPayload(
+  validator: Uint8Array,
+  newOwner: Uint8Array,
+  commissionBps: number,
+): Uint8Array {
+  const buf: number[] = [];
+  writeFixedBytes(buf, validator); // [u8; 32]
+  writeFixedBytes(buf, newOwner); // [u8; 32]
+  writeU16LE(buf, commissionBps);
+  return new Uint8Array(buf);
+}
+
+export function encodeContractDeployPayload(
+  code: Uint8Array,
+  initMethod: string,
+  initArgs: Uint8Array,
+): Uint8Array {
+  const buf: number[] = [];
+  writeVecU8(buf, code);
+  writeString(buf, initMethod);
+  writeVecU8(buf, initArgs);
+  return new Uint8Array(buf);
+}
+
+export function encodeContractCallPayload(
+  contract: Uint8Array,
+  method: string,
+  args: Uint8Array,
+  value: bigint = 0n,
+): Uint8Array {
+  const buf: number[] = [];
+  writeFixedBytes(buf, contract); // [u8; 32]
+  writeString(buf, method);
+  writeVecU8(buf, args);
+  writeU128LE(buf, value);
+  return new Uint8Array(buf);
+}
+
+export function encodeMinerRegisterPayload(
+  tier: number,
+  ipAddr: Uint8Array,
+  name: string,
+): Uint8Array {
+  const buf: number[] = [];
+  writeU8(buf, tier);
+  writeVecU8(buf, ipAddr);
+  writeString(buf, name);
+  return new Uint8Array(buf);
+}
+
+export function encodeMinerHeartbeatPayload(
+  latestBlockHash: Uint8Array,
+  latestHeight: bigint,
+): Uint8Array {
+  const buf: number[] = [];
+  writeFixedBytes(buf, latestBlockHash); // [u8; 32]
+  writeU64LE(buf, latestHeight);
+  return new Uint8Array(buf);
+}
+
 // ---- Transaction serialization ----
 
 /**

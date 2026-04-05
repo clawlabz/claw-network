@@ -13,6 +13,14 @@ import {
   encodeTokenMintTransferPayload,
   encodeReputationAttestPayload,
   encodeServiceRegisterPayload,
+  encodeStakeDepositPayload,
+  encodeStakeWithdrawPayload,
+  encodeStakeClaimPayload,
+  encodeChangeDelegationPayload,
+  encodeContractDeployPayload,
+  encodeContractCallPayload,
+  encodeMinerRegisterPayload,
+  encodeMinerHeartbeatPayload,
 } from './serialization.js';
 import { TxType } from './types.js';
 import type {
@@ -25,12 +33,20 @@ import type {
   ServiceEntry,
   BlockInfo,
   TransactionReceipt,
+  TransactionResponse,
   AgentRegisterParams,
   TokenTransferParams,
   TokenCreateParams,
   TokenMintTransferParams,
   ReputationAttestParams,
   ServiceRegisterParams,
+  StakeDepositParams,
+  StakeWithdrawParams,
+  ChangeDelegationParams,
+  ContractDeployParams,
+  ContractCallParams,
+  MinerRegisterParams,
+  MinerHeartbeatParams,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -169,6 +185,102 @@ class ServiceModule {
   }
 }
 
+class StakingModule {
+  constructor(
+    private rpc: RpcClient,
+    private sendTx: (txType: TxType, payload: Uint8Array) => Promise<string>,
+  ) {}
+
+  /** Deposit stake to become a validator. Returns tx hash. */
+  async deposit(params: StakeDepositParams): Promise<string> {
+    const payload = encodeStakeDepositPayload(
+      params.amount,
+      fromHex(params.validator),
+      params.commissionBps,
+    );
+    return this.sendTx(TxType.StakeDeposit, payload);
+  }
+
+  /** Initiate a stake withdrawal (unbonding). Returns tx hash. */
+  async withdraw(params: StakeWithdrawParams): Promise<string> {
+    const payload = encodeStakeWithdrawPayload(
+      params.amount,
+      fromHex(params.validator),
+    );
+    return this.sendTx(TxType.StakeWithdraw, payload);
+  }
+
+  /** Claim unbonded stake. Returns tx hash. */
+  async claim(): Promise<string> {
+    const payload = encodeStakeClaimPayload();
+    return this.sendTx(TxType.StakeClaim, payload);
+  }
+
+  /** Change delegation of an existing validator stake. Returns tx hash. */
+  async changeDelegation(params: ChangeDelegationParams): Promise<string> {
+    const payload = encodeChangeDelegationPayload(
+      fromHex(params.validator),
+      fromHex(params.newOwner),
+      params.commissionBps,
+    );
+    return this.sendTx(TxType.ChangeDelegation, payload);
+  }
+}
+
+class ContractModule {
+  constructor(
+    private rpc: RpcClient,
+    private sendTx: (txType: TxType, payload: Uint8Array) => Promise<string>,
+  ) {}
+
+  /** Deploy a new smart contract. Returns tx hash. */
+  async deploy(params: ContractDeployParams): Promise<string> {
+    const payload = encodeContractDeployPayload(
+      params.code,
+      params.initMethod,
+      params.initArgs,
+    );
+    return this.sendTx(TxType.ContractDeploy, payload);
+  }
+
+  /** Call a deployed smart contract. Returns tx hash. */
+  async call(params: ContractCallParams): Promise<string> {
+    const payload = encodeContractCallPayload(
+      fromHex(params.contract),
+      params.method,
+      params.args,
+      params.value ?? 0n,
+    );
+    return this.sendTx(TxType.ContractCall, payload);
+  }
+}
+
+class MinerModule {
+  constructor(
+    private rpc: RpcClient,
+    private sendTx: (txType: TxType, payload: Uint8Array) => Promise<string>,
+  ) {}
+
+  /** Register as a miner on ClawNetwork. Returns tx hash. */
+  async register(params: MinerRegisterParams): Promise<string> {
+    const payload = encodeMinerRegisterPayload(
+      params.tier,
+      params.ipAddr,
+      params.name,
+    );
+    return this.sendTx(TxType.MinerRegister, payload);
+  }
+
+  /** Submit a miner heartbeat. Returns tx hash. */
+  async heartbeat(params: MinerHeartbeatParams): Promise<string> {
+    const payload = encodeMinerHeartbeatPayload(
+      fromHex(params.latestBlockHash),
+      params.latestHeight,
+    );
+    return this.sendTx(TxType.MinerHeartbeat, payload);
+  }
+}
+
 class BlockModule {
   constructor(private rpc: RpcClient) {}
 
@@ -195,6 +307,9 @@ export class ClawClient {
   readonly token: TokenModule;
   readonly reputation: ReputationModule;
   readonly service: ServiceModule;
+  readonly staking: StakingModule;
+  readonly contract: ContractModule;
+  readonly miner: MinerModule;
   readonly block: BlockModule;
 
   constructor(config: ClawClientConfig = {}) {
@@ -206,6 +321,9 @@ export class ClawClient {
     this.token = new TokenModule(this.rpc, sendTx);
     this.reputation = new ReputationModule(this.rpc, sendTx);
     this.service = new ServiceModule(this.rpc, sendTx);
+    this.staking = new StakingModule(this.rpc, sendTx);
+    this.contract = new ContractModule(this.rpc, sendTx);
+    this.miner = new MinerModule(this.rpc, sendTx);
     this.block = new BlockModule(this.rpc);
   }
 
@@ -237,6 +355,14 @@ export class ClawClient {
   ): Promise<TransactionReceipt | null> {
     return this.rpc.call<TransactionReceipt | null>(
       'claw_getTransactionReceipt',
+      [txHash],
+    );
+  }
+
+  /** Get a transaction by hash (hex). Returns full transaction details. */
+  async getTransaction(txHash: string): Promise<TransactionResponse | null> {
+    return this.rpc.call<TransactionResponse | null>(
+      'claw_getTransactionByHash',
       [txHash],
     );
   }

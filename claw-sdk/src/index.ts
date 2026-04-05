@@ -19,12 +19,20 @@ export type {
   ServiceEntry,
   BlockInfo,
   TransactionReceipt,
+  TransactionResponse,
   AgentRegisterParams,
   TokenTransferParams,
   TokenCreateParams,
   TokenMintTransferParams,
   ReputationAttestParams,
   ServiceRegisterParams,
+  StakeDepositParams,
+  StakeWithdrawParams,
+  ChangeDelegationParams,
+  ContractDeployParams,
+  ContractCallParams,
+  MinerRegisterParams,
+  MinerHeartbeatParams,
 } from './types.js';
 
 // Serialization (for advanced usage / testing)
@@ -37,6 +45,14 @@ export {
   encodeTokenMintTransferPayload,
   encodeReputationAttestPayload,
   encodeServiceRegisterPayload,
+  encodeStakeDepositPayload,
+  encodeStakeWithdrawPayload,
+  encodeStakeClaimPayload,
+  encodeChangeDelegationPayload,
+  encodeContractDeployPayload,
+  encodeContractCallPayload,
+  encodeMinerRegisterPayload,
+  encodeMinerHeartbeatPayload,
 } from './serialization.js';
 
 // Hashing (for advanced usage / testing)

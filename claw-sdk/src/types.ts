@@ -80,6 +80,47 @@ export interface ServiceRegisterParams {
   active: boolean;
 }
 
+export interface StakeDepositParams {
+  validator: string; // hex 32-byte address
+  amount: bigint; // u128
+  commissionBps: number; // u16
+}
+
+export interface StakeWithdrawParams {
+  validator: string; // hex 32-byte address
+  amount: bigint; // u128
+}
+
+export interface ChangeDelegationParams {
+  validator: string; // hex 32-byte (current validator)
+  newOwner: string; // hex 32-byte (new delegator address)
+  commissionBps: number; // u16
+}
+
+export interface ContractDeployParams {
+  code: Uint8Array; // Wasm bytecode
+  initMethod: string; // constructor method name
+  initArgs: Uint8Array; // constructor arguments
+}
+
+export interface ContractCallParams {
+  contract: string; // hex 32-byte address
+  method: string;
+  args: Uint8Array;
+  value?: bigint; // optional native CLAW to send
+}
+
+export interface MinerRegisterParams {
+  tier: number; // u8
+  ipAddr: Uint8Array; // IPv4 (4 bytes) or IPv6 (16 bytes)
+  name: string;
+}
+
+export interface MinerHeartbeatParams {
+  latestBlockHash: string; // hex 32-byte
+  latestHeight: bigint; // u64
+}
+
 // --- RPC response types ---
 
 export interface AgentIdentity {
@@ -131,6 +172,29 @@ export interface BlockInfo {
 export interface TransactionReceipt {
   blockHeight: number;
   transactionIndex: number;
+  success?: boolean;
+  fuelConsumed?: string;
+  fuelLimit?: string;
+  returnData?: string; // hex
+  errorMessage?: string;
+  events?: Array<{
+    topic: string;
+    data: string; // hex
+  }>;
+  logs?: string[];
+}
+
+export interface TransactionResponse {
+  hash: string; // hex
+  txType: number; // u8
+  typeName: string;
+  from: string; // hex address
+  to?: string; // hex address (optional, depends on tx type)
+  amount?: string; // u128 as string (optional)
+  nonce: bigint; // u64
+  blockHeight: number;
+  timestamp: number;
+  fee: string; // u128 as string
 }
 
 // --- Client config ---
