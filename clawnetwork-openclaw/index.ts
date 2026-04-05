@@ -7,7 +7,7 @@ declare function setInterval(fn: () => void, ms: number): unknown
 declare function clearInterval(id: unknown): void
 declare function fetch(url: string, init?: Record<string, unknown>): Promise<{ status: number; ok: boolean; text: () => Promise<string>; json: () => Promise<unknown> }>
 
-const VERSION = '0.1.0'
+const VERSION = '0.1.25'
 const PLUGIN_ID = 'clawnetwork'
 const GITHUB_REPO = 'clawlabz/claw-network'
 const DEFAULT_RPC_PORT = 9710
@@ -123,16 +123,27 @@ const path = require('path')
 const fs = require('fs')
 const { execFileSync, spawn: nodeSpawn, fork } = require('child_process')
 
+function getBaseDir(): string {
+  // Gateway sets OPENCLAW_STATE_DIR for named profiles (e.g. ~/.openclaw-ludis)
+  // OPENCLAW_DIR is the user-facing alias (used by install.sh)
+  const stateDir = process.env.OPENCLAW_STATE_DIR
+  if (stateDir) return stateDir
+  const envDir = process.env.OPENCLAW_DIR
+  if (envDir) return envDir
+  return path.join(os.homedir(), '.openclaw')
+}
+
 function homePath(...segments: string[]): string {
   return path.join(os.homedir(), ...segments)
 }
 
-const WORKSPACE_DIR = homePath('.openclaw', 'workspace', 'clawnetwork')
-const BIN_DIR = homePath('.openclaw', 'bin')
-const DATA_DIR = homePath('.clawnetwork')
+const WORKSPACE_DIR = path.join(getBaseDir(), 'workspace', 'clawnetwork')
+const BIN_DIR = path.join(getBaseDir(), 'bin')
+// Plugin uses its own chain data dir under workspace to avoid locking conflicts with other nodes
+const DATA_DIR = path.join(getBaseDir(), 'workspace', 'clawnetwork', 'chain-data')
 const WALLET_PATH = path.join(WORKSPACE_DIR, 'wallet.json')
 const LOG_PATH = path.join(WORKSPACE_DIR, 'node.log')
-const UI_PORT_FILE = homePath('.openclaw', 'clawnetwork-ui-port')
+const UI_PORT_FILE = path.join(getBaseDir(), 'clawnetwork-ui-port')
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true })
@@ -353,7 +364,8 @@ function initNode(binaryPath: string, network: string, api: OpenClawApi): void {
   }
   api.logger?.info?.(`[clawnetwork] initializing node for ${network}...`)
   try {
-    const output = execFileSync(binaryPath, ['init', '--network', network], {
+    ensureDir(DATA_DIR)
+    const output = execFileSync(binaryPath, ['init', '--network', network, '--data-dir', DATA_DIR], {
       encoding: 'utf8',
       timeout: 30_000,
       env: { HOME: os.homedir(), PATH: process.env.PATH || '' }, // minimal env
@@ -419,12 +431,13 @@ function ensureWallet(network: string, api?: OpenClawApi): WalletData {
   const binary = findBinary()
   if (binary) {
     try {
-      execFileSync(binary, ['key', 'import', secretKeyHex], {
+      ensureDir(DATA_DIR)
+      execFileSync(binary, ['key', 'import', secretKeyHex, '--data-dir', DATA_DIR], {
         encoding: 'utf8',
         timeout: 10_000,
         env: { HOME: os.homedir(), PATH: process.env.PATH || '' },
       })
-      const showOut = execFileSync(binary, ['key', 'show'], {
+      const showOut = execFileSync(binary, ['key', 'show', '--data-dir', DATA_DIR], {
         encoding: 'utf8',
         timeout: 5000,
         env: { HOME: os.homedir(), PATH: process.env.PATH || '' },
@@ -474,35 +487,67 @@ interface NodeStatus {
 let nodeStartedAt: number | null = null
 let lastHealth: { blockHeight: number | null; peerCount: number | null; syncing: boolean } = { blockHeight: null, peerCount: null, syncing: false }
 let cachedBinaryVersion: string | null = null
+let activeRpcPort: number | null = null  // actual port the plugin node is running on (may differ from config)
+let activeP2pPort: number | null = null
 
 function isNodeRunning(): { running: boolean; pid: number | null } {
-  // Check in-memory process first
+  // 1. In-memory process reference
   if (nodeProcess && !nodeProcess.killed) return { running: true, pid: nodeProcess.pid }
-  // Check PID file (for detached processes from previous CLI invocations)
+  // 2. PID file — the ONLY authority for "is MY node running"
   const pidFile = path.join(WORKSPACE_DIR, 'node.pid')
   try {
     const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10)
     if (pid > 0) {
-      try { execFileSync('kill', ['-0', String(pid)], { timeout: 2000 }); return { running: true, pid } } catch { /* dead */ }
+      try { execFileSync('kill', ['-0', String(pid)], { timeout: 2000 }); return { running: true, pid } } catch {
+        // PID file exists but process is dead — clean up stale PID file
+        try { fs.unlinkSync(pidFile) } catch { /* ok */ }
+      }
     }
   } catch { /* no file */ }
-  // Last resort: check if RPC port is responding (covers orphaned processes)
-  try {
-    execFileSync('curl', ['-sf', '--max-time', '1', 'http://localhost:9710/health'], { timeout: 3000, encoding: 'utf8' })
-    // Port is responding — find PID by port
-    try {
-      const lsof = execFileSync('lsof', ['-ti', ':9710'], { timeout: 3000, encoding: 'utf8' }).trim()
-      const pid = parseInt(lsof.split('\n')[0], 10)
-      if (pid > 0) return { running: true, pid }
-    } catch { /* ok */ }
-    return { running: true, pid: null }
-  } catch { /* not responding */ }
+  // No port probing — if we don't have a PID, we don't own any running node
   return { running: false, pid: null }
+}
+
+/** Check if a TCP port is in use via nc -z (works across users, no bind needed) */
+function isPortInUse(port: number): boolean {
+  try {
+    execFileSync('nc', ['-z', '127.0.0.1', String(port)], { timeout: 2000, stdio: 'ignore' })
+    return true // connection succeeded → something is listening
+  } catch {
+    return false // connection refused → port is free
+  }
+}
+
+/** Find available ports starting from the configured ones, skipping occupied ports */
+function findAvailablePorts(rpcPort: number, p2pPort: number, api: OpenClawApi): { rpcPort: number; p2pPort: number } {
+  const MAX_TRIES = 20
+  let rpc = rpcPort
+  let p2p = p2pPort
+
+  // Find available RPC port
+  for (let i = 0; i < MAX_TRIES; i++) {
+    if (!isPortInUse(rpc)) break
+    api.logger?.info?.(`[clawnetwork] RPC port ${rpc} in use, trying ${rpc + 1}...`)
+    rpc++
+  }
+
+  // Find available P2P port (must also differ from RPC port)
+  for (let i = 0; i < MAX_TRIES; i++) {
+    if (!isPortInUse(p2p) && p2p !== rpc) break
+    api.logger?.info?.(`[clawnetwork] P2P port ${p2p} in use or conflicts with RPC, trying ${p2p + 1}...`)
+    p2p++
+  }
+
+  if (rpc !== rpcPort || p2p !== p2pPort) {
+    api.logger?.info?.(`[clawnetwork] resolved ports: RPC=${rpc} (config=${rpcPort}), P2P=${p2p} (config=${p2pPort})`)
+  }
+  return { rpcPort: rpc, p2pPort: p2p }
 }
 
 function buildStatus(cfg: PluginConfig): NodeStatus {
   const wallet = loadWallet()
   const nodeState = isNodeRunning()
+  const rpcPort = activeRpcPort ?? cfg.rpcPort
   const uptime = nodeStartedAt ? Math.floor((Date.now() - nodeStartedAt) / 1000) : null
   return {
     running: nodeState.running,
@@ -511,7 +556,7 @@ function buildStatus(cfg: PluginConfig): NodeStatus {
     peerCount: lastHealth.peerCount,
     network: cfg.network,
     syncMode: cfg.syncMode,
-    rpcUrl: `http://localhost:${cfg.rpcPort}`,
+    rpcUrl: `http://localhost:${rpcPort}`,
     walletAddress: wallet?.address ?? '',
     binaryVersion: cachedBinaryVersion,
     pluginVersion: VERSION,
@@ -552,7 +597,7 @@ async function rpcCall(rpcPort: number, method: string, params: unknown[] = []):
 }
 
 function startNodeProcess(binaryPath: string, cfg: PluginConfig, api: OpenClawApi): void {
-  // Guard: check in-memory reference, PID file, AND health endpoint
+  // Guard: check in-memory reference and PID file only (not port)
   if (nodeProcess && !nodeProcess.killed) {
     api.logger?.warn?.('[clawnetwork] node already running (in-memory)')
     return
@@ -566,7 +611,12 @@ function startNodeProcess(binaryPath: string, cfg: PluginConfig, api: OpenClawAp
   if (!isValidNetwork(cfg.network)) { api.logger?.error?.(`[clawnetwork] invalid network: ${cfg.network}`); return }
   if (!isValidSyncMode(cfg.syncMode)) { api.logger?.error?.(`[clawnetwork] invalid sync mode: ${cfg.syncMode}`); return }
 
-  const args = ['start', '--network', cfg.network, '--rpc-port', String(cfg.rpcPort), '--p2p-port', String(cfg.p2pPort), '--sync-mode', cfg.syncMode, '--allow-genesis']
+  // Find available ports (auto-increment if configured ports are occupied by other processes)
+  const ports = findAvailablePorts(cfg.rpcPort, cfg.p2pPort, api)
+  activeRpcPort = ports.rpcPort
+  activeP2pPort = ports.p2pPort
+
+  const args = ['start', '--network', cfg.network, '--rpc-port', String(ports.rpcPort), '--p2p-port', String(ports.p2pPort), '--sync-mode', cfg.syncMode, '--data-dir', DATA_DIR, '--allow-genesis']
 
   // Add bootstrap peers: built-in for the network + user-configured extra peers
   const peers = [...(BOOTSTRAP_PEERS[cfg.network] ?? []), ...cfg.extraBootstrapPeers]
@@ -609,6 +659,10 @@ function startNodeProcess(binaryPath: string, cfg: PluginConfig, api: OpenClawAp
   const pidFile = path.join(WORKSPACE_DIR, 'node.pid')
   fs.writeFileSync(pidFile, String(nodeProcess.pid))
 
+  // Save actual runtime ports to workspace (UI server and health checks read from here)
+  const runtimeCfg = path.join(WORKSPACE_DIR, 'runtime.json')
+  fs.writeFileSync(runtimeCfg, JSON.stringify({ rpcPort: ports.rpcPort, p2pPort: ports.p2pPort, pid: nodeProcess.pid, startedAt: Date.now() }))
+
   nodeProcess.on('exit', (code: number | null) => {
     api.logger?.warn?.(`[clawnetwork] node exited with code ${code}`)
     fs.closeSync(logFd)
@@ -637,7 +691,8 @@ function startHealthCheck(cfg: PluginConfig, api: OpenClawApi): void {
   if (healthTimer) clearTimeout(healthTimer)
 
   const check = async () => {
-    lastHealth = await checkHealth(cfg.rpcPort)
+    const rpcPort = activeRpcPort ?? cfg.rpcPort
+    lastHealth = await checkHealth(rpcPort)
     if (lastHealth.blockHeight !== null) {
       api.logger?.info?.(`[clawnetwork] height=${lastHealth.blockHeight} peers=${lastHealth.peerCount} syncing=${lastHealth.syncing}`)
     }
@@ -656,7 +711,7 @@ function stopNode(api: OpenClawApi): void {
     healthTimer = null
   }
 
-  // Find PID: in-memory process or PID file (for detached processes)
+  // Find PID: in-memory process or PID file — the ONLY ways to identify our node
   let pid: number | null = nodeProcess?.pid ?? null
   const pidFile = path.join(WORKSPACE_DIR, 'node.pid')
   if (!pid) {
@@ -668,21 +723,26 @@ function stopNode(api: OpenClawApi): void {
 
   if (pid) {
     api.logger?.info?.(`[clawnetwork] stopping node pid=${pid} (SIGTERM)...`)
-    try { process.kill(pid, 'SIGTERM') } catch { /* already dead */ }
+    try { process.kill(pid, 'SIGTERM') } catch (e: unknown) {
+      api.logger?.warn?.(`[clawnetwork] failed to kill pid=${pid}: ${(e as Error).message}`)
+    }
     setTimeout(() => {
       try { process.kill(pid as number, 'SIGKILL') } catch { /* ok */ }
     }, 10_000)
+  } else {
+    api.logger?.warn?.('[clawnetwork] no PID found — cannot stop node (may not be running)')
   }
 
   // Write stop signal file (tells restart loop in other CLI processes to stop)
   const stopFile = path.join(WORKSPACE_DIR, 'stop.signal')
   try { fs.writeFileSync(stopFile, String(Date.now())) } catch { /* ok */ }
 
-  // Also kill any claw-node processes by name (covers orphans from restart loops)
-  try { execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 3000 }) } catch { /* ok */ }
+  // NO pkill — we only kill our own process identified by PID file
 
   nodeProcess = null
   nodeStartedAt = null
+  activeRpcPort = null
+  activeP2pPort = null
   lastHealth = { blockHeight: null, peerCount: null, syncing: false }
   try { fs.unlinkSync(pidFile) } catch { /* ok */ }
 }
@@ -719,7 +779,8 @@ async function autoRegisterAgent(cfg: PluginConfig, wallet: WalletData, api: Ope
     const agentName = sanitizeAgentName(`openclaw-${wallet.address.slice(0, 8)}`)
     const output = execFileSync(binary, [
       'agent', 'register', '--name', agentName,
-      '--rpc', `http://localhost:${cfg.rpcPort}`,
+      '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
+      '--data-dir', DATA_DIR,
     ], {
       encoding: 'utf8',
       timeout: 30_000,
@@ -751,7 +812,8 @@ async function autoRegisterMiner(cfg: PluginConfig, wallet: WalletData, api: Ope
   try {
     const output = execFileSync(binary, [
       'register-miner', '--name', minerName,
-      '--rpc', `http://localhost:${cfg.rpcPort}`,
+      '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
+      '--data-dir', DATA_DIR,
     ], {
       encoding: 'utf8',
       timeout: 30_000,
@@ -782,7 +844,8 @@ async function sendMinerHeartbeat(cfg: PluginConfig, api: OpenClawApi): Promise<
   try {
     const output = execFileSync(binary, [
       'miner-heartbeat',
-      '--rpc', `http://localhost:${cfg.rpcPort}`,
+      '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
+      '--data-dir', DATA_DIR,
     ], {
       encoding: 'utf8',
       timeout: 30_000,
@@ -1291,7 +1354,7 @@ function buildUiHtml(cfg: PluginConfig): string {
         document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
       } catch (e) {
         console.error(e);
-        renderStatus({ running: false, blockHeight: null, peerCount: null, walletAddress: '', network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:19877', pluginVersion: '0.1.1', restartCount: 0, dataDir: '', balance: '', syncing: false, uptimeFormatted: '—', pid: null });
+        renderStatus({ running: false, blockHeight: null, peerCount: null, walletAddress: '', network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:19877', pluginVersion: '${VERSION}', restartCount: 0, dataDir: '', balance: '', syncing: false, uptimeFormatted: '—', pid: null });
       }
     }
 
@@ -1450,10 +1513,23 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// OPENCLAW_BASE_DIR and PLUGIN_VERSION are injected as const by startUiServer() prepend.
+// Use global lookup to avoid const/var redeclaration conflict.
+const _BASE = (typeof OPENCLAW_BASE_DIR !== 'undefined') ? OPENCLAW_BASE_DIR : path.join(os.homedir(), '.openclaw');
+const _PVER = (typeof PLUGIN_VERSION !== 'undefined') ? PLUGIN_VERSION : 'unknown';
+const OC_WORKSPACE = path.join(_BASE, 'workspace', 'clawnetwork');
+const OC_BIN_DIR = path.join(_BASE, 'bin');
+const OC_WALLET_PATH = path.join(OC_WORKSPACE, 'wallet.json');
+const OC_PID_FILE = path.join(OC_WORKSPACE, 'node.pid');
+const OC_CONFIG_PATH = path.join(OC_WORKSPACE, 'config.json');
+const OC_STOP_SIGNAL = path.join(OC_WORKSPACE, 'stop.signal');
+const OC_LOG_PATH_DEFAULT = path.join(OC_WORKSPACE, 'node.log');
+const OC_DATA_DIR = path.join(OC_WORKSPACE, 'chain-data');
+
 const PORT = parseInt(process.argv[2] || '19877', 10);
 const RPC_PORT = parseInt(process.argv[3] || '9710', 10);
-const LOG_PATH = process.argv[4] || path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.log');
-const PORT_FILE = path.join(os.homedir(), '.openclaw/clawnetwork-ui-port');
+const LOG_PATH = process.argv[4] || OC_LOG_PATH_DEFAULT;
+const PORT_FILE = path.join(_BASE, 'clawnetwork-ui-port');
 const MAX_RETRIES = 10;
 
 async function fetchJson(url) {
@@ -1492,12 +1568,10 @@ function readBody(req) {
 }
 
 function findNodeBinary() {
-  const binDir = path.join(os.homedir(), '.openclaw/bin');
-  const dataDir = path.join(os.homedir(), '.clawnetwork');
   const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
-  let binary = path.join(binDir, binName);
+  let binary = path.join(OC_BIN_DIR, binName);
   if (fs.existsSync(binary)) return binary;
-  binary = path.join(dataDir, 'bin', 'claw-node');
+  binary = path.join(os.homedir(), '.clawnetwork', 'bin', 'claw-node');
   if (fs.existsSync(binary)) return binary;
   return null;
 }
@@ -1540,7 +1614,7 @@ async function handle(req, res) {
         }
       } catch {}
       try {
-        const walletPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json');
+        const walletPath = OC_WALLET_PATH;
         const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
         walletAddress = w.address || '';
         if (w.address) {
@@ -1557,15 +1631,15 @@ async function handle(req, res) {
         rpcUrl: 'http://localhost:' + RPC_PORT,
         walletAddress,
         binaryVersion: h.version,
-        pluginVersion: '0.1.1',
+        pluginVersion: _PVER,
         uptime: h.uptime_secs,
         uptimeFormatted: h.uptime_secs < 60 ? h.uptime_secs + 's' : h.uptime_secs < 3600 ? Math.floor(h.uptime_secs/60) + 'm' : Math.floor(h.uptime_secs/3600) + 'h ' + Math.floor((h.uptime_secs%3600)/60) + 'm',
         restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance, agentName, syncing: h.status === 'degraded', peerless: h.peer_count === 0, lastBlockAgeSecs: h.last_block_age_secs,
         upgradeLevel, latestVersion, releaseUrl, changelog, announcement,
       });
     } catch {
-        const walletAddr = (() => { try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json'), 'utf8')).address; } catch { return ''; } })();
-        json(200, { running: false, blockHeight: null, peerCount: null, walletAddress: walletAddr, network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:' + RPC_PORT, pluginVersion: '0.1.1', restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance: '', agentName: '', syncing: false, uptimeFormatted: '—', pid: null, upgradeLevel: 'unknown', latestVersion: '', releaseUrl: '', changelog: '', announcement: null });
+        const walletAddr = (() => { try { return JSON.parse(fs.readFileSync(OC_WALLET_PATH, 'utf8')).address; } catch { return ''; } })();
+        json(200, { running: false, blockHeight: null, peerCount: null, walletAddress: walletAddr, network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:' + RPC_PORT, pluginVersion: _PVER, restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance: '', agentName: '', syncing: false, uptimeFormatted: '—', pid: null, upgradeLevel: 'unknown', latestVersion: '', releaseUrl: '', changelog: '', announcement: null });
       }
     return;
   }
@@ -1585,7 +1659,7 @@ async function handle(req, res) {
       return;
     }
     try {
-      const walletPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json');
+      const walletPath = OC_WALLET_PATH;
       const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
       json(200, { address: w.address, secretKey: w.secret_key || w.secretKey || w.private_key || '' });
     } catch (e) { json(400, { error: 'No wallet found' }); }
@@ -1594,7 +1668,7 @@ async function handle(req, res) {
   // ── Business API endpoints (mirrors Gateway methods) ──
   if (p === '/api/wallet/balance') {
     try {
-      const walletPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json');
+      const walletPath = OC_WALLET_PATH;
       const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
       const address = new URL(req.url, 'http://localhost').searchParams.get('address') || w.address;
       const b = await rpcCall('claw_getBalance', [address]);
@@ -1612,7 +1686,7 @@ async function handle(req, res) {
       const bin = findNodeBinary();
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
-      const out = execFileSync(bin, ['transfer', to, amount, '--rpc', 'http://localhost:' + RPC_PORT], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const out = execFileSync(bin, ['transfer', to, amount, '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       const h = out.match(/[0-9a-f]{64}/i);
       json(200, { ok: true, txHash: h ? h[0] : '', to, amount });
     } catch (e) { json(500, { error: e.message }); }
@@ -1627,7 +1701,7 @@ async function handle(req, res) {
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
       const cmd = action === 'withdraw' ? 'stake withdraw' : action === 'claim' ? 'stake claim' : 'stake deposit';
-      const args = cmd.split(' ').concat(amount ? [amount] : []).concat(['--rpc', 'http://localhost:' + RPC_PORT]);
+      const args = cmd.split(' ').concat(amount ? [amount] : []).concat(['--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR]);
       const out = execFileSync(bin, args, { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       json(200, { ok: true, raw: out.trim() });
     } catch (e) { json(500, { error: e.message }); }
@@ -1640,7 +1714,7 @@ async function handle(req, res) {
       const bin = findNodeBinary();
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
-      const out = execFileSync(bin, ['agent', 'register', '--name', name, '--rpc', 'http://localhost:' + RPC_PORT], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const out = execFileSync(bin, ['agent', 'register', '--name', name, '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       const h = out.match(/[0-9a-f]{64}/i);
       json(200, { ok: true, txHash: h ? h[0] : '', name });
     } catch (e) { json(500, { error: e.message }); }
@@ -1654,7 +1728,7 @@ async function handle(req, res) {
       const bin = findNodeBinary();
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
-      const out = execFileSync(bin, ['service', 'register', '--type', serviceType, '--endpoint', endpoint, '--description', description || '', '--price', priceAmount || '0', '--rpc', 'http://localhost:' + RPC_PORT], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const out = execFileSync(bin, ['service', 'register', '--type', serviceType, '--endpoint', endpoint, '--description', description || '', '--price', priceAmount || '0', '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       json(200, { ok: true, raw: out.trim() });
     } catch (e) { json(500, { error: e.message }); }
     return;
@@ -1669,7 +1743,7 @@ async function handle(req, res) {
   }
   if (p === '/api/node/config') {
     try {
-      const cfgPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/config.json');
+      const cfgPath = OC_CONFIG_PATH;
       const cfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) : {};
       json(200, { ...cfg, rpcPort: RPC_PORT, uiPort: PORT });
     } catch (e) { json(200, { rpcPort: RPC_PORT, uiPort: PORT }); }
@@ -1679,7 +1753,7 @@ async function handle(req, res) {
     const a = p.split('/').pop();
     if (a === 'faucet') {
       try {
-        const w = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.openclaw/workspace/clawnetwork/wallet.json'), 'utf8'));
+        const w = JSON.parse(fs.readFileSync(OC_WALLET_PATH, 'utf8'));
         const r = await rpcCall('claw_faucet', [w.address]);
         json(200, { message: 'Faucet success', ...r });
       } catch (e) { json(400, { error: e.message }); }
@@ -1687,34 +1761,26 @@ async function handle(req, res) {
     }
     if (a === 'start') {
       try {
-        // Check if already running — try RPC health first (covers stale PID file)
-        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
-        try {
-          const h = await fetchJson('http://localhost:' + RPC_PORT + '/health');
-          if (h && (h.status === 'ok' || h.status === 'degraded')) {
-            try {
-              const { execSync } = require('child_process');
-              const pgrep = execSync("pgrep -f 'claw-node start'", { encoding: 'utf8', timeout: 3000 }).trim();
-              const livePid = parseInt(pgrep.split('\\n')[0], 10);
-              if (livePid > 0) fs.writeFileSync(pidFile, String(livePid));
-            } catch {}
-            json(200, { message: 'Node already running' }); return;
-          }
-        } catch {}
-        // Fallback: check PID file
+        // Check if already running — PID file is the only authority
+        const pidFile = OC_PID_FILE;
         try {
           const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
-          if (pid > 0) { try { process.kill(pid, 0); json(200, { message: 'Node already running', pid }); return; } catch {} }
+          if (pid > 0) {
+            try { process.kill(pid, 0); json(200, { message: 'Node already running', pid }); return; } catch {
+              // PID stale, clean up
+              try { fs.unlinkSync(pidFile); } catch {}
+            }
+          }
         } catch {}
         // Find binary
-        const binDir = path.join(os.homedir(), '.openclaw/bin');
+        const binDir = OC_BIN_DIR;
         const dataDir = path.join(os.homedir(), '.clawnetwork');
         const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
         let binary = path.join(binDir, binName);
         if (!fs.existsSync(binary)) { binary = path.join(dataDir, 'bin', 'claw-node'); }
         if (!fs.existsSync(binary)) { json(400, { error: 'claw-node binary not found. Run: openclaw clawnetwork:download' }); return; }
         // Read config for network/ports
-        const cfgPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/config.json');
+        const cfgPath = OC_CONFIG_PATH;
         let network = 'mainnet', p2pPort = 9711, syncMode = 'light', extraPeers = [];
         try {
           const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
@@ -1725,10 +1791,10 @@ async function handle(req, res) {
         } catch {}
         const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
         const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
-        const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--allow-genesis'];
+        const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--data-dir', OC_DATA_DIR, '--allow-genesis'];
         for (const peer of peers) { args.push('--bootstrap', peer); }
         // Spawn detached
-        const logPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.log');
+        const logPath = OC_LOG_PATH_DEFAULT;
         const logFd = fs.openSync(logPath, 'a');
         const { spawn: nodeSpawn } = require('child_process');
         const child = nodeSpawn(binary, args, {
@@ -1740,7 +1806,7 @@ async function handle(req, res) {
         fs.closeSync(logFd);
         fs.writeFileSync(pidFile, String(child.pid));
         // Remove stop signal if exists
-        const stopFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/stop.signal');
+        const stopFile = OC_STOP_SIGNAL;
         try { fs.unlinkSync(stopFile); } catch {}
         json(200, { message: 'Node started', pid: child.pid });
       } catch (e) { json(500, { error: e.message }); }
@@ -1748,23 +1814,23 @@ async function handle(req, res) {
     }
     if (a === 'stop') {
       try {
-        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        const pidFile = OC_PID_FILE;
         let pid = null;
         try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10); } catch {}
         if (pid && pid > 0) {
           try { process.kill(pid, 'SIGTERM'); } catch {}
         }
         // Write stop signal for restart loop
-        const stopFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/stop.signal');
+        const stopFile = OC_STOP_SIGNAL;
         try { fs.writeFileSync(stopFile, String(Date.now())); } catch {}
-        // Also kill by name (covers orphans)
-        try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 3000 }); } catch {}
-        try { fs.unlinkSync(pidFile); } catch {}
-        // Wait for process to actually exit (max 5s)
-        for (let w = 0; w < 10; w++) {
-          try { require('child_process').execSync("pgrep -f 'claw-node start'", { timeout: 1000 }); } catch { break; }
-          require('child_process').execSync('sleep 0.5', { timeout: 2000 });
+        // Wait for our process to exit (max 5s), using PID-specific check
+        if (pid && pid > 0) {
+          for (let w = 0; w < 10; w++) {
+            try { process.kill(pid, 0); } catch { break; }
+            require('child_process').execSync('sleep 0.5', { timeout: 2000 });
+          }
         }
+        try { fs.unlinkSync(pidFile); } catch {}
         json(200, { message: 'Node stopped' });
       } catch (e) { json(500, { error: e.message }); }
       return;
@@ -1772,28 +1838,32 @@ async function handle(req, res) {
     if (a === 'restart') {
       // Stop, wait, start — all server-side
       try {
-        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        const pidFile = OC_PID_FILE;
         try {
           const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
           if (pid > 0) try { process.kill(pid, 'SIGTERM'); } catch {}
         } catch {}
-        const stopFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/stop.signal');
+        const stopFile = OC_STOP_SIGNAL;
         try { fs.writeFileSync(stopFile, String(Date.now())); } catch {}
-        try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 3000 }); } catch {}
+        // Wait for our process to exit (PID-specific)
+        try {
+          const stoppedPid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+          if (stoppedPid > 0) {
+            for (let w = 0; w < 10; w++) {
+              try { process.kill(stoppedPid, 0); } catch { break; }
+              require('child_process').execSync('sleep 0.5', { timeout: 2000 });
+            }
+          }
+        } catch {}
         try { fs.unlinkSync(pidFile); } catch {}
-        // Wait for exit
-        for (let w = 0; w < 10; w++) {
-          try { require('child_process').execSync("pgrep -f 'claw-node start'", { timeout: 1000 }); } catch { break; }
-          require('child_process').execSync('sleep 0.5', { timeout: 2000 });
-        }
         try { fs.unlinkSync(stopFile); } catch {}
         // Now start (reuse start logic inline)
-        const binDir = path.join(os.homedir(), '.openclaw/bin');
+        const binDir = OC_BIN_DIR;
         const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
         let binary = path.join(binDir, binName);
         if (!fs.existsSync(binary)) { binary = path.join(os.homedir(), '.clawnetwork/bin/claw-node'); }
         if (!fs.existsSync(binary)) { json(400, { error: 'claw-node binary not found' }); return; }
-        const cfgPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/config.json');
+        const cfgPath = OC_CONFIG_PATH;
         let network = 'mainnet', p2pPort = 9711, syncMode = 'light', extraPeers = [];
         try {
           const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
@@ -1804,9 +1874,9 @@ async function handle(req, res) {
         } catch {}
         const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
         const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
-        const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--allow-genesis'];
+        const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--data-dir', OC_DATA_DIR, '--allow-genesis'];
         for (const peer of peers) { args.push('--bootstrap', peer); }
-        const logPath = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.log');
+        const logPath = OC_LOG_PATH_DEFAULT;
         const logFd = fs.openSync(logPath, 'a');
         const { spawn: nodeSpawn } = require('child_process');
         const child = nodeSpawn(binary, args, {
@@ -1824,15 +1894,15 @@ async function handle(req, res) {
     if (a === 'upgrade') {
       try {
         // 1. Stop running node
-        const pidFile = path.join(os.homedir(), '.openclaw/workspace/clawnetwork/node.pid');
+        const pidFile = OC_PID_FILE;
         try {
           const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
           if (pid > 0) try { process.kill(pid, 'SIGTERM'); } catch {}
         } catch {}
-        try { require('child_process').execFileSync('pkill', ['-f', 'claw-node start'], { timeout: 5000 }); } catch {}
+        // No pkill — only target our own PID
 
         // 2. Download latest binary
-        const binDir = path.join(os.homedir(), '.openclaw/bin');
+        const binDir = OC_BIN_DIR;
         const binName = process.platform === 'win32' ? 'claw-node.exe' : 'claw-node';
         const target = process.platform === 'darwin'
           ? (process.arch === 'arm64' ? 'macos-aarch64' : 'macos-x86_64')
@@ -1914,12 +1984,12 @@ function startUiServer(cfg: PluginConfig, api: OpenClawApi): string | null {
   const htmlPath = path.join(WORKSPACE_DIR, 'ui-dashboard.html')
   fs.writeFileSync(htmlPath, buildUiHtml(cfg))
 
-  // Inject HTML path into script (read from file, no template escaping issues)
-  const fullScript = `const HTML_PATH = ${JSON.stringify(htmlPath)};\nconst HTML = require('fs').readFileSync(HTML_PATH, 'utf8');\n${UI_SERVER_SCRIPT}`
+  // Inject base dir, version, and HTML path into script (read from file, no template escaping issues)
+  const fullScript = `const OPENCLAW_BASE_DIR = ${JSON.stringify(getBaseDir())};\nconst PLUGIN_VERSION = ${JSON.stringify(VERSION)};\nconst HTML_PATH = ${JSON.stringify(htmlPath)};\nconst HTML = require('fs').readFileSync(HTML_PATH, 'utf8');\n${UI_SERVER_SCRIPT}`
   fs.writeFileSync(scriptPath, fullScript)
 
   try {
-    const child = fork(scriptPath, [String(cfg.uiPort), String(cfg.rpcPort), LOG_PATH], {
+    const child = fork(scriptPath, [String(cfg.uiPort), String(activeRpcPort ?? cfg.rpcPort), LOG_PATH], {
       detached: true,
       stdio: 'ignore',
     })
@@ -2007,7 +2077,7 @@ export default function register(api: OpenClawApi) {
     if (!binary) { ctx.respond?.(false, { error: 'claw-node binary not found' }); return }
     try {
       const output = execFileSync(binary, [
-        'transfer', to, amount, '--rpc', `http://localhost:${cfg.rpcPort}`,
+        'transfer', to, amount, '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
       ], {
         encoding: 'utf8',
         timeout: 30_000,
@@ -2029,7 +2099,7 @@ export default function register(api: OpenClawApi) {
     try {
       const output = execFileSync(binary, [
         'agent', 'register', '--name', name,
-        '--rpc', `http://localhost:${cfg.rpcPort}`,
+        '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
       ], {
         encoding: 'utf8',
         timeout: 30_000,
@@ -2079,7 +2149,7 @@ export default function register(api: OpenClawApi) {
         '--endpoint', endpoint,
         '--description', description,
         '--price', priceAmount,
-        '--rpc', `http://localhost:${cfg.rpcPort}`,
+        '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
       ], {
         encoding: 'utf8',
         timeout: 30_000,
@@ -2198,12 +2268,12 @@ export default function register(api: OpenClawApi) {
       const binary = findBinary()
       if (binary) {
         try {
-          execFileSync(binary, ['key', 'import', privateKeyHex], {
+          execFileSync(binary, ['key', 'import', privateKeyHex, '--data-dir', DATA_DIR], {
             encoding: 'utf8',
             timeout: 10_000,
             env: { HOME: os.homedir(), PATH: process.env.PATH || '' },
           })
-          const showOut = execFileSync(binary, ['key', 'show'], {
+          const showOut = execFileSync(binary, ['key', 'show', '--data-dir', DATA_DIR], {
             encoding: 'utf8',
             timeout: 5000,
             env: { HOME: os.homedir(), PATH: process.env.PATH || '' },
@@ -2244,7 +2314,7 @@ export default function register(api: OpenClawApi) {
       if (!binary) { out({ error: 'claw-node binary not found' }); return }
       try {
         const output = execFileSync(binary, [
-          'transfer', to, amount, '--rpc', `http://localhost:${cfg.rpcPort}`,
+          'transfer', to, amount, '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
         ], {
           encoding: 'utf8',
           timeout: 30_000,
@@ -2266,7 +2336,7 @@ export default function register(api: OpenClawApi) {
       if (!binary) { out({ error: 'claw-node binary not found' }); return }
       try {
         const output = execFileSync(binary, [
-          'stake', 'deposit', amount, '--rpc', `http://localhost:${cfg.rpcPort}`,
+          'stake', 'deposit', amount, '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
         ], {
           encoding: 'utf8',
           timeout: 30_000,
@@ -2288,7 +2358,7 @@ export default function register(api: OpenClawApi) {
       try {
         const output = execFileSync(binary, [
           'service', 'register', '--type', serviceType, '--endpoint', endpoint,
-          '--rpc', `http://localhost:${cfg.rpcPort}`,
+          '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
         ], {
           encoding: 'utf8',
           timeout: 30_000,
@@ -2396,40 +2466,60 @@ export default function register(api: OpenClawApi) {
           if (state.running) {
             api.logger?.info?.(`[clawnetwork] node already running (pid=${state.pid})`)
 
-            // Check if a newer binary is available on GitHub — if so, download + restart
-            if (cfg.autoDownload) {
-              try {
-                const binary = findBinary()
-                const runningVersion = binary ? getBinaryVersion(binary) : null
-                if (runningVersion) {
-                  // Fetch latest version from GitHub
-                  let latestVersion: string | null = null
-                  try {
-                    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
-                    if (res.ok) {
-                      const data = await res.json() as Record<string, unknown>
-                      if (typeof data.tag_name === 'string') latestVersion = data.tag_name.replace(/^v/, '')
-                    }
-                  } catch { /* network error, skip */ }
+            // Check if local binary is newer than the running process — restart if so.
+            // Also check GitHub for even newer versions and download if available.
+            try {
+              const binary = findBinary()
+              const localBinaryVersion = binary ? getBinaryVersion(binary) : null
 
-                  if (latestVersion && isVersionOlder(runningVersion, latestVersion)) {
-                    api.logger?.info?.(`[clawnetwork] node ${runningVersion} → ${latestVersion} available, upgrading...`)
-                    stopNodeProcess(api)
-                    await sleep(3_000)
-                    try {
-                      const newBinary = await downloadBinary(api)
-                      initNode(newBinary, cfg.network, api)
-                      startNodeProcess(newBinary, cfg, api)
-                      api.logger?.info?.(`[clawnetwork] node upgraded to ${latestVersion} and restarted`)
-                    } catch (e: unknown) {
-                      api.logger?.warn?.(`[clawnetwork] auto-upgrade failed: ${(e as Error).message}, restarting old binary`)
-                      startNodeProcess(binary, cfg, api)
+              // Read actual runtime port from last run (may differ from config if port was auto-shifted)
+              let runtimeRpcPort = cfg.rpcPort
+              try {
+                const rt = JSON.parse(fs.readFileSync(path.join(WORKSPACE_DIR, 'runtime.json'), 'utf8'))
+                if (rt.rpcPort) { runtimeRpcPort = rt.rpcPort; activeRpcPort = rt.rpcPort }
+                if (rt.p2pPort) { activeP2pPort = rt.p2pPort }
+              } catch { /* no runtime file, use config */ }
+
+              // Get the RUNNING process version from health endpoint
+              let runningProcessVersion: string | null = null
+              try {
+                const health = await fetch(`http://localhost:${runtimeRpcPort}/health`)
+                if (health.ok) {
+                  const hd = await health.json() as Record<string, unknown>
+                  if (typeof hd.version === 'string') runningProcessVersion = hd.version.replace(/^v/, '')
+                }
+              } catch { /* health endpoint not ready */ }
+
+              // Step A: If GitHub has a newer binary than what's on disk, download it first
+              if (cfg.autoDownload && localBinaryVersion) {
+                try {
+                  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
+                  if (res.ok) {
+                    const data = await res.json() as Record<string, unknown>
+                    const latestVersion = typeof data.tag_name === 'string' ? data.tag_name.replace(/^v/, '') : null
+                    if (latestVersion && isVersionOlder(localBinaryVersion, latestVersion)) {
+                      api.logger?.info?.(`[clawnetwork] downloading newer binary: ${localBinaryVersion} → ${latestVersion}`)
+                      try { await downloadBinary(api) } catch (e: unknown) {
+                        api.logger?.warn?.(`[clawnetwork] download failed: ${(e as Error).message}`)
+                      }
                     }
                   }
-                }
-              } catch (e: unknown) {
-                api.logger?.warn?.(`[clawnetwork] upgrade check failed: ${(e as Error).message}`)
+                } catch { /* network error, skip */ }
               }
+
+              // Step B: If the local binary is newer than the running process, restart with it
+              const finalBinary = findBinary()
+              const finalBinaryVersion = finalBinary ? getBinaryVersion(finalBinary) : null
+              if (finalBinaryVersion && runningProcessVersion && isVersionOlder(runningProcessVersion, finalBinaryVersion)) {
+                api.logger?.info?.(`[clawnetwork] running node ${runningProcessVersion} is outdated, restarting with ${finalBinaryVersion}...`)
+                stopNode(api)
+                await sleep(3_000)
+                initNode(finalBinary, cfg.network, api)
+                startNodeProcess(finalBinary, cfg, api)
+                api.logger?.info?.(`[clawnetwork] node upgraded to ${finalBinaryVersion}`)
+              }
+            } catch (e: unknown) {
+              api.logger?.warn?.(`[clawnetwork] upgrade check failed: ${(e as Error).message}`)
             }
 
             startHealthCheck(cfg, api)

@@ -244,6 +244,19 @@ impl Chain {
             }
         }
 
+        // Restore persisted offline_validators if available.
+        // This was computed at the last epoch boundary and saved to the store.
+        // Recomputing mid-epoch from current slashing counters would produce
+        // a different set and cause state_root divergence.
+        let offline_validators = match store.get_offline_validators() {
+            Ok(Some(ov_bytes)) => {
+                borsh::from_slice(&ov_bytes).unwrap_or_else(|_| {
+                    slashing.process_downtime_penalties()
+                })
+            }
+            _ => slashing.process_downtime_penalties(),
+        };
+
         Ok(Self {
             inner: Arc::new(Mutex::new(ChainInner {
                 state,
@@ -255,7 +268,7 @@ impl Chain {
                 validator_set,
                 genesis_hash,
                 chain_id: chain_id.to_string(),
-                offline_validators: slashing.process_downtime_penalties(),
+                offline_validators,
                 slashing,
                 pending_votes: std::collections::HashMap::new(),
                 fast_sync_pending: false,
@@ -669,6 +682,11 @@ impl Chain {
             if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
                 let _ = inner.store.put_user_delegations(&ud);
             }
+            // Persist offline_validators so snapshot recovery and restarts
+            // use the correct set instead of recomputing mid-epoch.
+            if let Ok(ov) = borsh::to_vec(&inner.offline_validators) {
+                let _ = inner.store.put_offline_validators(&ov);
+            }
         }
 
         tracing::info!(
@@ -966,6 +984,11 @@ impl Chain {
             Self::sync_slashing_to_world_state(&mut inner);
             if let Ok(ud) = borsh::to_vec(&inner.state.user_delegations) {
                 let _ = inner.store.put_user_delegations(&ud);
+            }
+            // Persist offline_validators so snapshot recovery and restarts
+            // use the correct set instead of recomputing mid-epoch.
+            if let Ok(ov) = borsh::to_vec(&inner.offline_validators) {
+                let _ = inner.store.put_offline_validators(&ov);
             }
         }
 
@@ -1451,11 +1474,23 @@ impl Chain {
                             ..Default::default()
                         };
 
-                        // Recompute offline_validators from restored slashing state.
-                        // Without this, apply_synced_block distributes rewards to ALL
-                        // validators (offline_validators is empty), while the producing
-                        // node excluded offline validators — causing state_root mismatch.
-                        inner.offline_validators = inner.slashing.process_downtime_penalties();
+                        // Restore offline_validators from the store. This set was
+                        // computed at the last epoch boundary and persisted — recomputing
+                        // from the current slashing counters (which are mid-epoch) would
+                        // produce a different set and cause state_root divergence.
+                        inner.offline_validators = match inner.store.get_offline_validators() {
+                            Ok(Some(ov_bytes)) => {
+                                borsh::from_slice(&ov_bytes).unwrap_or_else(|_| {
+                                    tracing::warn!("Failed to deserialize offline_validators, falling back to recompute");
+                                    inner.slashing.process_downtime_penalties()
+                                })
+                            }
+                            _ => {
+                                // Fallback for nodes that haven't persisted this yet
+                                tracing::warn!("No persisted offline_validators found, recomputing (may diverge)");
+                                inner.slashing.process_downtime_penalties()
+                            }
+                        };
 
                         inner.state = state;
                         // Update latest_block from snapshot to re-establish chain continuity

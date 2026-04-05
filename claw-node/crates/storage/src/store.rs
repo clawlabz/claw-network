@@ -322,6 +322,29 @@ impl ChainStore {
         }
     }
 
+    /// Store offline_validators separately (borsh-serialized Vec<[u8; 32]>).
+    /// This is stored outside the main state snapshot because it is a derived
+    /// value computed at epoch boundaries, not part of WorldState borsh layout.
+    pub fn put_offline_validators(&self, data: &[u8]) -> Result<(), StoreError> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut meta = write_txn.open_table(META)?;
+            meta.insert("offline_validators", data)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Get offline_validators data.
+    pub fn get_offline_validators(&self) -> Result<Option<Vec<u8>>, StoreError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(META)?;
+        match table.get("offline_validators")? {
+            Some(data) => Ok(Some(data.value().to_vec())),
+            None => Ok(None),
+        }
+    }
+
     /// Get the latest state snapshot.
     pub fn get_state_snapshot(&self) -> Result<Option<Vec<u8>>, StoreError> {
         let read_txn = self.db.begin_read()?;
