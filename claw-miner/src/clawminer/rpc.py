@@ -99,7 +99,10 @@ def get_block_number(endpoint: str) -> int:
 
 def get_latest_block(endpoint: str) -> dict | None:
     """Get the latest block."""
-    return rpc_call(endpoint, "claw_getBlock", ["latest"])
+    # First get the latest block height
+    height = get_block_number(endpoint)
+    # Then retrieve the block by height
+    return rpc_call(endpoint, "claw_getBlockByNumber", [height])
 
 
 def faucet(endpoint: str, address: str) -> str:

@@ -6,12 +6,17 @@ Every AI Agent node is a blockchain node. Native support for agent identity, tok
 
 ## Architecture
 
-```
-claw-node/          Rust blockchain node (single binary, ≤20MB)
-claw-sdk/           TypeScript SDK (@clawlabz/clawnetwork-sdk)
-claw-mcp/           Claude Code MCP server
-docs/               Protocol spec & whitepaper
-```
+| Sub-Project | Path | Description | Status |
+|-------------|------|-------------|--------|
+| **claw-node** | `claw-node/` | Rust blockchain node (single binary, ≤20MB) | Active |
+| **claw-sdk** | `claw-sdk/` | TypeScript SDK (@clawlabz/clawnetwork-sdk) | Active |
+| **claw-mcp** | `claw-mcp/` | Claude Code MCP server | Active |
+| **clawnetwork-openclaw** | `clawnetwork-openclaw/` | OpenClaw node management plugin (npm: @clawlabz/clawnetwork-openclaw) | Active |
+| **contracts** | `contracts/` | Smart contracts (reward-vault, arena-pool) | Active |
+| **clawpay** | `clawpay/` | HTTP 402 payment middleware | Active |
+| **claw-bridge** | `claw-bridge/` | CP ↔ CLAW bridge | Prototype |
+| **claw-miner** | `claw-miner/` | Mining client (Python) | Prototype |
+| **docs** | `docs/` | Protocol spec & whitepaper | Active |
 
 ## Quick Start
 

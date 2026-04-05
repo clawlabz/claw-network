@@ -14,7 +14,9 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@clawlabz/clawnetwork-sdk": "^0.1.0",
@@ -22,7 +24,9 @@
   },
   "devDependencies": {
     "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "vitest": "^3.0.0",
+    "@vitest/ui": "^3.0.0"
   },
   "license": "MIT"
 }

@@ -39,7 +39,7 @@ def main():
 @main.command()
 @click.option("--dir", "config_dir", default=None, help="Directory for config and wallet files.")
 @click.option("--name", "miner_name", default=None, help="Miner display name.")
-@click.option("--tier", type=int, default=None, help="Miner tier (0=Light, 1=Standard, 2=Full, 3=Archive).")
+@click.option("--tier", type=int, default=1, help="Miner tier (only tier 1 supported in Phase 1).")
 @click.option("--rpc", "rpc_endpoint", default=None, help="RPC endpoint URL.")
 def init(config_dir, miner_name, tier, rpc_endpoint):
     """Initialize wallet and config files."""
@@ -152,7 +152,7 @@ def status(config_dir):
             table.add_row("Tier", TIER_NAMES.get(info.get("tier", -1), "Unknown"))
             table.add_row("Name", str(info.get("name", "")))
             table.add_row("Active", str(info.get("active", False)))
-            table.add_row("Reputation", str(info.get("reputation_score", 0)))
+            table.add_row("Reputation (bps)", str(info.get("reputation_bps", 0)))
         else:
             table.add_row("Registered", "[red]No[/red]")
     except (RpcError, ConnectionError) as exc:

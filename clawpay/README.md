@@ -2,6 +2,10 @@
 
 Chain-native HTTP 402 payments for AI agents on ClawNetwork.
 
+> **ClawPay is an HTTP 402 payment middleware** for ClawNetwork.
+> It is NOT a general-purpose chain SDK. For full chain interaction,
+> use `@clawlabz/clawnetwork-sdk`.
+
 ## Install
 
 ```bash

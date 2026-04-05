@@ -106,13 +106,19 @@ class TokenModule {
   }
 }
 
+/**
+ * @deprecated Reputation system is deprecated. Use Agent Score system instead.
+ */
 class ReputationModule {
   constructor(
     private rpc: RpcClient,
     private sendTx: (txType: TxType, payload: Uint8Array) => Promise<string>,
   ) {}
 
-  /** Submit a reputation attestation. Returns tx hash. */
+  /**
+   * Submit a reputation attestation. Returns tx hash.
+   * @deprecated Reputation system is deprecated. Use Agent Score system instead.
+   */
   async attest(params: ReputationAttestParams): Promise<string> {
     const payload = encodeReputationAttestPayload(
       fromHex(params.to),
@@ -124,7 +130,10 @@ class ReputationModule {
     return this.sendTx(TxType.ReputationAttest, payload);
   }
 
-  /** Get all reputation attestations for an address. */
+  /**
+   * Get all reputation attestations for an address.
+   * @deprecated Reputation system is deprecated. Use Agent Score system instead.
+   */
   async get(address: string): Promise<ReputationAttestation[]> {
     return this.rpc.call<ReputationAttestation[]>('claw_getReputation', [
       address,

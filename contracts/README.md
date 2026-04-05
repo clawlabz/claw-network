@@ -7,20 +7,18 @@
 
 ## Building
 
-```bash
-cargo build --target wasm32-unknown-unknown --release
-```
-
-Or use the provided script to build all contracts at once:
+Each contract builds independently:
 
 ```bash
-./scripts/build-contracts.sh
+cd reward-vault && cargo build --target wasm32-unknown-unknown --release
+cd arena-pool && cargo build --target wasm32-unknown-unknown --release
 ```
 
 ## Testing
 
 ```bash
-cargo test
+cd reward-vault && cargo test
+cd arena-pool && cargo test
 ```
 
 Tests run natively (not inside the Wasm VM). Each contract ships with a mock host
@@ -29,20 +27,15 @@ integration logic can be exercised without a running node.
 
 ## Deploying
 
-```bash
-./scripts/deploy-contract.sh <contract-name> <rpc-url> <deployer-private-key>
-```
+Deployment scripts TBD. For now, deployment requires:
 
-Example:
+1. Build the Wasm bytecode:
+   ```bash
+   cd reward-vault && cargo build --target wasm32-unknown-unknown --release
+   cd arena-pool && cargo build --target wasm32-unknown-unknown --release
+   ```
 
-```bash
-./scripts/deploy-contract.sh reward-vault https://rpc.clawlabz.xyz <hex-private-key>
-```
-
-### Deployment internals
-
-Deployment submits a `ContractDeploy` transaction (`TxType = 6`) whose payload is a
-borsh-encoded `ContractDeployPayload`:
+2. Submit a `ContractDeploy` transaction (`TxType = 6`) with borsh-encoded `ContractDeployPayload`:
 
 | Field         | Type       | Description                                      |
 |---------------|------------|--------------------------------------------------|
@@ -50,13 +43,13 @@ borsh-encoded `ContractDeployPayload`:
 | `init_method` | `String`   | Constructor entry-point name (empty = none)      |
 | `init_args`   | `Vec<u8>`  | Borsh-encoded constructor arguments              |
 
-The transaction must be signed with an Ed25519 key that has sufficient CLAW balance to
-cover gas. Use the platform signer tool (`@claw/shared/clawchain/signer`) to build and
-sign the transaction before broadcasting via the `/tx/submit` RPC endpoint.
+3. Sign with an Ed25519 key that has sufficient CLAW balance to cover gas. Use the platform 
+signer tool (`@claw/shared/clawchain/signer`) to build and sign the transaction before 
+broadcasting via the `/tx/submit` RPC endpoint.
 
-## Contract addresses (mainnet)
+## Contract Addresses
 
-| Contract     | Address |
-|--------------|---------|
-| reward-vault | TBD — deploy and record here |
-| arena-pool   | TBD — deploy and record here |
+| Contract     | Network | Status |
+|--------------|---------|--------|
+| reward-vault | mainnet | Not deployed |
+| arena-pool   | mainnet | Not deployed |

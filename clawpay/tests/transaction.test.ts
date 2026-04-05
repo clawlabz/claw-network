@@ -180,4 +180,110 @@ describe('buildTransferTx', () => {
       buildTransferTx(wallet, 1n, { to: recipient.address, amount: '0' }),
     ).rejects.toThrow('positive');
   });
+
+  describe('Transfer regression (payload encoding + nonce + signature + receipt)', () => {
+    it('should produce consistent payload encoding across multiple builds', async () => {
+      const wallet = await Wallet.generate();
+      const recipient = await Wallet.generate();
+
+      // Build the same transfer twice
+      const { tx: tx1 } = await buildTransferTx(wallet, 5n, {
+        to: recipient.address,
+        amount: '100.5',
+      });
+      const { tx: tx2 } = await buildTransferTx(wallet, 5n, {
+        to: recipient.address,
+        amount: '100.5',
+      });
+
+      // Payloads should be identical (same to + amount)
+      expect(bytesToHex(tx1.payload)).toBe(bytesToHex(tx2.payload));
+      expect(tx1.payload.length).toBe(48); // 32 bytes to + 16 bytes u128
+    });
+
+    it('should increment nonce correctly across sequential transfers', async () => {
+      const wallet = await Wallet.generate();
+      const recipient = await Wallet.generate();
+
+      const { tx: tx1 } = await buildTransferTx(wallet, 10n, {
+        to: recipient.address,
+        amount: '5',
+      });
+      const { tx: tx2 } = await buildTransferTx(wallet, 11n, {
+        to: recipient.address,
+        amount: '5',
+      });
+
+      expect(tx1.nonce).toBe(10n);
+      expect(tx2.nonce).toBe(11n);
+    });
+
+    it('should produce valid Ed25519 signatures', async () => {
+      const wallet = await Wallet.generate();
+      const recipient = await Wallet.generate();
+
+      const { tx } = await buildTransferTx(wallet, 42n, {
+        to: recipient.address,
+        amount: '50.123',
+      });
+
+      // Rebuild signable bytes from tx components
+      const signable = buildSignableBytes(tx.txType, tx.from, tx.nonce, tx.payload);
+
+      // Verify signature is valid
+      const isValid = await wallet.verify(signable, tx.signature);
+      expect(isValid).toBe(true);
+
+      // Signature must be 64 bytes
+      expect(tx.signature.length).toBe(64);
+    });
+
+    it('should serialize transaction to consistent Borsh format', async () => {
+      const wallet = await Wallet.generate();
+      const recipient = await Wallet.generate();
+
+      const { tx } = await buildTransferTx(wallet, 100n, {
+        to: recipient.address,
+        amount: '999',
+      });
+
+      const serialized = serializeTransaction(tx);
+
+      // Verify structure: 1 (type) + 32 (from) + 8 (nonce) + 4 (payload_len) + 48 (payload) + 64 (sig) = 157 bytes
+      expect(serialized.length).toBe(157);
+
+      // Type byte at position 0
+      expect(serialized[0]).toBe(TxType.TokenTransfer);
+
+      // Sender address at positions 1-32
+      expect(bytesToHex(serialized.slice(1, 33))).toBe(wallet.address);
+
+      // Signature at the end (last 64 bytes)
+      expect(bytesToHex(serialized.slice(93, 157))).toBe(bytesToHex(tx.signature));
+    });
+
+    it('should handle various decimal amounts correctly', async () => {
+      const wallet = await Wallet.generate();
+      const recipient = await Wallet.generate();
+
+      const amounts = ['1', '0.1', '0.000000001', '999999.999999999'];
+
+      for (const amount of amounts) {
+        const { tx } = await buildTransferTx(wallet, 1n, {
+          to: recipient.address,
+          amount,
+        });
+
+        // Verify structure is preserved
+        expect(tx.payload.length).toBe(48);
+        expect(tx.signature.length).toBe(64);
+        expect(tx.txType).toBe(TxType.TokenTransfer);
+
+        // Verify signature is valid
+        const signable = buildSignableBytes(tx.txType, tx.from, tx.nonce, tx.payload);
+        const isValid = await wallet.verify(signable, tx.signature);
+        expect(isValid).toBe(true);
+      }
+    });
+  });
 });

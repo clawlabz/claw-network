@@ -918,6 +918,15 @@ async fn handle_health(State(chain): State<Chain>) -> Json<Value> {
     }))
 }
 
+/// GET /peers — Connected peer IDs.
+async fn handle_peers(State(chain): State<Chain>) -> Json<Value> {
+    let peers = chain.get_connected_peers();
+    Json(serde_json::json!({
+        "count": peers.len(),
+        "peers": peers,
+    }))
+}
+
 /// GET /version — Node version and upgrade status.
 async fn handle_version(State(chain): State<Chain>) -> Json<Value> {
     let current_version = env!("CARGO_PKG_VERSION");
@@ -1014,6 +1023,7 @@ pub async fn start(chain: Chain, port: u16, faucet_enabled: bool, p2p_tx: Option
         .route("/", post(handle_rpc))
         .route("/metrics", get(handle_metrics))
         .route("/health", get(handle_health))
+        .route("/peers", get(handle_peers))
         .route("/version", get(handle_version))
         .layer(ConcurrencyLimitLayer::new(100)) // max 100 concurrent requests
         .layer(cors)

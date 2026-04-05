@@ -67,13 +67,19 @@ def register_miner(
     Args:
         endpoint: RPC endpoint URL.
         signing_key: Ed25519 signing key.
-        tier: Miner tier (0-3).
+        tier: Miner tier (currently only tier 1 supported in Phase 1).
         name: Human-readable miner name.
         ip_addr: IP address bytes (4 for IPv4).
 
     Returns:
         Transaction hash.
+
+    Raises:
+        ValueError: If tier is not 1 (Phase 1 only supports Tier 1).
     """
+    if tier != 1:
+        raise ValueError("Phase 1 only supports Tier 1 (Online)")
+
     from_addr = bytes(signing_key.verify_key)
     address = address_hex(from_addr)
     nonce = get_nonce(endpoint, address) + 1

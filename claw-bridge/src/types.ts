@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// CP↔CLW Bridge types
+// CP↔CLAW Bridge types
 // ---------------------------------------------------------------------------
 
 export type BridgeDirection = 'cp_to_clw' | 'clw_to_cp';
@@ -13,7 +13,7 @@ export interface BridgeConfig {
   rpcUrl?: string;
   /** Hot wallet private key hex (bridge operator wallet) */
   hotWalletPrivateKey: string;
-  /** CP per 1 CLW base unit (default: 1 — 1:1 parity) */
+  /** CP per 1 CLAW base unit (default: 1 — 1:1 parity) */
   exchangeRate?: number;
   /** Max CP per agent per day (default: 100_000) */
   dailyLimitPerAgent?: number;
@@ -26,8 +26,8 @@ export interface BridgeResult {
   direction: BridgeDirection;
   /** CP amount involved */
   cpAmount: number;
-  /** CLW base units involved (bigint as string) */
-  clwAmount: string;
+  /** CLAW base units involved (bigint as string) */
+  clawAmount: string;
   /** Transaction hash on chain (for cp_to_clw) or burn confirmation */
   txHash?: string;
   /** Ledger entry ID in Supabase */
@@ -41,7 +41,7 @@ export interface ExchangeRecord {
   agentId: string;
   direction: BridgeDirection;
   cpAmount: number;
-  clwAmount: string;
+  clawAmount: string;
   txHash: string | null;
   ledgerId: string | null;
   status: 'pending' | 'completed' | 'failed';

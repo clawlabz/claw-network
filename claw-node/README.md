@@ -40,6 +40,13 @@ claw-node start --network testnet
 | `StakeWithdraw` | 9 | Initiate stake withdrawal (unbonding) |
 | `StakeClaim` | 10 | Claim matured unbonded stake |
 | `PlatformActivityReport` | 11 | Submit agent activity data from an external platform |
+| `TokenApprove` | 12 | Approve a third party to transfer custom tokens |
+| `TokenBurn` | 13 | Burn custom tokens permanently |
+| `ChangeDelegation` | 14 | Change stake delegation to a different validator |
+| `MinerRegister` | 15 | Register as a miner for off-chain consensus |
+| `MinerHeartbeat` | 16 | Send periodic heartbeat as an active miner |
+| `ContractUpgradeAnnounce` | 17 | Announce intent to upgrade a contract (starts the timelock) |
+| `ContractUpgradeExecute` | 18 | Execute a previously announced contract upgrade (after delay has elapsed) |
 
 ## Agent Score
 
@@ -57,7 +64,7 @@ Agent Score is a multi-dimensional, fully automated reputation system. It replac
 
 - Non-validators have Uptime and Block Production set to 0; remaining dimensions are re-normalized.
 - Score range: 0 -- 10,000 basis points.
-- **Time decay**: `decay = 0.5 ^ (age_epochs / 2880)` (~3.5-day half-life at 3s blocks, 100 blocks/epoch). Recent activity matters more.
+- **Time decay**: `decay = 0.5 ^ (age_epochs / 2880)` (~10-day half-life at 3s blocks, 100 blocks/epoch). Recent activity matters more.
 
 ### Query Agent Score
 
@@ -78,6 +85,26 @@ Returns:
   "decay_factor": 9900
 }
 ```
+
+### Consensus Transition Note
+
+**Transition note**: Current consensus weight uses agent scores derived from legacy `ReputationAttestation` data via the deprecated `aggregate_agent_scores()` function. Migration to the multi-dimensional Agent Score system (`claw_state::score`) is planned for a future protocol upgrade.
+
+## Mining
+
+**Phase 1 Limitation**: Phase 1 only supports Tier 1 (Online). Registration with `tier != 1` will be rejected.
+
+- `MinerRegister` (tx type 15): Register as a miner for off-chain consensus participation
+- `MinerHeartbeat` (tx type 16): Send periodic heartbeat as an active miner
+
+## Staking Model
+
+The staking system operates on a **single-owner delegation model**:
+
+- **`stake_delegations`** (primary): Tracks stake → validator mapping. Used for reward distribution and consensus weight calculation.
+- **`user_delegations`**: Cosmos-style per-user tracking. This is a **transition record only** and is NOT used for reward distribution or any downstream logic.
+
+All downstream projects (ClawArena, ClawMarket, etc.) MUST follow `stake_delegations` semantics for any staking-related operations.
 
 ## PlatformActivityReport (tx type 11)
 

@@ -19,6 +19,14 @@ export const TxType = {
   StakeDeposit: 8,
   StakeWithdraw: 9,
   StakeClaim: 10,
+  PlatformActivityReport: 11,
+  TokenApprove: 12,
+  TokenBurn: 13,
+  ChangeDelegation: 14,
+  MinerRegister: 15,
+  MinerHeartbeat: 16,
+  ContractUpgradeAnnounce: 17,
+  ContractUpgradeExecute: 18,
 } as const;
 
 export type TxType = (typeof TxType)[keyof typeof TxType];

@@ -8,9 +8,26 @@ export enum TxType {
   TokenTransfer = 1,
   TokenCreate = 2,
   TokenMintTransfer = 3,
+  /** @deprecated Use Agent Score system instead */
   ReputationAttest = 4,
   ServiceRegister = 5,
+  ContractDeploy = 6,
+  ContractCall = 7,
+  StakeDeposit = 8,
+  StakeWithdraw = 9,
+  StakeClaim = 10,
+  PlatformActivityReport = 11,
+  TokenApprove = 12,
+  TokenBurn = 13,
+  ChangeDelegation = 14,
+  MinerRegister = 15,
+  MinerHeartbeat = 16,
+  ContractUpgradeAnnounce = 17,
+  ContractUpgradeExecute = 18,
 }
+
+/** @deprecated Use TokenTransfer instead (same value, renamed for clarity) */
+export const Transfer = TxType.TokenTransfer;
 
 /** A signed transaction on ClawNetwork. */
 export interface Transaction {

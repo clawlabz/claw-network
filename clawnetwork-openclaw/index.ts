@@ -7,7 +7,7 @@ declare function setInterval(fn: () => void, ms: number): unknown
 declare function clearInterval(id: unknown): void
 declare function fetch(url: string, init?: Record<string, unknown>): Promise<{ status: number; ok: boolean; text: () => Promise<string>; json: () => Promise<unknown> }>
 
-const VERSION = '0.1.28'
+const VERSION = '0.1.29'
 const PLUGIN_ID = 'clawnetwork'
 const GITHUB_REPO = 'clawlabz/claw-network'
 const DEFAULT_RPC_PORT = 9710
@@ -316,10 +316,11 @@ async function downloadBinary(api: OpenClawApi): Promise<string> {
     }
     try { fs.unlinkSync(checksumTmp) } catch { /* ok */ }
   } catch (e: unknown) {
-    // If checksum verification fails but file was downloaded, warn but continue
+    // Upgrade checksum failure to error (was warning before)
     const msg = (e as Error).message
     if (msg.includes('SHA256 mismatch')) throw e
-    api.logger?.warn?.(`[clawnetwork] checksum verification skipped: ${msg}`)
+    // Throw error on checksum download/verification failure
+    throw new Error(`Failed to verify checksum: ${msg}`)
   }
 
   // Extract
@@ -778,7 +779,7 @@ async function autoRegisterAgent(cfg: PluginConfig, wallet: WalletData, api: Ope
   try {
     const agentName = sanitizeAgentName(`openclaw-${wallet.address.slice(0, 8)}`)
     const output = execFileSync(binary, [
-      'agent', 'register', '--name', agentName,
+      'register-agent', '--name', agentName,
       '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
       '--data-dir', DATA_DIR,
     ], {
@@ -1700,8 +1701,8 @@ async function handle(req, res) {
       const bin = findNodeBinary();
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
-      const cmd = action === 'withdraw' ? 'stake withdraw' : action === 'claim' ? 'stake claim' : 'stake deposit';
-      const args = cmd.split(' ').concat(amount ? [amount] : []).concat(['--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR]);
+      const cmd = action === 'withdraw' ? 'unstake' : action === 'claim' ? 'claim-stake' : 'stake';
+      const args = [cmd].concat(amount ? [amount] : []).concat(['--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR]);
       const out = execFileSync(bin, args, { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       json(200, { ok: true, raw: out.trim() });
     } catch (e) { json(500, { error: e.message }); }
@@ -1714,7 +1715,7 @@ async function handle(req, res) {
       const bin = findNodeBinary();
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
-      const out = execFileSync(bin, ['agent', 'register', '--name', name, '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const out = execFileSync(bin, ['register-agent', '--name', name, '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       const h = out.match(/[0-9a-f]{64}/i);
       json(200, { ok: true, txHash: h ? h[0] : '', name });
     } catch (e) { json(500, { error: e.message }); }
@@ -1728,7 +1729,7 @@ async function handle(req, res) {
       const bin = findNodeBinary();
       if (!bin) { json(400, { error: 'claw-node binary not found' }); return; }
       const { execFileSync } = require('child_process');
-      const out = execFileSync(bin, ['service', 'register', '--type', serviceType, '--endpoint', endpoint, '--description', description || '', '--price', priceAmount || '0', '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
+      const out = execFileSync(bin, ['register-service', '--service-type', serviceType, '--endpoint', endpoint, '--description', description || '', '--price', priceAmount || '0', '--rpc', 'http://localhost:' + RPC_PORT, '--data-dir', OC_DATA_DIR], { encoding: 'utf8', timeout: 30000, env: { HOME: os.homedir(), PATH: process.env.PATH || '' } });
       json(200, { ok: true, raw: out.trim() });
     } catch (e) { json(500, { error: e.message }); }
     return;
@@ -2098,7 +2099,7 @@ export default function register(api: OpenClawApi) {
     if (!binary) { ctx.respond?.(false, { error: 'claw-node binary not found' }); return }
     try {
       const output = execFileSync(binary, [
-        'agent', 'register', '--name', name,
+        'register-agent', '--name', name,
         '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
       ], {
         encoding: 'utf8',
@@ -2144,8 +2145,8 @@ export default function register(api: OpenClawApi) {
     if (!binary) { ctx.respond?.(false, { error: 'claw-node binary not found' }); return }
     try {
       const output = execFileSync(binary, [
-        'service', 'register',
-        '--type', serviceType,
+        'register-service',
+        '--service-type', serviceType,
         '--endpoint', endpoint,
         '--description', description,
         '--price', priceAmount,
@@ -2336,7 +2337,7 @@ export default function register(api: OpenClawApi) {
       if (!binary) { out({ error: 'claw-node binary not found' }); return }
       try {
         const output = execFileSync(binary, [
-          'stake', 'deposit', amount, '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
+          'stake', amount, '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
         ], {
           encoding: 'utf8',
           timeout: 30_000,
@@ -2357,7 +2358,7 @@ export default function register(api: OpenClawApi) {
       if (!binary) { out({ error: 'claw-node binary not found' }); return }
       try {
         const output = execFileSync(binary, [
-          'service', 'register', '--type', serviceType, '--endpoint', endpoint,
+          'register-service', '--service-type', serviceType, '--endpoint', endpoint,
           '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`, '--data-dir', DATA_DIR,
         ], {
           encoding: 'utf8',

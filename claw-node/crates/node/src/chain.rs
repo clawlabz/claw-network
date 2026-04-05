@@ -68,6 +68,8 @@ struct ChainInner {
     version_manifest: Option<crate::version_check::VersionManifest>,
     /// Last accepted snapshot height — prevents accepting the same snapshot twice (sync loop guard).
     last_accepted_snapshot_height: u64,
+    /// Connected peer IDs — synced from the sync loop for RPC exposure.
+    connected_peer_ids: Vec<String>,
 }
 
 impl Chain {
@@ -277,6 +279,7 @@ impl Chain {
                 total_tx_count,
                 version_manifest: None,
                 last_accepted_snapshot_height: 0,
+                connected_peer_ids: Vec::new(),
             })),
             p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -1176,6 +1179,7 @@ impl Chain {
                     }
                     let request = {
                         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                        inner.connected_peer_ids = known_peers.iter().map(|p| p.to_string()).collect();
                         if inner.fast_sync_pending {
                             let peer_str = peer.to_string();
                             let is_bootstrap = inner.bootstrap_peer_ids.iter().any(|id| id == &peer_str);
@@ -1200,6 +1204,10 @@ impl Chain {
                 NetworkEvent::PeerDisconnected(peer) => {
                     self.peer_disconnected();
                     known_peers.retain(|p| p != &peer);
+                    {
+                        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                        inner.connected_peer_ids = known_peers.iter().map(|p| p.to_string()).collect();
+                    }
                     tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer disconnected");
                 }
             }
@@ -1705,6 +1713,12 @@ impl Chain {
     /// Get P2P connected peer count.
     pub fn get_p2p_peer_count(&self) -> usize {
         self.p2p_peer_count.load(Ordering::Relaxed)
+    }
+
+    /// Get connected peer IDs for /peers RPC endpoint.
+    pub fn get_connected_peers(&self) -> Vec<String> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.connected_peer_ids.clone()
     }
 
     /// Increment P2P peer count.

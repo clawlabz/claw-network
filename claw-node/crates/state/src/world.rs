@@ -123,6 +123,11 @@ pub struct WorldState {
 
     /// Per-user delegation tracking (Cosmos-style):
     /// delegator_address → { validator_address → staked_amount }.
+    /// TRANSITIONAL RECORD ONLY — NOT used for reward distribution or consensus weight.
+    /// The primary staking model uses `stake_delegations` (validator_address → owner_address).
+    /// This field exists for future multi-delegator support but is currently a compatibility
+    /// shim. All downstream projects (ClawArena, ClawMarket, etc.) MUST use `stake_delegations`
+    /// semantics for any staking-related logic.
     /// Added in v0.4.8. Skipped from borsh to maintain backward compat with
     /// existing chain snapshots. Persisted separately via `store.put_user_delegations`.
     #[borsh(skip)]

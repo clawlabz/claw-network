@@ -19,10 +19,10 @@ claw-miner start
 
 ## How It Works
 
-1. **Register**: The miner sends a `MinerRegister` transaction to the chain with your chosen tier and name.
+1. **Register**: The miner sends a `MinerRegister` transaction to the chain to register as a Tier 1 (Online) miner.
 2. **Heartbeat**: Every ~5 minutes, the miner sends a `MinerHeartbeat` transaction proving it is online and synced.
-3. **Earn**: Each block, 35% of the block reward is distributed to active miners proportional to their tier weight and reputation score.
-4. **Reputation**: Consistent uptime builds reputation (0-100), which increases your share of rewards.
+3. **Earn**: Each block, 35% of the block reward is distributed to active miners proportional to their reputation.
+4. **Reputation**: Consistent uptime builds reputation (0-10000 basis points), which increases your share of rewards.
 
 Heartbeat transactions are gas-free -- you only need CLAW for the initial registration.
 
@@ -44,7 +44,7 @@ Heartbeat transactions are gas-free -- you only need CLAW for the initial regist
 Options:
   --dir TEXT   Directory for config and wallet files
   --name TEXT  Miner display name
-  --tier INT   Miner tier (0=Light, 1=Standard, 2=Full, 3=Archive)
+  --tier INT   Miner tier (only tier 1 supported in Phase 1)
   --rpc TEXT   RPC endpoint URL
 ```
 
@@ -64,12 +64,9 @@ Options:
 
 ## Miner Tiers
 
-| Tier | Name | Description |
-|------|------|-------------|
-| 0 | Light | Minimal resources, lowest rewards |
-| 1 | Standard | Default tier, moderate rewards |
-| 2 | Full | Full node sync, higher rewards |
-| 3 | Archive | Full history, highest rewards |
+**Phase 1** supports only **Tier 1 (Online)** — a lightweight mining mode that requires minimal resources and sends periodic heartbeats to prove uptime.
+
+Future phases will introduce additional tiers with higher resource requirements and reward structures.
 
 ## Configuration
 
@@ -85,11 +82,24 @@ wallet_path = "wallet.json"
 
 ## Development
 
+### Setup
+
 ```bash
 git clone https://github.com/clawlabz/claw-network.git
 cd claw-network/claw-miner
+
+# Install development dependencies
 pip install -e ".[dev]"
+```
+
+### Running Tests
+
+```bash
+# Run all tests
 pytest -v
+
+# Run with coverage report
+pytest -v --cov=clawminer
 ```
 
 ## Contributing
