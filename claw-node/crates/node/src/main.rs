@@ -1442,7 +1442,7 @@ async fn handle_miner_checkin_cli(
     use claw_types::state::{MinerCheckinWitness, MINER_EPOCH_LENGTH};
 
     // Load wallet
-    let key_path = data_dir.join("validator_key.json");
+    let key_path = data_dir.join("key.json");
     let key_data = std::fs::read_to_string(&key_path)
         .map_err(|e| anyhow::anyhow!("cannot read key file {}: {e}", key_path.display()))?;
     let key_json: serde_json::Value = serde_json::from_str(&key_data)?;
@@ -1460,10 +1460,21 @@ async fn handle_miner_checkin_cli(
     let epoch = height / MINER_EPOCH_LENGTH;
 
     let block = rpc_call(rpc, "claw_getBlockByNumber", vec![height.into()]).await?;
-    let hash_hex = block.get("hash").and_then(|v| v.as_str()).unwrap_or("");
     let mut ref_block_hash = [0u8; 32];
-    if hash_hex.len() == 64 {
-        if let Ok(bytes) = hex::decode(hash_hex) {
+    // Block hash may be returned as hex string or byte array depending on serialization
+    if let Some(hash_str) = block.get("hash").and_then(|v| v.as_str()) {
+        // Hex string format
+        if hash_str.len() == 64 {
+            if let Ok(bytes) = hex::decode(hash_str) {
+                ref_block_hash.copy_from_slice(&bytes);
+            }
+        }
+    } else if let Some(hash_arr) = block.get("hash").and_then(|v| v.as_array()) {
+        // Byte array format: [u8, u8, ...]
+        let bytes: Vec<u8> = hash_arr.iter()
+            .filter_map(|v| v.as_u64().map(|n| n as u8))
+            .collect();
+        if bytes.len() == 32 {
             ref_block_hash.copy_from_slice(&bytes);
         }
     }
