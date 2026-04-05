@@ -134,6 +134,41 @@ pub struct WorldState {
     pub user_delegations: BTreeMap<[u8; 32], BTreeMap<[u8; 32], u128>>,
 }
 
+/// V2 WorldState layout — `miners` uses `MinerInfoV2` (no `last_checkin_epoch`).
+/// Used for deserializing snapshots taken between V2 and V3 activation.
+#[derive(Debug, Clone, Default, BorshDeserialize)]
+struct WorldStateV2 {
+    pub balances: BTreeMap<[u8; 32], u128>,
+    pub token_balances: BTreeMap<([u8; 32], [u8; 32]), u128>,
+    pub nonces: BTreeMap<[u8; 32], u64>,
+    pub agents: BTreeMap<[u8; 32], AgentIdentity>,
+    pub tokens: BTreeMap<[u8; 32], TokenDef>,
+    pub reputation: Vec<ReputationAttestation>,
+    pub services: BTreeMap<([u8; 32], String), ServiceEntry>,
+    pub block_height: u64,
+    pub block_timestamp: u64,
+    pub contracts: BTreeMap<[u8; 32], claw_vm::ContractInstance>,
+    pub contract_storage: BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
+    pub contract_code: BTreeMap<[u8; 32], Vec<u8>>,
+    pub stakes: BTreeMap<[u8; 32], u128>,
+    pub unbonding_queue: Vec<UnbondingEntry>,
+    pub activity_stats: BTreeMap<[u8; 32], ActivityStats>,
+    pub validator_uptime: BTreeMap<[u8; 32], ValidatorUptime>,
+    pub platform_activity: BTreeMap<[u8; 32], PlatformActivityAgg>,
+    pub platform_report_tracker: BTreeMap<([u8; 32], u64), bool>,
+    pub stake_delegations: BTreeMap<[u8; 32], [u8; 32]>,
+    pub stake_commissions: BTreeMap<[u8; 32], u16>,
+    pub token_allowances: BTreeMap<([u8; 32], [u8; 32], [u8; 32]), u128>,
+    pub jailed_validators: BTreeMap<[u8; 32], u64>,
+    pub validator_missed_slots: BTreeMap<[u8; 32], u64>,
+    pub validator_assigned_slots: BTreeMap<[u8; 32], u64>,
+    pub processed_evidence: BTreeSet<[u8; 32]>,
+    /// V2 miners (no last_checkin_epoch field).
+    pub miners: BTreeMap<[u8; 32], MinerInfoV2>,
+    pub miner_heartbeat_tracker: BTreeMap<([u8; 32], u64), bool>,
+    pub epoch_reward_bucket: u128,
+}
+
 /// V1 WorldState layout — identical to WorldState except `miners` uses `MinerInfoV1`.
 /// Used only for deserializing pre-Heartbeat-V2 snapshots; the result is immediately
 /// converted to the current WorldState via `WorldState::from_v1`.
@@ -170,20 +205,65 @@ struct WorldStateV1 {
 }
 
 impl WorldState {
-    /// Deserialize a WorldState from borsh bytes, migrating from V1 if needed.
+    /// Deserialize a WorldState from borsh bytes, migrating from V2 or V1 if needed.
     ///
-    /// Tries the current (V2) layout first. If that fails — typically because
-    /// MinerInfo gained new fields — falls back to `WorldStateV1` and converts
-    /// each `MinerInfoV1` to the current `MinerInfo`.
+    /// Three-level fallback: V3 (current) → V2 (no last_checkin_epoch) → V1 (no epoch fields).
     pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Self, std::io::Error> {
-        // Try current layout first (fast path for already-migrated nodes)
+        // Try current V3 layout first (fast path)
         match borsh::from_slice::<WorldState>(bytes) {
             Ok(state) => Ok(state),
-            Err(_v2_err) => {
-                // Fall back to V1 layout
-                let v1 = borsh::from_slice::<WorldStateV1>(bytes)?;
-                Ok(Self::from_v1(v1))
+            Err(_v3_err) => {
+                // Try V2 layout (MinerInfo without last_checkin_epoch)
+                match borsh::from_slice::<WorldStateV2>(bytes) {
+                    Ok(v2) => Ok(Self::from_v2(v2)),
+                    Err(_v2_err) => {
+                        // Fall back to V1 layout
+                        let v1 = borsh::from_slice::<WorldStateV1>(bytes)?;
+                        Ok(Self::from_v1(v1))
+                    }
+                }
             }
+        }
+    }
+
+    /// Convert a V2 WorldState to V3: add last_checkin_epoch derived from last_heartbeat.
+    fn from_v2(v2: WorldStateV2) -> Self {
+        let miners = v2.miners.into_iter()
+            .map(|(addr, m)| (addr, m.into_v3()))
+            .collect();
+
+        Self {
+            balances: v2.balances,
+            token_balances: v2.token_balances,
+            nonces: v2.nonces,
+            agents: v2.agents,
+            tokens: v2.tokens,
+            reputation: v2.reputation,
+            services: v2.services,
+            block_height: v2.block_height,
+            block_timestamp: v2.block_timestamp,
+            contracts: v2.contracts,
+            contract_storage: v2.contract_storage,
+            contract_code: v2.contract_code,
+            stakes: v2.stakes,
+            unbonding_queue: v2.unbonding_queue,
+            activity_stats: v2.activity_stats,
+            validator_uptime: v2.validator_uptime,
+            platform_activity: v2.platform_activity,
+            platform_report_tracker: v2.platform_report_tracker,
+            stake_delegations: v2.stake_delegations,
+            stake_commissions: v2.stake_commissions,
+            token_allowances: v2.token_allowances,
+            jailed_validators: v2.jailed_validators,
+            validator_missed_slots: v2.validator_missed_slots,
+            validator_assigned_slots: v2.validator_assigned_slots,
+            processed_evidence: v2.processed_evidence,
+            miners,
+            miner_heartbeat_tracker: v2.miner_heartbeat_tracker,
+            epoch_checkins: BTreeMap::new(),
+            epoch_reward_bucket: v2.epoch_reward_bucket,
+            receipts: BTreeMap::new(),
+            user_delegations: BTreeMap::new(),
         }
     }
 
@@ -594,28 +674,37 @@ impl WorldState {
         }
 
         // Miners — versioned serialization for state_root compatibility.
-        // Before V2: borsh_v1() (8 fields) matches old block headers.
-        // After V2: full borsh (12 fields) includes epoch scoring state.
+        // Before V2: borsh_v1() (8 fields).
+        // V2 to V3: borsh_v2() (12 fields, no last_checkin_epoch).
+        // After V3: full borsh (13 fields, includes last_checkin_epoch).
         let v2_active = self.block_height >= HEARTBEAT_V2_HEIGHT;
+        let v3_active = self.block_height >= CHECKIN_V3_HEIGHT;
         for (addr, miner) in &self.miners {
             let mut entry = Vec::new();
             entry.extend_from_slice(b"miner:");
             entry.extend_from_slice(addr);
-            if v2_active {
+            if v3_active {
+                // V3: full borsh with last_checkin_epoch
                 entry.extend_from_slice(&borsh::to_vec(miner).expect("borsh serialization of MinerInfo should never fail"));
+            } else if v2_active {
+                // V2: 12 fields without last_checkin_epoch
+                entry.extend_from_slice(&miner.borsh_v2());
             } else {
                 entry.extend_from_slice(&miner.borsh_v1());
             }
             leaves.push(*blake3::hash(&entry).as_bytes());
         }
 
-        // Miner heartbeat tracker (V1)
-        for ((addr, window), _) in &self.miner_heartbeat_tracker {
-            let mut entry = Vec::new();
-            entry.extend_from_slice(b"minerbeat:");
-            entry.extend_from_slice(addr);
-            entry.extend_from_slice(&window.to_le_bytes());
-            leaves.push(*blake3::hash(&entry).as_bytes());
+        // Miner heartbeat tracker — frozen after V3, not in state_root.
+        // Before V3: included for backward compat with V1/V2 blocks.
+        if !v3_active {
+            for ((addr, window), _) in &self.miner_heartbeat_tracker {
+                let mut entry = Vec::new();
+                entry.extend_from_slice(b"minerbeat:");
+                entry.extend_from_slice(addr);
+                entry.extend_from_slice(&window.to_le_bytes());
+                leaves.push(*blake3::hash(&entry).as_bytes());
+            }
         }
 
         // epoch_checkins: NOT in state_root (runtime dedup cache, borsh skip)

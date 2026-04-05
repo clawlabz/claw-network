@@ -10,6 +10,7 @@ pub mod state;
 
 pub use block::{Block, BlockEvent};
 pub use receipt::{ReceiptEvent, TransactionReceipt};
+pub use state::MinerCheckinWitness;
 pub use transaction::{Transaction, TxType};
 
 #[cfg(test)]

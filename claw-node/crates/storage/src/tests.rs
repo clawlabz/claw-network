@@ -27,6 +27,7 @@ mod tests {
             hash: [5u8; 32],
             signatures: Vec::new(),
             events: Vec::new(),
+            checkin_witnesses: Vec::new(),
         }
     }
 

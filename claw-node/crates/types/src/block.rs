@@ -3,6 +3,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
+use crate::state::{MinerCheckinWitness, CHECKIN_V3_HEIGHT};
 use crate::transaction::Transaction;
 
 /// A structured event emitted during block production (rewards, fees, burns, contract events).
@@ -60,6 +61,12 @@ pub struct Block {
     /// Not included in block hash computation (appended after consensus).
     #[serde(default)]
     pub events: Vec<BlockEvent>,
+    /// Miner checkin witnesses included in this block (V3).
+    /// Replaces MinerHeartbeat transactions. Each witness contains an Ed25519
+    /// signature proving the miner is online and synced.
+    /// Included in block hash computation after CHECKIN_V3_HEIGHT.
+    #[serde(default)]
+    pub checkin_witnesses: Vec<MinerCheckinWitness>,
 }
 
 impl BorshDeserialize for Block {
@@ -78,6 +85,8 @@ impl BorshDeserialize for Block {
             .unwrap_or_default();
         let events = Vec::<BlockEvent>::deserialize_reader(reader)
             .unwrap_or_default();
+        let checkin_witnesses = Vec::<MinerCheckinWitness>::deserialize_reader(reader)
+            .unwrap_or_default();
 
         Ok(Block {
             height,
@@ -89,6 +98,7 @@ impl BorshDeserialize for Block {
             hash,
             signatures,
             events,
+            checkin_witnesses,
         })
     }
 }
@@ -106,6 +116,16 @@ impl Block {
             buf.extend_from_slice(&tx.hash());
         }
         buf.extend_from_slice(&self.state_root);
+        // V3: checkin witnesses participate in hash (must be sorted by miner address)
+        if self.height >= CHECKIN_V3_HEIGHT {
+            for w in &self.checkin_witnesses {
+                buf.extend_from_slice(&w.miner);
+                buf.extend_from_slice(&w.epoch.to_le_bytes());
+                buf.extend_from_slice(&w.ref_block_hash);
+                buf.extend_from_slice(&w.ref_block_height.to_le_bytes());
+                buf.extend_from_slice(&w.signature);
+            }
+        }
         *blake3::hash(&buf).as_bytes()
     }
 

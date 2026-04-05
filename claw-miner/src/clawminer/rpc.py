@@ -108,3 +108,15 @@ def get_latest_block(endpoint: str) -> dict | None:
 def faucet(endpoint: str, address: str) -> str:
     """Request testnet tokens from faucet."""
     return rpc_call(endpoint, "claw_faucet", [address])
+
+
+def submit_miner_checkin(endpoint: str, witness_hex: str) -> str:
+    """Submit a V3 miner checkin witness.
+
+    Args:
+        witness_hex: Hex-encoded borsh-serialized MinerCheckinWitness.
+
+    Returns:
+        Server response message.
+    """
+    return rpc_call(endpoint, "claw_submitMinerCheckin", [witness_hex])

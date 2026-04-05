@@ -281,8 +281,14 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
     },
-    /// Submit a miner heartbeat (proves liveness for mining rewards)
+    /// Submit a miner heartbeat (proves liveness for mining rewards) [pre-V3]
     MinerHeartbeat {
+        /// RPC endpoint URL
+        #[arg(long, default_value = "http://localhost:9710")]
+        rpc: String,
+    },
+    /// Submit a miner checkin witness (V3 replacement for heartbeat)
+    MinerCheckin {
         /// RPC endpoint URL
         #[arg(long, default_value = "http://localhost:9710")]
         rpc: String,
@@ -708,6 +714,9 @@ async fn main() -> Result<()> {
         }
         Commands::MinerHeartbeat { rpc } => {
             handle_miner_heartbeat_cli(&data_dir, &rpc).await?;
+        }
+        Commands::MinerCheckin { rpc } => {
+            handle_miner_checkin_cli(&data_dir, &rpc).await?;
         }
     }
 
@@ -1422,6 +1431,61 @@ async fn handle_miner_heartbeat_cli(
 
     let tx_hash = submit_tx(data_dir, rpc, TxType::MinerHeartbeat, payload_bytes).await?;
     println!("Miner heartbeat sent (height={}, tx={})", height, tx_hash);
+
+    Ok(())
+}
+
+async fn handle_miner_checkin_cli(
+    data_dir: &std::path::Path,
+    rpc: &str,
+) -> Result<()> {
+    use claw_types::state::{MinerCheckinWitness, MINER_EPOCH_LENGTH};
+
+    // Load wallet
+    let key_path = data_dir.join("validator_key.json");
+    let key_data = std::fs::read_to_string(&key_path)
+        .map_err(|e| anyhow::anyhow!("cannot read key file {}: {e}", key_path.display()))?;
+    let key_json: serde_json::Value = serde_json::from_str(&key_data)?;
+    let secret_hex = key_json.get("secret_key").and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing secret_key in key file"))?;
+    let secret_bytes = hex::decode(secret_hex)?;
+    let signing_key = claw_crypto::ed25519_dalek::SigningKey::from_bytes(
+        &secret_bytes[..32].try_into().map_err(|_| anyhow::anyhow!("invalid key length"))?
+    );
+    let miner_pubkey: [u8; 32] = signing_key.verifying_key().to_bytes();
+
+    // Get current block info
+    let block_number = rpc_call(rpc, "claw_blockNumber", vec![]).await?;
+    let height = block_number.as_u64().unwrap_or(0);
+    let epoch = height / MINER_EPOCH_LENGTH;
+
+    let block = rpc_call(rpc, "claw_getBlockByNumber", vec![height.into()]).await?;
+    let hash_hex = block.get("hash").and_then(|v| v.as_str()).unwrap_or("");
+    let mut ref_block_hash = [0u8; 32];
+    if hash_hex.len() == 64 {
+        if let Ok(bytes) = hex::decode(hash_hex) {
+            ref_block_hash.copy_from_slice(&bytes);
+        }
+    }
+
+    // Sign checkin
+    let msg = MinerCheckinWitness::signable_bytes(epoch, &ref_block_hash);
+    use claw_crypto::ed25519_dalek::Signer;
+    let sig = signing_key.sign(&msg);
+
+    let witness = MinerCheckinWitness {
+        miner: miner_pubkey,
+        epoch,
+        ref_block_hash,
+        ref_block_height: height,
+        signature: sig.to_bytes(),
+    };
+
+    // Submit via RPC
+    let witness_bytes = borsh::to_vec(&witness)?;
+    let witness_hex = hex::encode(&witness_bytes);
+    let result = rpc_call(rpc, "claw_submitMinerCheckin", vec![witness_hex.into()]).await?;
+    println!("Miner checkin submitted (epoch={}, height={}): {}", epoch, height, result);
 
     Ok(())
 }

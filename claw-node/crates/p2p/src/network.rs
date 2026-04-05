@@ -24,6 +24,8 @@ pub enum NetworkEvent {
     NewBlock(claw_types::block::Block),
     /// Received a BFT vote from a validator.
     Vote(BlockVote),
+    /// Received a miner checkin witness (V3).
+    MinerCheckin(claw_types::state::MinerCheckinWitness),
     /// A sync request from a peer (includes response channel for replying).
     SyncRequest {
         peer: PeerId,
@@ -58,6 +60,8 @@ pub enum P2pCommand {
     BroadcastVote(BlockVote),
     /// Broadcast a transaction to the network (for non-validator nodes to propagate txs).
     BroadcastTx(claw_types::Transaction),
+    /// Broadcast a miner checkin witness (V3).
+    BroadcastCheckin(claw_types::state::MinerCheckinWitness),
 }
 
 /// P2P Network handle for interacting with the swarm.
@@ -72,6 +76,7 @@ pub struct P2pNetwork {
     tx_topic: gossipsub::IdentTopic,
     block_topic: gossipsub::IdentTopic,
     vote_topic: gossipsub::IdentTopic,
+    checkin_topic: gossipsub::IdentTopic,
     /// Bootstrap addresses for periodic reconnection.
     bootstrap_addrs: Vec<Multiaddr>,
 }
@@ -154,9 +159,11 @@ impl P2pNetwork {
         let tx_topic = gossipsub::IdentTopic::new(protocol::topic_tx(chain_id));
         let block_topic = gossipsub::IdentTopic::new(protocol::topic_block(chain_id));
         let vote_topic = gossipsub::IdentTopic::new(protocol::topic_vote(chain_id));
+        let checkin_topic = gossipsub::IdentTopic::new(protocol::topic_miner_checkin(chain_id));
         swarm.behaviour_mut().gossipsub.subscribe(&tx_topic)?;
         swarm.behaviour_mut().gossipsub.subscribe(&block_topic)?;
         swarm.behaviour_mut().gossipsub.subscribe(&vote_topic)?;
+        swarm.behaviour_mut().gossipsub.subscribe(&checkin_topic)?;
 
         // Listen
         let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{p2p_port}").parse()?;
@@ -188,6 +195,7 @@ impl P2pNetwork {
                 tx_topic,
                 block_topic,
                 vote_topic,
+                checkin_topic,
                 bootstrap_addrs: stored_bootstrap,
             },
             event_rx,
@@ -258,6 +266,23 @@ impl P2pNetwork {
             .publish(self.vote_topic.clone(), bytes)
         {
             tracing::debug!(error=%e, "Failed to publish vote (no peers yet)");
+        }
+    }
+
+    /// Broadcast a miner checkin witness (V3).
+    pub fn broadcast_checkin(&mut self, witness: &claw_types::state::MinerCheckinWitness) {
+        let msg = GossipMessage::MinerCheckin(witness.clone());
+        let bytes = borsh::to_vec(&msg).expect("serialize gossip msg");
+        if bytes.len() > protocol::MAX_P2P_MESSAGE_SIZE {
+            return;
+        }
+        if let Err(e) = self
+            .swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(self.checkin_topic.clone(), bytes)
+        {
+            tracing::debug!(error=%e, "Failed to publish miner checkin (no peers yet)");
         }
     }
 
@@ -343,6 +368,9 @@ impl P2pNetwork {
                         P2pCommand::BroadcastTx(tx) => {
                             self.broadcast_tx(&tx);
                         }
+                        P2pCommand::BroadcastCheckin(witness) => {
+                            self.broadcast_checkin(&witness);
+                        }
                     }
                 }
                 event = self.swarm.select_next_some() => {
@@ -373,6 +401,9 @@ impl P2pNetwork {
                             }
                             GossipMessage::Vote(vote) => {
                                 let _ = self.event_tx.send(NetworkEvent::Vote(vote));
+                            }
+                            GossipMessage::MinerCheckin(witness) => {
+                                let _ = self.event_tx.send(NetworkEvent::MinerCheckin(witness));
                             }
                         }
                     }

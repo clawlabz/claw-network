@@ -133,6 +133,9 @@ pub enum StateError {
     #[error("heartbeat too early: next allowed at block {next_allowed}, current {current}")]
     HeartbeatTooEarly { next_allowed: u64, current: u64 },
 
+    #[error("MinerHeartbeat transaction deprecated after V3 activation — use P2P checkin")]
+    HeartbeatDeprecated,
+
     #[error("invalid miner tier: {0}")]
     InvalidMinerTier(u8),
 

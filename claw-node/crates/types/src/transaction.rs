@@ -4,7 +4,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-mod serde_sig {
+pub mod serde_sig {
     use serde::{self, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>

@@ -439,10 +439,15 @@ pub fn process_miner_epoch_boundary(world: &mut WorldState, height: u64) -> Vec<
     // --- Phase 1: Settle previous epoch's pending + update attendance ---
     let miner_addrs: Vec<[u8; 32]> = world.miners.keys().copied().collect();
     for addr in &miner_addrs {
-        // Determine if the miner checked in during the settled epoch
-        // using persisted last_heartbeat (not transient epoch_checkins).
+        // Determine if the miner checked in during the settled epoch.
+        // V3: use last_checkin_epoch (set by P2P witness inclusion).
+        // Pre-V3: use last_heartbeat / MINER_EPOCH_LENGTH (set by heartbeat tx).
         let miner = world.miners.get(addr).unwrap();
-        let checked_in = miner.last_heartbeat / MINER_EPOCH_LENGTH == settled_epoch;
+        let checked_in = if height >= CHECKIN_V3_HEIGHT {
+            miner.last_checkin_epoch == settled_epoch
+        } else {
+            miner.last_heartbeat / MINER_EPOCH_LENGTH == settled_epoch
+        };
 
         let miner = world.miners.get_mut(addr).unwrap();
 
@@ -557,6 +562,19 @@ pub fn process_miner_epoch_boundary(world: &mut WorldState, height: u64) -> Vec<
     world.epoch_checkins.clear();
 
     events
+}
+
+/// One-time V2→V3 migration: convert last_heartbeat to last_checkin_epoch.
+/// Called exactly once at CHECKIN_V3_HEIGHT, BEFORE the first V3 settlement.
+/// Ensures miners who checked in during the last V2 epoch are credited.
+pub fn migrate_miners_v2_to_v3(world: &mut WorldState) {
+    for miner in world.miners.values_mut() {
+        miner.last_checkin_epoch = miner.last_heartbeat / MINER_EPOCH_LENGTH;
+    }
+    tracing::info!(
+        miners = world.miners.len(),
+        "V2→V3 migration: last_heartbeat → last_checkin_epoch"
+    );
 }
 
 #[cfg(test)]

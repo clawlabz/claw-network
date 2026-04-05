@@ -11,6 +11,7 @@ use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, SyncRequest, SyncResponse};
 use claw_state::WorldState;
 use claw_storage::ChainStore;
 use claw_types::block::Block;
+use claw_types::state::{MinerCheckinWitness, CHECKIN_V3_HEIGHT, MINER_EPOCH_LENGTH};
 use claw_types::transaction::Transaction;
 use tokio::sync::mpsc;
 
@@ -19,6 +20,37 @@ use crate::metrics;
 
 /// Maximum number of transactions allowed in the mempool.
 const MAX_MEMPOOL_SIZE: usize = 10_000;
+
+/// Cache for P2P miner checkin witnesses (V3).
+/// Keyed by epoch → miner_address → witness. Validators collect these
+/// and include them in blocks they produce.
+#[derive(Debug, Default)]
+struct CheckinCache {
+    entries: std::collections::HashMap<u64, std::collections::HashMap<[u8; 32], MinerCheckinWitness>>,
+}
+
+impl CheckinCache {
+    fn insert(&mut self, w: MinerCheckinWitness) {
+        self.entries.entry(w.epoch).or_default().insert(w.miner, w);
+    }
+
+    /// Get witnesses for `epoch` whose miners have not yet checked in on-chain.
+    fn get_pending(&self, epoch: u64, state: &WorldState) -> Vec<MinerCheckinWitness> {
+        self.entries.get(&epoch)
+            .map(|m| m.values()
+                .filter(|w| state.miners.get(&w.miner)
+                    .map(|mi| mi.last_checkin_epoch != epoch)
+                    .unwrap_or(false))
+                .cloned()
+                .collect())
+            .unwrap_or_default()
+    }
+
+    /// Garbage-collect old epochs. Keep current and previous.
+    fn gc(&mut self, current_epoch: u64) {
+        self.entries.retain(|&e, _| e >= current_epoch.saturating_sub(1));
+    }
+}
 
 /// Response for `get_tx_receipt` combining block location and the optional full receipt.
 #[derive(Debug, Clone)]
@@ -72,6 +104,8 @@ struct ChainInner {
     last_accepted_snapshot_height: u64,
     /// Connected peer IDs — synced from the sync loop for RPC exposure.
     connected_peer_ids: Vec<String>,
+    /// V3: collected miner checkin witnesses from P2P gossip.
+    checkin_cache: CheckinCache,
 }
 
 impl Chain {
@@ -282,6 +316,7 @@ impl Chain {
                 version_manifest: None,
                 last_accepted_snapshot_height: 0,
                 connected_peer_ids: Vec::new(),
+                checkin_cache: CheckinCache::default(),
             })),
             _p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
@@ -333,6 +368,67 @@ impl Chain {
         inner.mempool.push(tx);
         metrics::MEMPOOL_SIZE.set(inner.mempool.len() as f64);
         Ok(tx_hash)
+    }
+
+    /// Submit a miner checkin witness (V3). Full validation (same as receive_block),
+    /// then cache locally. Returns Ok for P2P broadcasting by the caller.
+    pub fn submit_miner_checkin(&self, witness: MinerCheckinWitness) -> Result<String, String> {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+
+        if inner.state.block_height < CHECKIN_V3_HEIGHT {
+            return Err("checkin V3 not yet active".into());
+        }
+
+        // Validate witness (same checks as receive_block)
+        Self::validate_checkin_witness(&witness, &inner)?;
+
+        // Cache it (re-acquire as mutable)
+        drop(inner);
+        let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.checkin_cache.insert(witness);
+
+        Ok("checkin accepted".into())
+    }
+
+    /// Validate a single MinerCheckinWitness against current chain state.
+    /// Used by submit_miner_checkin, NetworkEvent::MinerCheckin handler,
+    /// and receive_block — single source of truth for witness validation.
+    fn validate_checkin_witness(witness: &MinerCheckinWitness, inner: &ChainInner) -> Result<(), String> {
+        // (a) miner registered
+        if !inner.state.miners.contains_key(&witness.miner) {
+            return Err(format!("miner {} not registered", hex::encode(witness.miner)));
+        }
+
+        // (b) epoch is current
+        let current_epoch = inner.state.block_height / MINER_EPOCH_LENGTH;
+        if witness.epoch != current_epoch {
+            return Err(format!("epoch mismatch: expected {current_epoch}, got {}", witness.epoch));
+        }
+
+        // (c) ref_block_height in [epoch_start, latest_height]
+        let epoch_start = current_epoch * MINER_EPOCH_LENGTH;
+        if witness.ref_block_height < epoch_start || witness.ref_block_height > inner.latest_block.height {
+            return Err(format!(
+                "ref_block_height {} out of range [{}, {}]",
+                witness.ref_block_height, epoch_start, inner.latest_block.height
+            ));
+        }
+        // Verify ref_block_hash matches known block
+        match inner.store.get_block(witness.ref_block_height) {
+            Ok(Some(known)) if known.hash == witness.ref_block_hash => {}
+            Ok(Some(_)) => return Err("ref_block_hash mismatch".into()),
+            _ => return Err(format!("unknown block height {}", witness.ref_block_height)),
+        }
+
+        // (d) signature verification
+        let msg = MinerCheckinWitness::signable_bytes(witness.epoch, &witness.ref_block_hash);
+        let vk = claw_crypto::ed25519_dalek::VerifyingKey::from_bytes(&witness.miner)
+            .map_err(|e| format!("invalid miner pubkey: {e}"))?;
+        let sig = claw_crypto::ed25519_dalek::Signature::from_bytes(&witness.signature);
+        vk.verify_strict(&msg, &sig)
+            .map_err(|e| format!("invalid signature: {e}"))?;
+
+        Ok(())
     }
 
     /// Check if we are the proposer for the next block.
@@ -574,16 +670,54 @@ impl Chain {
         // and the state's block_timestamp are consistent.
         let timestamp = block_timestamp_now;
 
-        // V2 heartbeat: process miner epoch boundary BEFORE state_root
-        // so pending reward settlements are included in the committed state.
-        let epoch_events = claw_state::rewards::process_miner_epoch_boundary(
-            &mut inner.state,
-            new_height,
-        );
-        block_events.extend(epoch_events);
+        // --- V3 checkin witness processing ---
+        let v3_active = new_height >= CHECKIN_V3_HEIGHT;
+        let is_epoch_boundary = new_height % MINER_EPOCH_LENGTH == 0;
+        let current_epoch = new_height / MINER_EPOCH_LENGTH;
 
-        // V1 heartbeat: deactivate miners who missed heartbeats (no-op after V2 height)
-        claw_state::rewards::update_miner_activity(&mut inner.state, new_height);
+        let checkin_witnesses = if v3_active {
+            // Step 0: one-time V2→V3 migration at activation block
+            if new_height == CHECKIN_V3_HEIGHT {
+                claw_state::rewards::migrate_miners_v2_to_v3(&mut inner.state);
+            }
+
+            // Step 1: epoch boundary settlement BEFORE writing new witnesses
+            if is_epoch_boundary {
+                let epoch_events = claw_state::rewards::process_miner_epoch_boundary(
+                    &mut inner.state,
+                    new_height,
+                );
+                block_events.extend(epoch_events);
+            }
+
+            // Step 2: get pending witnesses and apply
+            let mut witnesses = inner.checkin_cache.get_pending(current_epoch, &inner.state);
+            witnesses.sort_by_key(|w| w.miner);
+
+            // Step 3: apply checkins
+            for w in &witnesses {
+                if let Some(miner) = inner.state.miners.get_mut(&w.miner) {
+                    miner.last_checkin_epoch = current_epoch;
+                }
+            }
+
+            // GC old epochs
+            inner.checkin_cache.gc(current_epoch);
+
+            witnesses
+        } else {
+            // Pre-V3: existing heartbeat processing
+            let epoch_events = claw_state::rewards::process_miner_epoch_boundary(
+                &mut inner.state,
+                new_height,
+            );
+            block_events.extend(epoch_events);
+
+            // V1 heartbeat: deactivate miners who missed heartbeats (no-op after V2 height)
+            claw_state::rewards::update_miner_activity(&mut inner.state, new_height);
+
+            vec![]
+        };
 
         // Sync slashing state to WorldState BEFORE computing state_root
         // so the root commits to current slashing data
@@ -600,6 +734,7 @@ impl Chain {
             hash: [0u8; 32],
             signatures: Vec::new(),
             events: block_events,
+            checkin_witnesses,
         };
         block.hash = block.compute_hash();
 
@@ -901,14 +1036,92 @@ impl Chain {
             // between live nodes and syncing nodes.
         }
 
-        // V2 heartbeat: process miner epoch boundary BEFORE state_root
-        let _ = claw_state::rewards::process_miner_epoch_boundary(
-            &mut state_clone,
-            block.height,
-        );
+        // --- V3 checkin witness verification (symmetric with produce_block) ---
+        let v3_active = block.height >= CHECKIN_V3_HEIGHT;
+        let is_epoch_boundary = block.height % MINER_EPOCH_LENGTH == 0;
 
-        // V1 heartbeat: deactivate miners who missed heartbeats (no-op after V2 height)
-        claw_state::rewards::update_miner_activity(&mut state_clone, block.height);
+        if v3_active {
+            // Step 0: one-time migration
+            if block.height == CHECKIN_V3_HEIGHT {
+                claw_state::rewards::migrate_miners_v2_to_v3(&mut state_clone);
+            }
+
+            // Step 1: epoch boundary settlement BEFORE witness application
+            if is_epoch_boundary {
+                let _ = claw_state::rewards::process_miner_epoch_boundary(
+                    &mut state_clone,
+                    block.height,
+                );
+            }
+
+            // Step 2: verify checkin_witnesses
+            let block_epoch = block.height / MINER_EPOCH_LENGTH;
+            let epoch_start = block_epoch * MINER_EPOCH_LENGTH;
+            let mut seen_in_block = std::collections::HashSet::<[u8; 32]>::new();
+
+            for w in &block.checkin_witnesses {
+                // (a) miner registered
+                if !state_clone.miners.contains_key(&w.miner) {
+                    return Err(format!("checkin from unregistered miner {}", hex::encode(w.miner)));
+                }
+                // (b) epoch match
+                if w.epoch != block_epoch {
+                    return Err(format!("checkin epoch mismatch: expected {block_epoch}, got {}", w.epoch));
+                }
+                // (c) ref_block in [epoch_start, block.height)
+                if w.ref_block_height < epoch_start || w.ref_block_height >= block.height {
+                    return Err(format!("checkin ref_block_height {} out of range [{epoch_start}, {})", w.ref_block_height, block.height));
+                }
+                // Verify ref_block_hash matches known block
+                if let Ok(Some(known)) = inner.store.get_block(w.ref_block_height) {
+                    if known.hash != w.ref_block_hash {
+                        return Err("checkin ref_block_hash mismatch".into());
+                    }
+                } else {
+                    return Err(format!("checkin references unknown block height {}", w.ref_block_height));
+                }
+                // (d) signature verification
+                let msg = MinerCheckinWitness::signable_bytes(w.epoch, &w.ref_block_hash);
+                if let Ok(vk) = claw_crypto::ed25519_dalek::VerifyingKey::from_bytes(&w.miner) {
+                    let sig = claw_crypto::ed25519_dalek::Signature::from_bytes(&w.signature);
+                    if vk.verify_strict(&msg, &sig).is_err() {
+                        return Err(format!("checkin signature invalid for miner {}", hex::encode(w.miner)));
+                    }
+                } else {
+                    return Err(format!("invalid miner public key {}", hex::encode(w.miner)));
+                }
+                // (e) cross-block dedup
+                if state_clone.miners[&w.miner].last_checkin_epoch == block_epoch {
+                    return Err(format!("duplicate checkin for miner {} in epoch {block_epoch}", hex::encode(w.miner)));
+                }
+                // (f) intra-block dedup
+                if !seen_in_block.insert(w.miner) {
+                    return Err(format!("duplicate miner {} in same block", hex::encode(w.miner)));
+                }
+            }
+
+            // Step 3: apply checkins
+            for w in &block.checkin_witnesses {
+                state_clone.miners.get_mut(&w.miner).unwrap().last_checkin_epoch = w.epoch;
+            }
+
+            // Cache received witnesses for our own future blocks
+            for w in &block.checkin_witnesses {
+                inner.checkin_cache.insert(w.clone());
+            }
+        } else {
+            // Pre-V3: checkin_witnesses must be empty
+            if !block.checkin_witnesses.is_empty() {
+                return Err("checkin_witnesses not allowed before V3 activation".into());
+            }
+
+            // Existing heartbeat processing
+            let _ = claw_state::rewards::process_miner_epoch_boundary(
+                &mut state_clone,
+                block.height,
+            );
+            claw_state::rewards::update_miner_activity(&mut state_clone, block.height);
+        }
 
         // Sync slashing state to state_clone BEFORE computing state_root
         state_clone.jailed_validators = inner.slashing.jailed.clone();
@@ -1143,6 +1356,15 @@ impl Chain {
                 NetworkEvent::Vote(vote) => {
                     let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                     Self::apply_vote(&mut inner, &vote);
+                }
+                NetworkEvent::MinerCheckin(witness) => {
+                    let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                    if inner.state.block_height >= CHECKIN_V3_HEIGHT {
+                        // Full validation (same as submit_miner_checkin / receive_block)
+                        if Self::validate_checkin_witness(&witness, &inner).is_ok() {
+                            inner.checkin_cache.insert(witness);
+                        }
+                    }
                 }
                 NetworkEvent::SyncRequest { peer, request, channel, .. } => {
                     let response = self.handle_sync_request(&request);

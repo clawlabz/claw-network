@@ -1272,11 +1272,12 @@ pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result
     // Extract /24 prefix (first 3 bytes) for sybil protection
     let ip_prefix = payload.ip_addr[..3].to_vec();
 
-    // Count active miners in the same /24 subnet
+    // Count ALL registered miners in the same /24 subnet (not just active).
+    // Using all registered miners prevents sybil bypass via active=false (V3).
     let same_subnet_count = state
         .miners
         .values()
-        .filter(|m| m.active && m.ip_prefix == ip_prefix)
+        .filter(|m| m.ip_prefix == ip_prefix)
         .count();
     if same_subnet_count >= MAX_MINERS_PER_SUBNET {
         return Err(StateError::SubnetLimitReached {
@@ -1284,6 +1285,7 @@ pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result
         });
     }
 
+    let v3_active = state.block_height >= CHECKIN_V3_HEIGHT;
     state.miners.insert(
         tx.from,
         MinerInfo {
@@ -1291,15 +1293,17 @@ pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result
             tier: MinerTier::Online,
             name: payload.name,
             registered_at: state.block_height,
-            last_heartbeat: state.block_height,
+            last_heartbeat: if v3_active { 0 } else { state.block_height },
             ip_prefix,
-            active: true,
+            // V3: new miners start inactive, must checkin first
+            active: !v3_active,
             reputation_bps: REPUTATION_NEWCOMER_BPS,
-            // V2 fields
             pending_rewards: 0,
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            // V3: 0 = never checked in
+            last_checkin_epoch: 0,
         },
     );
 
@@ -1312,7 +1316,13 @@ pub fn handle_miner_register(state: &mut WorldState, tx: &Transaction) -> Result
 /// and upgrades reputation based on miner age.
 ///
 /// After HEARTBEAT_V2_HEIGHT, uses epoch-based check-in with shorter interval.
+/// After CHECKIN_V3_HEIGHT, this tx type is rejected — miners use P2P checkin instead.
 pub fn handle_miner_heartbeat(state: &mut WorldState, tx: &Transaction) -> Result<(), StateError> {
+    // V3: reject MinerHeartbeat transactions entirely
+    if state.block_height >= CHECKIN_V3_HEIGHT {
+        return Err(StateError::HeartbeatDeprecated);
+    }
+
     let _payload = MinerHeartbeatPayload::try_from_slice(&tx.payload)
         .map_err(|e| StateError::PayloadDeserialize(e.to_string()))?;
 

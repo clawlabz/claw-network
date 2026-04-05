@@ -15,13 +15,16 @@ from clawminer.constants import (
 from clawminer.rpc import (
     get_miner_info,
     get_nonce,
+    get_block_number,
     get_latest_block,
     send_transaction,
+    submit_miner_checkin,
     RpcError,
 )
 from clawminer.tx import (
     build_miner_register_payload,
     build_miner_heartbeat_payload,
+    build_miner_checkin_witness,
     build_transaction,
 )
 from clawminer.wallet import address_hex
@@ -139,6 +142,47 @@ def send_heartbeat(
     return send_transaction(endpoint, tx_bytes.hex())
 
 
+def send_checkin(
+    endpoint: str,
+    signing_key: SigningKey,
+) -> str:
+    """Send a V3 miner checkin witness via RPC.
+
+    Args:
+        endpoint: RPC endpoint URL.
+        signing_key: Ed25519 signing key.
+
+    Returns:
+        Server response message.
+    """
+    from_addr = bytes(signing_key.verify_key)
+
+    # Get latest block info
+    block = get_latest_block(endpoint)
+    if block is None:
+        raise RuntimeError("Failed to get latest block")
+
+    block_hash_hex = block.get("hash", "00" * 32)
+    if block_hash_hex.startswith("0x"):
+        block_hash_hex = block_hash_hex[2:]
+    ref_block_hash = bytes.fromhex(block_hash_hex)
+    if len(ref_block_hash) != 32:
+        ref_block_hash = ref_block_hash.ljust(32, b"\x00")[:32]
+
+    height = int(block.get("height", block.get("number", 0)))
+    epoch = height // 100  # MINER_EPOCH_LENGTH = 100
+
+    witness_bytes = build_miner_checkin_witness(
+        miner=from_addr,
+        epoch=epoch,
+        ref_block_hash=ref_block_hash,
+        ref_block_height=height,
+        signing_key=signing_key,
+    )
+
+    return submit_miner_checkin(endpoint, witness_bytes.hex())
+
+
 def start_mining(
     endpoint: str,
     signing_key: SigningKey,
@@ -184,15 +228,24 @@ def start_mining(
     else:
         console.print("[green]Already registered.[/green]")
 
-    # Heartbeat loop
-    console.print(f"\n[bold]Starting heartbeat loop (interval: {HEARTBEAT_INTERVAL_SECONDS}s)[/bold]")
+    # Checkin/heartbeat loop
+    console.print(f"\n[bold]Starting mining loop (interval: {HEARTBEAT_INTERVAL_SECONDS}s)[/bold]")
 
     while not _shutdown_requested:
         try:
-            tx_hash = send_heartbeat(endpoint, signing_key)
-            console.print(f"[green]Heartbeat sent: {tx_hash}[/green]")
+            # Try V3 checkin first; fall back to legacy heartbeat if not yet active
+            try:
+                result = send_checkin(endpoint, signing_key)
+                console.print(f"[green]Checkin sent: {result}[/green]")
+            except RpcError as e:
+                if "not yet active" in str(e) or "method not found" in str(e):
+                    # V3 not active yet — fall back to legacy heartbeat
+                    tx_hash = send_heartbeat(endpoint, signing_key)
+                    console.print(f"[green]Heartbeat sent: {tx_hash}[/green]")
+                else:
+                    raise
         except (RpcError, ConnectionError, RuntimeError) as exc:
-            console.print(f"[red]Heartbeat failed: {exc}[/red]")
+            console.print(f"[red]Mining loop error: {exc}[/red]")
 
         # Sleep in small increments to allow graceful shutdown
         for _ in range(HEARTBEAT_INTERVAL_SECONDS):

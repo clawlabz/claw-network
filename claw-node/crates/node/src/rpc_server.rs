@@ -652,6 +652,34 @@ async fn handle_rpc(
                 Err(e) => Err(e),
             }
         }
+        "claw_submitMinerCheckin" => {
+            let hex_str = req.params.get(0).and_then(|v| v.as_str());
+            match hex_str {
+                Some(h) => {
+                    match hex::decode(h) {
+                        Ok(bytes) => {
+                            match borsh::from_slice::<claw_types::state::MinerCheckinWitness>(&bytes) {
+                                Ok(witness) => {
+                                    // Validate + cache locally FIRST, then broadcast only on success
+                                    match chain.submit_miner_checkin(witness.clone()) {
+                                        Ok(msg) => {
+                                            if let Some(p2p_tx) = P2P_COMMAND_TX.get() {
+                                                let _ = p2p_tx.send(claw_p2p::P2pCommand::BroadcastCheckin(witness));
+                                            }
+                                            Ok(serde_json::json!(msg))
+                                        }
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                                Err(e) => Err(format!("decode checkin: {e}")),
+                            }
+                        }
+                        Err(e) => Err(format!("invalid hex: {e}")),
+                    }
+                }
+                None => Err("missing checkin hex param".into()),
+            }
+        }
         _ => Err(format!("method not found: {}", req.method)),
     };
 

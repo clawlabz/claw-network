@@ -127,6 +127,7 @@ mod tests {
             hash: [13u8; 32],
             signatures: Vec::new(),
             events: Vec::new(),
+            checkin_witnesses: Vec::new(),
         };
         roundtrip(&block);
     }
@@ -210,6 +211,7 @@ mod tests {
             hash: [0u8; 32],
             signatures: Vec::new(),
             events: Vec::new(),
+            checkin_witnesses: Vec::new(),
         };
         block.hash = block.compute_hash();
         assert!(block.verify_hash());
@@ -265,6 +267,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         };
         roundtrip(&info);
     }

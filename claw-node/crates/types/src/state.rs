@@ -174,7 +174,46 @@ pub struct MinerInfoV1 {
     pub reputation_bps: u16,
 }
 
-/// On-chain state for a registered miner (V2: epoch scoring + delayed settlement).
+/// V2 miner info layout — used only for deserializing pre-V3 snapshots.
+/// Identical to MinerInfo but without `last_checkin_epoch`.
+#[derive(Debug, Clone, PartialEq, Eq, BorshDeserialize)]
+pub struct MinerInfoV2 {
+    pub address: [u8; 32],
+    pub tier: MinerTier,
+    pub name: String,
+    pub registered_at: u64,
+    pub last_heartbeat: u64,
+    pub ip_prefix: Vec<u8>,
+    pub active: bool,
+    pub reputation_bps: u16,
+    pub pending_rewards: u128,
+    pub pending_epoch: u64,
+    pub epoch_attendance: u16,
+    pub consecutive_misses: u16,
+}
+
+impl MinerInfoV2 {
+    /// Convert V2 → V3: derive last_checkin_epoch from last_heartbeat.
+    pub fn into_v3(self) -> MinerInfo {
+        MinerInfo {
+            last_checkin_epoch: self.last_heartbeat / MINER_EPOCH_LENGTH,
+            address: self.address,
+            tier: self.tier,
+            name: self.name,
+            registered_at: self.registered_at,
+            last_heartbeat: self.last_heartbeat,
+            ip_prefix: self.ip_prefix,
+            active: self.active,
+            reputation_bps: self.reputation_bps,
+            pending_rewards: self.pending_rewards,
+            pending_epoch: self.pending_epoch,
+            epoch_attendance: self.epoch_attendance,
+            consecutive_misses: self.consecutive_misses,
+        }
+    }
+}
+
+/// On-chain state for a registered miner (V3: P2P checkin + epoch-based settlement).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct MinerInfo {
     /// Miner's Ed25519 public key / address.
@@ -185,7 +224,7 @@ pub struct MinerInfo {
     pub name: String,
     /// Block height at which the miner was registered.
     pub registered_at: u64,
-    /// Block height of the last heartbeat.
+    /// Block height of the last heartbeat (V2 legacy, not written after V3 activation).
     pub last_heartbeat: u64,
     /// IP address prefix (first 3 bytes for /24 subnet check).
     pub ip_prefix: Vec<u8>,
@@ -202,6 +241,10 @@ pub struct MinerInfo {
     pub epoch_attendance: u16,
     /// Number of consecutive epochs missed.
     pub consecutive_misses: u16,
+    // --- V3 field (P2P checkin) ---
+    /// Epoch number of the last successful checkin (replaces last_heartbeat for settlement).
+    /// 0 = never checked in. Settlement: `last_checkin_epoch == settled_epoch`.
+    pub last_checkin_epoch: u64,
 }
 
 impl MinerInfo {
@@ -219,12 +262,29 @@ impl MinerInfo {
         BorshSerialize::serialize(&self.reputation_bps, &mut buf).unwrap();
         buf
     }
+
+    /// Serialize V2 fields (12 fields, without last_checkin_epoch) for state_root.
+    /// Used between HEARTBEAT_V2_HEIGHT and CHECKIN_V3_HEIGHT.
+    pub fn borsh_v2(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        BorshSerialize::serialize(&self.address, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.tier, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.name, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.registered_at, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.last_heartbeat, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.ip_prefix, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.active, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.reputation_bps, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.pending_rewards, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.pending_epoch, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.epoch_attendance, &mut buf).unwrap();
+        BorshSerialize::serialize(&self.consecutive_misses, &mut buf).unwrap();
+        buf
+    }
 }
 
 impl From<MinerInfoV1> for MinerInfo {
     fn from(v1: MinerInfoV1) -> Self {
-        // V2 field values here are irrelevant — they will be overwritten by
-        // the normalization step at HEARTBEAT_V2_HEIGHT. Use simple defaults.
         Self {
             address: v1.address,
             tier: v1.tier,
@@ -238,7 +298,36 @@ impl From<MinerInfoV1> for MinerInfo {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         }
+    }
+}
+
+/// Miner checkin witness — P2P signed proof of liveness (V3).
+/// Included in Block.checkin_witnesses instead of as a transaction.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct MinerCheckinWitness {
+    /// Miner address (Ed25519 public key).
+    pub miner: [u8; 32],
+    /// Epoch number for this checkin.
+    pub epoch: u64,
+    /// Hash of a recent block (proves sync within this epoch).
+    pub ref_block_hash: [u8; 32],
+    /// Height of the referenced block (must be within [epoch_start, block.height)).
+    pub ref_block_height: u64,
+    /// Ed25519 signature over blake3("claw-checkin" || epoch_le || ref_block_hash).
+    #[serde(with = "crate::transaction::serde_sig")]
+    pub signature: [u8; 64],
+}
+
+impl MinerCheckinWitness {
+    /// Compute the message bytes that the miner signs.
+    pub fn signable_bytes(epoch: u64, ref_block_hash: &[u8; 32]) -> [u8; 32] {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"claw-checkin");
+        buf.extend_from_slice(&epoch.to_le_bytes());
+        buf.extend_from_slice(ref_block_hash);
+        *blake3::hash(&buf).as_bytes()
     }
 }
 
@@ -292,6 +381,15 @@ pub const BLOCKS_7_DAYS: u64 = 201_600;
 
 /// Number of blocks in 30 days at 3-second block time (30 * 24 * 3600 / 3).
 pub const BLOCKS_30_DAYS: u64 = 864_000;
+
+/// Block height at which Checkin V3 activates (heartbeat tx → P2P witness in block field).
+/// Before: miners send MinerHeartbeat transactions, settlement uses last_heartbeat.
+/// After: miners send P2P MinerCheckinWitness, settlement uses last_checkin_epoch.
+/// MUST be divisible by MINER_EPOCH_LENGTH and be after HEARTBEAT_V2_HEIGHT.
+pub const CHECKIN_V3_HEIGHT: u64 = 280_500;
+
+const _: () = assert!(CHECKIN_V3_HEIGHT % MINER_EPOCH_LENGTH == 0, "CHECKIN_V3_HEIGHT must be a multiple of MINER_EPOCH_LENGTH");
+const _: () = assert!(CHECKIN_V3_HEIGHT > HEARTBEAT_V2_HEIGHT, "CHECKIN_V3_HEIGHT must be after HEARTBEAT_V2_HEIGHT");
 
 /// Uptime tier multiplier (out of 100) based on epoch attendance count.
 pub fn miner_uptime_multiplier(attendance_count: u32) -> u128 {

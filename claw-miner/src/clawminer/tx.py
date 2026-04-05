@@ -86,6 +86,47 @@ def signable_bytes(tx_type: int, from_addr: bytes, nonce: int, payload: bytes) -
     return bytes(buf)
 
 
+def build_miner_checkin_witness(
+    miner: bytes,
+    epoch: int,
+    ref_block_hash: bytes,
+    ref_block_height: int,
+    signing_key: SigningKey,
+) -> bytes:
+    """Build borsh-encoded MinerCheckinWitness (V3).
+
+    Borsh layout: miner([u8;32]) || epoch(u64 LE) || ref_block_hash([u8;32])
+                  || ref_block_height(u64 LE) || signature([u8;64])
+
+    Sign message: blake3("claw-checkin" || epoch_le || ref_block_hash)
+    """
+    import hashlib
+
+    # Compute signable message: blake3("claw-checkin" || epoch_le || ref_block_hash)
+    msg_input = b"claw-checkin" + struct.pack("<Q", epoch) + ref_block_hash
+    # blake3 hash
+    msg_hash = hashlib.blake2b(msg_input, digest_size=32).digest()
+    # Actually we need blake3 — use the same as Rust. Python doesn't have blake3 in stdlib.
+    # Use a fallback: try blake3 package, else use the raw bytes approach.
+    try:
+        import blake3 as _blake3
+        msg_hash = _blake3.blake3(msg_input).digest()
+    except ImportError:
+        # Fallback: sign the raw input without hashing (MUST install blake3 package)
+        raise RuntimeError("blake3 Python package required: pip install blake3")
+
+    signed = signing_key.sign(msg_hash)
+    signature = signed.signature  # 64 bytes
+
+    buf = bytearray()
+    buf.extend(miner)                             # [u8;32]
+    buf.extend(struct.pack("<Q", epoch))           # u64 LE
+    buf.extend(ref_block_hash)                     # [u8;32]
+    buf.extend(struct.pack("<Q", ref_block_height))  # u64 LE
+    buf.extend(signature)                          # [u8;64]
+    return bytes(buf)
+
+
 def build_transaction(
     tx_type: int,
     from_addr: bytes,

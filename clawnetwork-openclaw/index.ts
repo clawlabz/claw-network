@@ -842,6 +842,28 @@ async function sendMinerHeartbeat(cfg: PluginConfig, api: OpenClawApi): Promise<
   const binary = findBinary()
   if (!binary) return
 
+  // Try V3 checkin first; fall back to legacy heartbeat if not active
+  try {
+    const output = execFileSync(binary, [
+      'miner-checkin',
+      '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
+      '--data-dir', DATA_DIR,
+    ], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { HOME: os.homedir(), PATH: process.env.PATH || '' },
+    })
+    api.logger?.info?.(`[clawnetwork] ${output.trim()}`)
+    return
+  } catch (e: unknown) {
+    const msg = (e as Error).message || ''
+    if (!msg.includes('not yet active') && !msg.includes('method not found')) {
+      api.logger?.warn?.(`[clawnetwork] checkin failed: ${msg.slice(0, 200)}`)
+      return
+    }
+    // V3 not active — fall through to legacy heartbeat
+  }
+
   try {
     const output = execFileSync(binary, [
       'miner-heartbeat',

@@ -2,6 +2,7 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use claw_types::block::Block;
+use claw_types::state::MinerCheckinWitness;
 use claw_types::transaction::Transaction;
 
 /// Maximum P2P message size (1 MB).
@@ -23,6 +24,10 @@ pub fn topic_block(chain_id: &str) -> String {
 
 pub fn topic_vote(chain_id: &str) -> String {
     format!("claw/{}/vote/1", chain_id)
+}
+
+pub fn topic_miner_checkin(chain_id: &str) -> String {
+    format!("claw/{}/miner-checkin/1", chain_id)
 }
 
 /// Generate chain-id-scoped sync protocol string.
@@ -53,6 +58,8 @@ pub enum GossipMessage {
     NewBlock(Block),
     /// A BFT vote on a block for finality.
     Vote(BlockVote),
+    /// A miner checkin witness (V3 heartbeat replacement).
+    MinerCheckin(MinerCheckinWitness),
 }
 
 /// Sync request types.

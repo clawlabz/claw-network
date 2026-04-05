@@ -169,6 +169,7 @@ fn storage_block_persistence() {
         hash: [0u8; 32],
         signatures: Vec::new(),
         events: Vec::new(),
+        checkin_witnesses: Vec::new(),
     };
     genesis.hash = genesis.compute_hash();
     store.put_block(&genesis).unwrap();
@@ -191,6 +192,7 @@ fn storage_block_persistence() {
         hash: [0u8; 32],
         signatures: Vec::new(),
         events: Vec::new(),
+        checkin_witnesses: Vec::new(),
     };
     block1.hash = block1.compute_hash();
     store.put_block(&block1).unwrap();

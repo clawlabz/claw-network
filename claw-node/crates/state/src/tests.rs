@@ -944,6 +944,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         });
         state.miners.insert(addr2, MinerInfo {
             address: addr2,
@@ -958,6 +959,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         });
 
         let events = distribute_mining_rewards(&mut state, MINING_UPGRADE_HEIGHT);
@@ -1005,6 +1007,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         });
         state.miners.insert(addr2, MinerInfo {
             address: addr2,
@@ -1019,6 +1022,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         });
 
         distribute_mining_rewards(&mut state, MINING_UPGRADE_HEIGHT);
@@ -1082,6 +1086,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         });
 
         // At height 100 + MINER_GRACE_BLOCKS - 1: still active
@@ -1128,6 +1133,7 @@ mod tests {
             pending_epoch: 0,
             epoch_attendance: 0xFFF,
             consecutive_misses: 0,
+            last_checkin_epoch: 0,
         });
 
         state.block_height = HEARTBEAT_V2_HEIGHT;
