@@ -2,7 +2,7 @@
   "id": "clawnetwork",
   "name": "ClawNetwork Node",
   "description": "Run a ClawNetwork blockchain node inside OpenClaw. Every agent is a node.",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

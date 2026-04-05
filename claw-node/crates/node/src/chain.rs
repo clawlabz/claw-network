@@ -1178,6 +1178,7 @@ impl Chain {
                     if !known_peers.contains(&peer) {
                         known_peers.push(peer);
                     }
+                    let peer_count = known_peers.len();
                     let request = {
                         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                         inner.connected_peer_ids = known_peers.iter().map(|p| p.to_string()).collect();
@@ -1186,14 +1187,14 @@ impl Chain {
                             let is_bootstrap = inner.bootstrap_peer_ids.iter().any(|id| id == &peer_str);
                             if is_bootstrap {
                                 inner.fast_sync_pending = false;
-                                tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Fast sync: requesting state snapshot from bootstrap peer");
+                                tracing::info!(%peer, peers = peer_count, "Fast sync: requesting state snapshot from bootstrap peer");
                                 SyncRequest::GetStateSnapshot
                             } else {
-                                tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Fast sync pending — skipping non-bootstrap peer, sending GetStatus");
+                                tracing::info!(%peer, peers = peer_count, "Fast sync pending — skipping non-bootstrap peer, sending GetStatus");
                                 SyncRequest::GetStatus
                             }
                         } else {
-                            tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer connected — requesting chain status");
+                            tracing::info!(%peer, peers = peer_count, "Peer connected — requesting chain status");
                             SyncRequest::GetStatus
                         }
                     };
@@ -1208,7 +1209,7 @@ impl Chain {
                         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                         inner.connected_peer_ids = known_peers.iter().map(|p| p.to_string()).collect();
                     }
-                    tracing::info!(%peer, peers = self.get_p2p_peer_count(), "Peer disconnected");
+                    tracing::info!(%peer, peers = known_peers.len(), "Peer disconnected");
                 }
             }
                 } // close Some(event)
