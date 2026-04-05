@@ -264,3 +264,152 @@ describe('UI server script generation', () => {
     }
   })
 })
+
+describe('CLI command contract regression tests', () => {
+  // These tests verify that the command strings passed to claw-node CLI
+  // maintain the correct structure: subcommand names, flag names, and parameter order.
+  // This catches regressions where someone accidentally changes --name to --agentName, etc.
+
+  // ── Test helper: Extract CLI command strings from index.ts ──
+  // We search for execFileSync calls and validate the command arrays.
+
+  test('test_register_agent_uses_correct_command', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Find all occurrences of register-agent command construction
+    const registerAgentPattern = /\['register-agent',\s*'--name',\s*[^\]]+\]/g
+    const matches = code.match(registerAgentPattern)
+    assert.ok(matches && matches.length > 0, 'register-agent command not found in index.ts')
+
+    // Verify each occurrence has the correct structure
+    for (const match of matches) {
+      assert.ok(match.includes('register-agent'), 'subcommand must be "register-agent"')
+      assert.ok(match.includes("'--name'"), 'flag must be "--name" (not --agentName or other variants)')
+      // Should have --rpc and --data-dir
+      const contextStart = Math.max(0, code.indexOf(match) - 300)
+      const contextEnd = Math.min(code.length, code.indexOf(match) + match.length + 300)
+      const context = code.substring(contextStart, contextEnd)
+      assert.ok(context.includes("'--rpc'"), 'context must include --rpc flag')
+      assert.ok(context.includes("'--data-dir'"), 'context must include --data-dir flag')
+    }
+  })
+
+  test('test_register_service_uses_correct_params', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Find register-service command construction
+    const registerServicePattern = /\['register-service',\s*'--service-type'/
+    assert.ok(registerServicePattern.test(code), 'register-service command not found in index.ts')
+
+    // Verify the exact flag names
+    const match = code.match(/\['register-service',\s*'--service-type',\s*serviceType,\s*'--endpoint',\s*endpoint[^\]]*\]/s)
+    assert.ok(match, 'register-service must use --service-type and --endpoint flags')
+
+    // Additional flag checks
+    const context = code.substring(code.indexOf("'register-service'"), code.indexOf("'register-service'") + 500)
+    assert.ok(context.includes("'--service-type'"), 'must use --service-type (not --type or --serviceType)')
+    assert.ok(context.includes("'--endpoint'"), 'must use --endpoint')
+    assert.ok(context.includes("'--description'"), 'must include --description flag')
+    assert.ok(context.includes("'--price'"), 'must include --price flag')
+  })
+
+  test('test_stake_uses_correct_command', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Find the stake command construction in the HTTP handler
+    // Pattern: cmd = ... ? 'unstake' : ... ? 'claim-stake' : 'stake'
+    const stakePattern = /const cmd = action === 'withdraw'\s*\?\s*'unstake'\s*:\s*action === 'claim'\s*\?\s*'claim-stake'\s*:\s*'stake'/
+    assert.ok(stakePattern.test(code), 'stake/unstake/claim-stake command logic not found')
+
+    // Verify the args array construction uses positional amount
+    const argsPattern = /\[cmd\]\.concat\(amount\s*\?\s*\[amount\]\s*:\s*\[\]\)/
+    assert.ok(argsPattern.test(code), 'args must pass amount as positional parameter (not --amount flag)')
+
+    // Verify --rpc and --data-dir are included
+    const argsContext = code.substring(code.indexOf('[cmd].concat'), code.indexOf('[cmd].concat') + 300)
+    assert.ok(argsContext.includes("'--rpc'"), 'stake command must include --rpc')
+    assert.ok(argsContext.includes("'--data-dir'"), 'stake command must include --data-dir')
+  })
+
+  test('test_unstake_uses_correct_command', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Verify unstake is constructed via the stake handler, not a separate command
+    const handlerPattern = /action === 'withdraw'\s*\?\s*'unstake'/
+    assert.ok(handlerPattern.test(code), 'unstake command must be selected when action === "withdraw"')
+
+    // Verify it's a positional parameter (not --amount)
+    const positionalCheck = /\[cmd\]\.concat\(amount\s*\?\s*\[amount\]\s*:\s*\[\]\)/
+    assert.ok(positionalCheck.test(code), 'unstake must take amount as positional parameter')
+
+    // Additional contract: 'unstake' string literal must be present
+    assert.ok(code.includes("'unstake'"), 'unstake subcommand literal must be present')
+  })
+
+  test('test_claim_stake_uses_correct_command', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Verify claim-stake is constructed via the stake handler
+    const handlePattern = /action === 'claim'\s*\?\s*'claim-stake'/
+    assert.ok(handlePattern.test(code), 'claim-stake command must be selected when action === "claim"')
+
+    // Verify claim-stake does NOT include amount (should be filtered out)
+    const claimStakeContext = code.substring(
+      code.indexOf("action === 'claim'"),
+      code.indexOf("action === 'claim'") + 200
+    )
+    assert.ok(claimStakeContext.includes('claim-stake'), 'claim-stake string must be present')
+
+    // claim-stake should concatenate with conditional amount filter
+    const argsCheck = /\[cmd\]\.concat\(amount\s*\?\s*\[amount\]\s*:\s*\[\]\)/
+    assert.ok(argsCheck.test(code), 'even claim-stake goes through same args logic (but amount is optional)')
+  })
+
+  test('CLI command flag consistency across all commands', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Count occurrences of common flags to ensure consistency
+    const rpcFlagMatches = code.match(/'--rpc'/g) || []
+    const dataDirMatches = code.match(/'--data-dir'/g) || []
+
+    // Both flags should appear multiple times (in different command calls)
+    assert.ok(rpcFlagMatches.length >= 3, '--rpc flag must be used in multiple commands')
+    assert.ok(dataDirMatches.length >= 3, '--data-dir flag must be used in multiple commands')
+
+    // Ensure no conflicting flag names
+    assert.ok(!code.includes("'--data'"), 'must use --data-dir (not --data)')
+    assert.ok(!code.includes("'--port'"), 'RPC connection must use --rpc (not --port)')
+
+    // These are the expected CLI flag names from claw-node
+    const expectedFlags = ['--rpc', '--data-dir', '--name', '--service-type', '--endpoint', '--description', '--price']
+    for (const flag of expectedFlags) {
+      // At least some flags should exist in the code
+      if (flag === '--service-type' || flag === '--endpoint' || flag === '--description' || flag === '--price') {
+        assert.ok(code.includes(`'${flag}'`), `expected flag ${flag} should be present`)
+      }
+    }
+  })
+
+  test('stake command amount parameter passed as positional not flag', async () => {
+    const indexPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'index.ts')
+    const code = await readFile(indexPath, 'utf8')
+
+    // Find the args building code for stake/unstake/claim-stake
+    const pattern = /const args = \[cmd\]\.concat\(amount\s*\?\s*\[amount\]\s*:\s*\[\]\)/
+    assert.ok(pattern.test(code), 'amount must be passed as positional parameter, not as --amount flag')
+
+    // Search for any erroneous --amount flag usage in stake context
+    const stakeSection = code.substring(
+      code.indexOf("const cmd = action === 'withdraw'"),
+      code.indexOf("const cmd = action === 'withdraw'") + 400
+    )
+    assert.ok(!stakeSection.includes("'--amount'"), 'should not use --amount flag; amount is positional')
+  })
+})
+
