@@ -2,7 +2,7 @@
 // CP↔CLAW Bridge types
 // ---------------------------------------------------------------------------
 
-export type BridgeDirection = 'cp_to_clw' | 'clw_to_cp';
+export type BridgeDirection = 'cp_to_claw' | 'claw_to_cp';
 
 export interface BridgeConfig {
   /** Supabase URL */
@@ -28,7 +28,7 @@ export interface BridgeResult {
   cpAmount: number;
   /** CLAW base units involved (bigint as string) */
   clawAmount: string;
-  /** Transaction hash on chain (for cp_to_clw) or burn confirmation */
+  /** Transaction hash on chain (for cp_to_claw) or burn confirmation */
   txHash?: string;
   /** Ledger entry ID in Supabase */
   ledgerId?: string;

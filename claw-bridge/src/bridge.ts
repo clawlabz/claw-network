@@ -27,12 +27,12 @@ const CLAW_DECIMALS_MULTIPLIER = 1_000_000_000n; // 10^9
  * All operations are recorded in `shared_point_ledger` and `shared_exchange_orders`.
  */
 export class CpClawBridge {
-  private supabase: SupabaseClient;
-  private clawClient: ClawClient;
-  private hotWallet: Wallet;
-  private rate: number;
-  private dailyPerAgent: number;
-  private dailyGlobal: number;
+  protected supabase: SupabaseClient;
+  protected clawClient: ClawClient;
+  protected hotWallet: Wallet;
+  protected rate: number;
+  protected dailyPerAgent: number;
+  protected dailyGlobal: number;
 
   constructor(config: BridgeConfig) {
     this.supabase = createClient(config.supabaseUrl, config.supabaseServiceKey);
@@ -44,6 +44,17 @@ export class CpClawBridge {
     this.rate = config.exchangeRate ?? DEFAULT_RATE;
     this.dailyPerAgent = config.dailyLimitPerAgent ?? DEFAULT_DAILY_PER_AGENT;
     this.dailyGlobal = config.dailyLimitGlobal ?? DEFAULT_DAILY_GLOBAL;
+  }
+
+  /** FOR TESTING ONLY: Replace dependencies with mocks. */
+  __setDependencies(deps: {
+    supabase?: SupabaseClient;
+    clawClient?: ClawClient;
+    hotWallet?: Wallet;
+  }): void {
+    if (deps.supabase) this.supabase = deps.supabase;
+    if (deps.clawClient) this.clawClient = deps.clawClient;
+    if (deps.hotWallet) this.hotWallet = deps.hotWallet;
   }
 
   /** Get the hot wallet address (hex). */
@@ -63,7 +74,7 @@ export class CpClawBridge {
     cpAmount: number,
     clawRecipient: string,
   ): Promise<BridgeResult> {
-    const direction: BridgeDirection = 'cp_to_clw';
+    const direction: BridgeDirection = 'cp_to_claw';
     const clawBaseUnits = BigInt(Math.floor(cpAmount * this.rate));
     const clawAmount = (clawBaseUnits * CLAW_DECIMALS_MULTIPLIER).toString();
 
@@ -144,7 +155,7 @@ export class CpClawBridge {
     clawBaseUnits: bigint,
     txHash: string,
   ): Promise<BridgeResult> {
-    const direction: BridgeDirection = 'clw_to_cp';
+    const direction: BridgeDirection = 'claw_to_cp';
     const cpAmount = Math.floor(Number(clawBaseUnits / CLAW_DECIMALS_MULTIPLIER) / this.rate);
     const clawAmount = clawBaseUnits.toString();
 
@@ -161,23 +172,55 @@ export class CpClawBridge {
       // 1. Rate limit check
       await this.checkDailyLimit(agentId, cpAmount);
 
-      // 2. Verify the tx exists on-chain (receipt exists if tx is confirmed)
-      const receipt = await this.clawClient.getTransactionReceipt(txHash);
-      if (!receipt) {
+      // 2. Fetch and verify the full transaction on-chain
+      const tx = await this.clawClient.getTransaction(txHash);
+      if (!tx) {
         return { success: false, direction, cpAmount, clawAmount, error: 'Transaction not found on chain' };
       }
 
-      // Receipt exists and includes blockHeight and transactionIndex, confirming the transaction was included in a block.
-      // Full transaction details (sender, receiver, amount) cannot be verified via the SDK's current receipt endpoint,
-      // but confirmation on-chain provides reasonable assurance the transaction occurred.
-      // Note: For stricter validation in production, integrate with full transaction querying when SDK is extended.
+      /**
+       * FULL TRANSACTION VALIDATION:
+       *
+       * VERIFIED:
+       *   1. Transaction exists and is confirmed (blockHeight > 0) ✓
+       *   2. Transaction type is TokenTransfer (type === 1) ✓
+       *   3. Receiver is the bridge hot wallet ✓
+       *   4. Amount matches the claimed CLAW base units ✓
+       *
+       * Validation Details:
+       *   - tx.txType === 1 (TokenTransfer)
+       *   - tx.to === hotWalletAddress (receiver verification)
+       *   - BigInt(tx.amount) === clawBaseUnits (amount match, both in base units)
+       */
+
+      // Verify transaction is confirmed (included in a block)
+      if (!tx.blockHeight || tx.blockHeight <= 0) {
+        return { success: false, direction, cpAmount, clawAmount, error: 'Transaction is not yet confirmed' };
+      }
+
+      // Verify transaction type is TokenTransfer (1)
+      if (tx.txType !== 1) {
+        return { success: false, direction, cpAmount, clawAmount, error: 'Transaction is not a token transfer' };
+      }
+
+      // Verify receiver is the bridge hot wallet
+      const hotWalletAddress = this.hotWallet.address;
+      if (tx.to !== hotWalletAddress) {
+        return { success: false, direction, cpAmount, clawAmount, error: 'Transaction recipient is not the bridge hot wallet' };
+      }
+
+      // Verify amount matches the claimed amount (both in base units, no conversion needed)
+      const expectedAmount = clawBaseUnits.toString();
+      if (tx.amount !== expectedAmount) {
+        return { success: false, direction, cpAmount, clawAmount, error: 'Transaction amount does not match claimed amount' };
+      }
 
       // 3. Check for duplicate bridge using txHash (prevent double-credit with idempotent key)
       const { data: existing } = await this.supabase
         .from('shared_exchange_orders')
         .select('id')
         .eq('pair', 'CLAW/CP')
-        .eq('direction', 'clw_to_cp')
+        .eq('direction', 'claw_to_cp')
         .eq('tx_hash', txHash)
         .single();
 
@@ -243,43 +286,67 @@ export class CpClawBridge {
     return account!;
   }
 
+  /**
+   * Check daily limits. All limits are in CP units.
+   * For claw_to_cp orders, source_amount is stored in CLAW base units,
+   * so we convert to CP using the rate and decimals multiplier.
+   * For cp_to_claw orders, source_amount is already in CP.
+   */
   private async checkDailyLimit(agentId: string, cpAmount: number): Promise<void> {
     const today = new Date().toISOString().split('T')[0];
 
-    // Per-agent daily limit
-    const { data: agentOrders } = await this.supabase
-      .from('shared_exchange_orders')
-      .select('source_amount')
-      .eq('account_id', agentId)
-      .gte('created_at', `${today}T00:00:00Z`)
-      .lte('created_at', `${today}T23:59:59Z`);
+    // Resolve agentId to point account ID (account_id in shared_exchange_orders)
+    const account = await this.getPointAccount(agentId);
+    const accountId = account?.id;
 
-    const agentTotal = (agentOrders ?? []).reduce(
-      (sum, o) => sum + Number(o.source_amount),
+    // Per-agent daily limit (normalized to CP)
+    const { data: agentOrders } = accountId
+      ? await this.supabase
+          .from('shared_exchange_orders')
+          .select('source_amount, direction')
+          .eq('account_id', accountId)
+          .gte('created_at', `${today}T00:00:00Z`)
+          .lte('created_at', `${today}T23:59:59Z`)
+      : { data: [] };
+
+    const agentTotalCp = (agentOrders ?? []).reduce(
+      (sum, o) => {
+        if (o.direction === 'cp_to_claw') {
+          // source_amount is already in CP
+          return sum + Number(o.source_amount);
+        }
+        // claw_to_cp: source_amount is in CLAW base units, convert to CP
+        return sum + Math.floor(Number(BigInt(o.source_amount) / CLAW_DECIMALS_MULTIPLIER) / this.rate);
+      },
       0,
     );
 
-    if (agentTotal + cpAmount > this.dailyPerAgent) {
+    if (agentTotalCp + cpAmount > this.dailyPerAgent) {
       throw new Error(
-        `Daily limit exceeded for agent. Used: ${agentTotal}, limit: ${this.dailyPerAgent}`,
+        `Daily limit exceeded for agent. Used: ${agentTotalCp} CP, limit: ${this.dailyPerAgent} CP`,
       );
     }
 
-    // Global daily limit
+    // Global daily limit (normalized to CP)
     const { data: globalOrders } = await this.supabase
       .from('shared_exchange_orders')
-      .select('source_amount')
+      .select('source_amount, direction')
       .gte('created_at', `${today}T00:00:00Z`)
       .lte('created_at', `${today}T23:59:59Z`);
 
-    const globalTotal = (globalOrders ?? []).reduce(
-      (sum, o) => sum + Number(o.source_amount),
+    const globalTotalCp = (globalOrders ?? []).reduce(
+      (sum, o) => {
+        if (o.direction === 'cp_to_claw') {
+          return sum + Number(o.source_amount);
+        }
+        return sum + Math.floor(Number(BigInt(o.source_amount) / CLAW_DECIMALS_MULTIPLIER) / this.rate);
+      },
       0,
     );
 
-    if (globalTotal + cpAmount > this.dailyGlobal) {
+    if (globalTotalCp + cpAmount > this.dailyGlobal) {
       throw new Error(
-        `Global daily limit exceeded. Used: ${globalTotal}, limit: ${this.dailyGlobal}`,
+        `Global daily limit exceeded. Used: ${globalTotalCp} CP, limit: ${this.dailyGlobal} CP`,
       );
     }
   }
@@ -296,10 +363,10 @@ export class CpClawBridge {
     const account = await this.getPointAccount(agentId);
     await this.supabase.from('shared_exchange_orders').insert({
       account_id: account?.id,
-      pair: direction === 'cp_to_clw' ? 'CP/CLAW' : 'CLAW/CP',
+      pair: direction === 'cp_to_claw' ? 'CP/CLAW' : 'CLAW/CP',
       direction,
-      source_amount: direction === 'cp_to_clw' ? cpAmount : Number(clawAmount),
-      target_amount: direction === 'cp_to_clw' ? Number(clawAmount) : cpAmount,
+      source_amount: direction === 'cp_to_claw' ? cpAmount : Number(clawAmount),
+      target_amount: direction === 'cp_to_claw' ? Number(clawAmount) : cpAmount,
       rate: this.rate,
       status: 'COMPLETED',
       tx_hash: txHash,
