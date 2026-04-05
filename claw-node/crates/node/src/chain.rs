@@ -215,13 +215,25 @@ impl Chain {
         let validator_set = ValidatorSet::with_initial_stakes(&state.stakes);
 
         // Restore slashing state from WorldState persisted fields.
-        let slashing = SlashingState {
+        let mut slashing = SlashingState {
             jailed: state.jailed_validators.clone(),
             missed_slots: state.validator_missed_slots.clone(),
             assigned_slots: state.validator_assigned_slots.clone(),
             processed_evidence: state.processed_evidence.clone(),
             ..Default::default()
         };
+
+        // Replay epoch rotation if the latest block is on an epoch boundary.
+        // Snapshots are saved BEFORE epoch rotation (uptime clear, counter reset),
+        // so on restart the state contains stale counters. Replaying here ensures
+        // the next block's state_root matches the producing node's.
+        if ValidatorSet::is_epoch_boundary(latest_block.height) {
+            slashing.reset_epoch_counters();
+            state.validator_uptime.clear();
+            state.validator_missed_slots.clear();
+            state.validator_assigned_slots.clear();
+            tracing::info!(height = latest_block.height, "Replayed epoch rotation on startup");
+        }
 
         // Compute total transaction count from all stored blocks.
         // Iterate from block 0 to latest_block.height, accumulating transaction counts.
@@ -1453,6 +1465,20 @@ impl Chain {
                             tracing::error!(error = %e, "Failed to store snapshot block");
                         }
                         inner.last_accepted_snapshot_height = *height;
+
+                        // Replay epoch rotation if snapshot height is an epoch boundary.
+                        // The snapshot is saved BEFORE epoch rotation in apply_remote_block,
+                        // so restoring a snapshot at an epoch boundary leaves stale
+                        // validator_uptime and slashing counters. Without this replay,
+                        // the next block's state_root will diverge from the producer's.
+                        if ValidatorSet::is_epoch_boundary(*height) {
+                            inner.slashing.reset_epoch_counters();
+                            inner.state.validator_uptime.clear();
+                            inner.state.validator_missed_slots.clear();
+                            inner.state.validator_assigned_slots.clear();
+                            Self::sync_slashing_to_world_state(&mut inner);
+                            tracing::info!(height, "Replayed epoch rotation after snapshot restore");
+                        }
                         tracing::info!(height, "Fork recovery: state snapshot applied, chain reset to height {}", height);
 
                         // Request blocks after the snapshot height to continue syncing
