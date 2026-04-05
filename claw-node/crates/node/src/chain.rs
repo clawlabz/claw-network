@@ -1149,10 +1149,15 @@ impl Chain {
                 }
                 NetworkEvent::SyncResponse { peer, response } => {
                     if let Some(follow_up) = self.handle_sync_response(&response) {
-                        // Peer rotation: for snapshot requests, try a different peer
-                        // to avoid repeatedly requesting from a peer with stale data.
-                        let target = if matches!(follow_up, SyncRequest::GetStateSnapshot | SyncRequest::GetStatus) && known_peers.len() > 1 {
-                            // Round-robin: pick a peer that isn't the one that just responded
+                        // Peer routing for follow-up requests:
+                        // - After a Status response → send GetStateSnapshot to the SAME peer
+                        //   (that peer reported it's ahead, so it has the data we need).
+                        // - After a stale StateSnapshot → rotate to a DIFFERENT peer
+                        //   (the current peer's snapshot was too old).
+                        let target = if matches!(&response, SyncResponse::StateSnapshot { .. })
+                            && matches!(follow_up, SyncRequest::GetStateSnapshot | SyncRequest::GetStatus)
+                            && known_peers.len() > 1
+                        {
                             known_peers.iter().find(|p| *p != &peer).copied().unwrap_or(peer)
                         } else {
                             peer
