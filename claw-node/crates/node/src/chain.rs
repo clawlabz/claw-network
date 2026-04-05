@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use claw_consensus::{elect_proposer, elect_fallback_proposer, quorum, SlashingState, ValidatorSet, BLOCK_TIME_SECS};
@@ -32,7 +32,9 @@ pub struct TxReceiptResponse {
 #[derive(Clone)]
 pub struct Chain {
     inner: Arc<Mutex<ChainInner>>,
-    p2p_peer_count: Arc<AtomicUsize>,
+    /// Unused — peer count now derived from connected_peer_ids.len().
+    /// Retained to avoid breaking the struct layout during this release.
+    _p2p_peer_count: Arc<AtomicUsize>,
 }
 
 struct ChainInner {
@@ -281,7 +283,7 @@ impl Chain {
                 last_accepted_snapshot_height: 0,
                 connected_peer_ids: Vec::new(),
             })),
-            p2p_peer_count: Arc::new(AtomicUsize::new(0)),
+            _p2p_peer_count: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -1173,7 +1175,6 @@ impl Chain {
                     }
                 }
                 NetworkEvent::PeerConnected(peer) => {
-                    self.peer_connected();
                     if !known_peers.contains(&peer) {
                         known_peers.push(peer);
                     }
@@ -1202,7 +1203,6 @@ impl Chain {
                     });
                 }
                 NetworkEvent::PeerDisconnected(peer) => {
-                    self.peer_disconnected();
                     known_peers.retain(|p| p != &peer);
                     {
                         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
@@ -1710,28 +1710,16 @@ impl Chain {
         None
     }
 
-    /// Get P2P connected peer count.
+    /// Get P2P connected peer count (from deduplicated peer list).
     pub fn get_p2p_peer_count(&self) -> usize {
-        self.p2p_peer_count.load(Ordering::Relaxed)
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        inner.connected_peer_ids.len()
     }
 
     /// Get connected peer IDs for /peers RPC endpoint.
     pub fn get_connected_peers(&self) -> Vec<String> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
         inner.connected_peer_ids.clone()
-    }
-
-    /// Increment P2P peer count.
-    pub fn peer_connected(&self) {
-        self.p2p_peer_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Decrement P2P peer count.
-    pub fn peer_disconnected(&self) {
-        // Use fetch_update to prevent underflow
-        let _ = self.p2p_peer_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            if current > 0 { Some(current - 1) } else { None }
-        });
     }
 
     /// Get current epoch.
