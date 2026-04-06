@@ -104,22 +104,23 @@ def refresh_daily_stats(cur):
         WHERE network = %s
         GROUP BY DATE(TO_TIMESTAMP(timestamp)), network
     """, (config.NETWORK,))
-    # type_distribution as separate update
+    # type_distribution: build per-day type counts
     cur.execute("""
-        UPDATE explorer_daily_stats ds SET type_distribution = sub.td
-        FROM (
-            SELECT DATE(TO_TIMESTAMP(timestamp)) AS d, network,
-                   jsonb_object_agg(tx_type::TEXT, cnt) AS td
-            FROM (
-                SELECT timestamp, network, tx_type::TEXT, COUNT(*) AS cnt
-                FROM explorer_transactions
-                WHERE network = %s
-                GROUP BY DATE(TO_TIMESTAMP(timestamp)), network, tx_type
-            ) grouped
-            GROUP BY d, network
-        ) sub
-        WHERE ds.date = sub.d AND ds.network = sub.network
+        SELECT DATE(TO_TIMESTAMP(timestamp)) AS d, tx_type, COUNT(*) AS cnt
+        FROM explorer_transactions
+        WHERE network = %s
+        GROUP BY d, tx_type
+        ORDER BY d
     """, (config.NETWORK,))
+    daily_types: dict[str, dict[str, int]] = {}
+    for row in cur.fetchall():
+        day_str = str(row[0])
+        daily_types.setdefault(day_str, {})[str(row[1])] = row[2]
+    for day_str, dist in daily_types.items():
+        cur.execute(
+            "UPDATE explorer_daily_stats SET type_distribution = %s WHERE date = %s AND network = %s",
+            (json.dumps(dist), day_str, config.NETWORK),
+        )
 
 
 INSERT_TX = """
