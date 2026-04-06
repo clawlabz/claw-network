@@ -780,6 +780,17 @@ impl Chain {
             }
         }
 
+        // Persist receipts for contract transactions
+        let receipt_pairs: Vec<_> = inner.state.receipts.iter()
+            .filter(|(h, _)| block.transactions.iter().any(|tx| tx.hash() == **h))
+            .map(|(h, r)| (h, r))
+            .collect();
+        if !receipt_pairs.is_empty() {
+            if let Err(e) = inner.store.put_receipts(&receipt_pairs) {
+                tracing::warn!(error = %e, "Failed to persist receipts");
+            }
+        }
+
         // Increment total transaction count
         inner.total_tx_count += block.transactions.len() as u64;
 
@@ -1168,6 +1179,17 @@ impl Chain {
             }
             Err(e) => {
                 return Err(format!("state serialization failed: {e}"));
+            }
+        }
+
+        // Persist receipts for contract transactions
+        let receipt_pairs: Vec<_> = inner.state.receipts.iter()
+            .filter(|(h, _)| block.transactions.iter().any(|tx| tx.hash() == **h))
+            .map(|(h, r)| (h, r))
+            .collect();
+        if !receipt_pairs.is_empty() {
+            if let Err(e) = inner.store.put_receipts(&receipt_pairs) {
+                tracing::warn!(error = %e, "Failed to persist receipts");
             }
         }
 
@@ -1905,7 +1927,9 @@ impl Chain {
             if let Ok(Some(block)) = inner.store.get_block(height) {
                 for (i, tx) in block.transactions.iter().enumerate() {
                     if tx.hash() == *tx_hash {
-                        let receipt = inner.state.receipts.get(tx_hash).cloned();
+                        // Try in-memory first, then fall back to persisted receipts
+                        let receipt = inner.state.receipts.get(tx_hash).cloned()
+                            .or_else(|| inner.store.get_receipt(tx_hash).ok().flatten());
                         return Some(TxReceiptResponse {
                             block_height: height,
                             transaction_index: i,

@@ -1,9 +1,9 @@
 {
-  "latest": "0.5.2",
+  "latest": "0.5.3",
   "minimum": "0.5.1",
   "critical_minimum": "0.5.1",
-  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.5.2",
-  "changelog": "RPC: unify tx parsing with extract_to_and_amount(), fix missing to/amount for TokenApprove, TokenBurn, StakeWithdraw, ContractCall",
+  "release_url": "https://github.com/clawlabz/claw-network/releases/tag/v0.5.3",
+  "changelog": "Persist contract transaction receipts to redb; RPC receipt lookup falls back to stored receipts",
   "announcement": null,
   "halt_height": null,
   "halt_message": null,

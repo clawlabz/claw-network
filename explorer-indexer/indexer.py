@@ -171,15 +171,20 @@ def index_block(cur, height: int, fetch_receipt: bool = False):
         if not tx_parsed:
             continue
 
-        # Receipt: only fetch in realtime mode (historical receipts not persisted by node)
-        success = None
-        if fetch_receipt:
+        tx_type = tx_parsed.get("txType", -1)
+
+        # Determine success:
+        # - Contract txs (6=Deploy, 7=Call, 18=UpgradeExecute): need receipt from node
+        # - All other txs: if included in a block, they succeeded
+        CONTRACT_TX_TYPES = {6, 7, 18}
+        if tx_type in CONTRACT_TX_TYPES and fetch_receipt:
             receipt_data = get_tx_receipt(tx_hash)
+            success = None
             if receipt_data:
                 receipt = receipt_data.get("receipt", receipt_data)
                 success = receipt.get("success")
-
-        tx_type = tx_parsed.get("txType", -1)
+        else:
+            success = True if tx_type not in CONTRACT_TX_TYPES else None
         type_name = tx_parsed.get("typeName", f"Unknown({tx_type})")
         from_addr = tx_parsed.get("from", "")
         to_addr = tx_parsed.get("to")
@@ -309,6 +314,16 @@ def main():
         conn.commit()
         log.info("Daily stats refreshed")
         last_height = chain_height
+
+    # One-time fix: set success=true for non-contract txs that have null success
+    cur.execute("""
+        UPDATE explorer_transactions SET success = true
+        WHERE success IS NULL AND tx_type NOT IN (6, 7, 18) AND network = %s
+    """, (config.NETWORK,))
+    fixed = cur.rowcount
+    if fixed > 0:
+        log.info("Fixed %d non-contract txs with null success → true", fixed)
+        conn.commit()
 
     # Switch to realtime
     log.info("Entering realtime mode (poll every %ds)", config.POLL_INTERVAL)

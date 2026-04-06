@@ -13,6 +13,8 @@ const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const TX_INDEX: TableDefinition<&[u8], u64> = TableDefinition::new("tx_index");
 /// Maps address (32 bytes hex) → borsh-encoded Vec<(block_height, tx_index_in_block)>.
 const ADDRESS_TX_INDEX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("address_tx_index");
+/// Maps tx_hash (32 bytes) → borsh-encoded TransactionReceipt.
+const RECEIPTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("receipts");
 
 const META_LATEST_HEIGHT: &str = "latest_height";
 const META_STATE_SNAPSHOT: &str = "state_snapshot";
@@ -80,6 +82,7 @@ impl ChainStore {
             let _ = write_txn.open_table(META)?;
             let _ = write_txn.open_table(TX_INDEX)?;
             let _ = write_txn.open_table(ADDRESS_TX_INDEX)?;
+            let _ = write_txn.open_table(RECEIPTS)?;
         }
         write_txn.commit()?;
 
@@ -242,6 +245,37 @@ impl ChainStore {
 
         match table.get(tx_hash.as_slice())? {
             Some(data) => Ok(Some(data.value())),
+            None => Ok(None),
+        }
+    }
+
+    /// Store a transaction receipt.
+    pub fn put_receipts(&self, receipts: &[(& [u8; 32], &claw_types::TransactionReceipt)]) -> Result<(), StoreError> {
+        if receipts.is_empty() {
+            return Ok(());
+        }
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(RECEIPTS)?;
+            for (tx_hash, receipt) in receipts {
+                let bytes = borsh::to_vec(receipt).map_err(|e| StoreError::Serialize(e.to_string()))?;
+                table.insert(tx_hash.as_slice(), bytes.as_slice())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Get a transaction receipt by hash.
+    pub fn get_receipt(&self, tx_hash: &[u8; 32]) -> Result<Option<claw_types::TransactionReceipt>, StoreError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(RECEIPTS)?;
+        match table.get(tx_hash.as_slice())? {
+            Some(data) => {
+                let receipt = claw_types::TransactionReceipt::try_from_slice(data.value())
+                    .map_err(|e| StoreError::Serialize(e.to_string()))?;
+                Ok(Some(receipt))
+            }
             None => Ok(None),
         }
     }
