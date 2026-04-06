@@ -86,6 +86,42 @@ def update_sync_state(cur, height: int, status: str = "syncing", error_msg: str 
     )
 
 
+def refresh_daily_stats(cur):
+    """Rebuild explorer_daily_stats from explorer_transactions."""
+    cur.execute("DELETE FROM explorer_daily_stats WHERE network = %s", (config.NETWORK,))
+    cur.execute("""
+        INSERT INTO explorer_daily_stats
+            (date, network, tx_count, transfer_volume, unique_senders, unique_receivers)
+        SELECT
+            DATE(TO_TIMESTAMP(timestamp)),
+            network,
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN tx_type = 1 AND amount IS NOT NULL
+                         THEN amount::numeric ELSE 0 END)::TEXT, '0'),
+            COUNT(DISTINCT from_addr),
+            COUNT(DISTINCT to_addr) FILTER (WHERE to_addr IS NOT NULL)
+        FROM explorer_transactions
+        WHERE network = %s
+        GROUP BY DATE(TO_TIMESTAMP(timestamp)), network
+    """, (config.NETWORK,))
+    # type_distribution as separate update
+    cur.execute("""
+        UPDATE explorer_daily_stats ds SET type_distribution = sub.td
+        FROM (
+            SELECT DATE(TO_TIMESTAMP(timestamp)) AS d, network,
+                   jsonb_object_agg(tx_type::TEXT, cnt) AS td
+            FROM (
+                SELECT timestamp, network, tx_type::TEXT, COUNT(*) AS cnt
+                FROM explorer_transactions
+                WHERE network = %s
+                GROUP BY DATE(TO_TIMESTAMP(timestamp)), network, tx_type
+            ) grouped
+            GROUP BY d, network
+        ) sub
+        WHERE ds.date = sub.d AND ds.network = sub.network
+    """, (config.NETWORK,))
+
+
 INSERT_TX = """
     INSERT INTO explorer_transactions
         (hash, network, tx_type, type_name, from_addr, to_addr, amount, fee,
@@ -111,7 +147,7 @@ def extract_tx_hash(tx_raw: dict) -> str | None:
 # ── Core indexing ────────────────────────────────────────────────────────────
 
 
-def index_block(cur, height: int):
+def index_block(cur, height: int, fetch_receipt: bool = False):
     """Index all transactions in a single block."""
     block = get_block(height)
     if block is None:
@@ -134,12 +170,13 @@ def index_block(cur, height: int):
         if not tx_parsed:
             continue
 
-        # Get receipt for success status
-        receipt_data = get_tx_receipt(tx_hash)
+        # Receipt: only fetch in realtime mode (historical receipts not persisted by node)
         success = None
-        if receipt_data:
-            receipt = receipt_data.get("receipt", receipt_data)
-            success = receipt.get("success")
+        if fetch_receipt:
+            receipt_data = get_tx_receipt(tx_hash)
+            if receipt_data:
+                receipt = receipt_data.get("receipt", receipt_data)
+                success = receipt.get("success")
 
         tx_type = tx_parsed.get("txType", -1)
         type_name = tx_parsed.get("typeName", f"Unknown({tx_type})")
@@ -222,7 +259,7 @@ def run_realtime(conn, last_height: int):
                 continue
 
             for h in range(current + 1, chain_height + 1):
-                count = index_block(cur, h)
+                count = index_block(cur, h, fetch_receipt=True)
                 if count > 0:
                     log.info("Block %d: %d txs indexed", h, count)
 
@@ -266,6 +303,10 @@ def main():
         log.info("Starting backfill from %d to %d (%d blocks)", last_height + 1, chain_height, chain_height - last_height)
         total = run_backfill(conn, last_height, chain_height)
         log.info("Backfill complete: %d transactions indexed", total)
+        log.info("Refreshing daily stats...")
+        refresh_daily_stats(cur)
+        conn.commit()
+        log.info("Daily stats refreshed")
         last_height = chain_height
 
     # Switch to realtime
