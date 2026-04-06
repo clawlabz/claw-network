@@ -1,0 +1,17 @@
+[Unit]
+Description=ClawNetwork Explorer Indexer
+After=postgresql.service clawnet-mainnet.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=claw
+Group=claw
+WorkingDirectory=/opt/explorer-indexer
+ExecStart=/usr/bin/python3 indexer.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/explorer-indexer/.env
+
+[Install]
+WantedBy=multi-user.target

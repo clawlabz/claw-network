@@ -234,14 +234,14 @@ async fn handle_rpc(
                     Some((tx, block_height, timestamp)) => {
                         let tx_hash = tx.hash();
                         let type_name = tx_type_name(tx.tx_type);
-                        let (to, amount) = parse_tx_recipient(&tx);
+                        let (to, amount) = extract_to_and_amount(&tx);
                         Ok(serde_json::json!({
                             "hash": hex::encode(tx_hash),
                             "txType": tx.tx_type as u8,
                             "typeName": type_name,
                             "from": hex::encode(tx.from),
-                            "to": to.map(|addr| hex::encode(addr)),
-                            "amount": amount.map(|a| a.to_string()),
+                            "to": to,
+                            "amount": amount,
                             "nonce": tx.nonce,
                             "blockHeight": block_height,
                             "timestamp": timestamp,
@@ -606,14 +606,14 @@ async fn handle_rpc(
             let results: Vec<serde_json::Value> = txs.into_iter().map(|(height, _tx_idx, tx, timestamp)| {
                 let tx_hash = tx.hash();
                 let type_name = tx_type_name(tx.tx_type);
-                let (to, amount) = parse_tx_recipient(&tx);
+                let (to, amount) = extract_to_and_amount(&tx);
                 serde_json::json!({
                     "hash": hex::encode(tx_hash),
                     "txType": tx.tx_type as u8,
                     "typeName": type_name,
                     "from": hex::encode(tx.from),
-                    "to": to.map(|addr| hex::encode(addr)),
-                    "amount": amount.map(|a| a.to_string()),
+                    "to": to,
+                    "amount": amount,
                     "nonce": tx.nonce,
                     "blockHeight": height,
                     "timestamp": timestamp,
@@ -806,93 +806,6 @@ fn tx_type_name(tx_type: claw_types::TxType) -> &'static str {
         claw_types::TxType::MinerHeartbeat => "MinerHeartbeat",
         claw_types::TxType::ContractUpgradeAnnounce => "ContractUpgradeAnnounce",
         claw_types::TxType::ContractUpgradeExecute => "ContractUpgradeExecute",
-    }
-}
-
-/// Extract the recipient address and amount from a transaction payload,
-/// based on the transaction type. Returns `(None, None)` for types that
-/// have no recipient (AgentRegister, TokenCreate, ServiceRegister).
-fn parse_tx_recipient(tx: &claw_types::Transaction) -> (Option<[u8; 32]>, Option<u128>) {
-    match tx.tx_type {
-        claw_types::TxType::TokenTransfer => {
-            // payload = [to: 32 bytes][amount: 16 bytes u128 LE]
-            if tx.payload.len() >= 48 {
-                let to: [u8; 32] = tx.payload[..32].try_into().unwrap();
-                let amount = u128::from_le_bytes(tx.payload[32..48].try_into().unwrap());
-                (Some(to), Some(amount))
-            } else {
-                (None, None)
-            }
-        }
-        claw_types::TxType::TokenMintTransfer => {
-            // payload = [tokenId: 32 bytes][to: 32 bytes][amount: 16 bytes u128 LE]
-            if tx.payload.len() >= 80 {
-                let to: [u8; 32] = tx.payload[32..64].try_into().unwrap();
-                let amount = u128::from_le_bytes(tx.payload[64..80].try_into().unwrap());
-                (Some(to), Some(amount))
-            } else {
-                (None, None)
-            }
-        }
-        claw_types::TxType::ReputationAttest => {
-            // payload starts with [to: 32 bytes]
-            if tx.payload.len() >= 32 {
-                let to: [u8; 32] = tx.payload[..32].try_into().unwrap();
-                (Some(to), None)
-            } else {
-                (None, None)
-            }
-        }
-        claw_types::TxType::StakeDeposit => {
-            // payload = [amount: 16 bytes u128 LE][validator: 32 bytes][commission_bps: 2 bytes]
-            if tx.payload.len() >= 48 {
-                let amount = u128::from_le_bytes(tx.payload[..16].try_into().unwrap());
-                let validator: [u8; 32] = tx.payload[16..48].try_into().unwrap();
-                let to = if validator == [0u8; 32] { None } else { Some(validator) };
-                (to, Some(amount))
-            } else {
-                (None, None)
-            }
-        }
-        claw_types::TxType::StakeWithdraw => {
-            // payload = [amount: 16 bytes u128 LE]
-            if tx.payload.len() >= 16 {
-                let amount = u128::from_le_bytes(tx.payload[..16].try_into().unwrap());
-                (None, Some(amount))
-            } else {
-                (None, None)
-            }
-        }
-        claw_types::TxType::ChangeDelegation => {
-            // payload = [validator: 32 bytes][new_owner: 32 bytes][commission_bps: 2 bytes]
-            if tx.payload.len() >= 64 {
-                let new_owner: [u8; 32] = tx.payload[32..64].try_into().unwrap();
-                (Some(new_owner), None)
-            } else {
-                (None, None)
-            }
-        }
-        claw_types::TxType::AgentRegister
-        | claw_types::TxType::TokenCreate
-        | claw_types::TxType::ServiceRegister
-        | claw_types::TxType::ContractDeploy
-        | claw_types::TxType::StakeClaim
-        | claw_types::TxType::PlatformActivityReport
-        | claw_types::TxType::TokenApprove
-        | claw_types::TxType::TokenBurn
-        | claw_types::TxType::MinerRegister
-        | claw_types::TxType::MinerHeartbeat
-        | claw_types::TxType::ContractUpgradeAnnounce
-        | claw_types::TxType::ContractUpgradeExecute => (None, None),
-        claw_types::TxType::ContractCall => {
-            // payload starts with [contract: 32 bytes]
-            if tx.payload.len() >= 32 {
-                let contract: [u8; 32] = tx.payload[..32].try_into().unwrap();
-                (Some(contract), None)
-            } else {
-                (None, None)
-            }
-        }
     }
 }
 
