@@ -20,6 +20,12 @@ pub struct VersionManifest {
     pub halt_height: Option<u64>,
     #[serde(default)]
     pub halt_message: Option<String>,
+    #[serde(default)]
+    pub plugin_latest: Option<String>,
+    #[serde(default)]
+    pub plugin_minimum: Option<String>,
+    #[serde(default)]
+    pub plugin_changelog: Option<String>,
     pub updated_at: String,
 }
 

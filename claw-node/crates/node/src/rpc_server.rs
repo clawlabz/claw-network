@@ -873,7 +873,7 @@ async fn handle_version(State(chain): State<Chain>) -> Json<Value> {
     let current_version = env!("CARGO_PKG_VERSION");
     let manifest = chain.get_version_manifest();
 
-    let (upgrade_level_str, latest_version, minimum_version, release_url, changelog, announcement, halt_height) = if let Some(ref m) = manifest {
+    let (upgrade_level_str, latest_version, minimum_version, release_url, changelog, announcement, halt_height, plugin_latest, plugin_minimum, plugin_changelog) = if let Some(ref m) = manifest {
         let height = chain.get_block_number();
         let level = crate::version_check::check_version(current_version, m, Some(height));
         (
@@ -884,6 +884,9 @@ async fn handle_version(State(chain): State<Chain>) -> Json<Value> {
             m.changelog.clone(),
             m.announcement.clone(),
             m.halt_height,
+            m.plugin_latest.clone(),
+            m.plugin_minimum.clone(),
+            m.plugin_changelog.clone(),
         )
     } else {
         (
@@ -892,6 +895,9 @@ async fn handle_version(State(chain): State<Chain>) -> Json<Value> {
             current_version.to_string(),
             String::new(),
             String::new(),
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -906,6 +912,9 @@ async fn handle_version(State(chain): State<Chain>) -> Json<Value> {
         "changelog": changelog,
         "announcement": announcement,
         "halt_height": halt_height,
+        "plugin_latest": plugin_latest,
+        "plugin_minimum": plugin_minimum,
+        "plugin_changelog": plugin_changelog,
     }))
 }
 

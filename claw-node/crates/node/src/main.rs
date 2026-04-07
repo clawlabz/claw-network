@@ -1454,10 +1454,13 @@ async fn handle_miner_checkin_cli(
     );
     let miner_pubkey: [u8; 32] = signing_key.verifying_key().to_bytes();
 
-    // Get current block info
+    // Get current block info — use tip-2 for ref_block to give other validators
+    // time to sync (avoids "unknown block height" rejection on gossip receivers)
     let block_number = rpc_call(rpc, "claw_blockNumber", vec![]).await?;
-    let height = block_number.as_u64().unwrap_or(0);
-    let epoch = height / MINER_EPOCH_LENGTH;
+    let tip = block_number.as_u64().unwrap_or(0);
+    let epoch = tip / MINER_EPOCH_LENGTH;
+    let epoch_start = epoch * MINER_EPOCH_LENGTH;
+    let height = tip.saturating_sub(2).max(epoch_start);
 
     let block = rpc_call(rpc, "claw_getBlockByNumber", vec![height.into()]).await?;
     let mut ref_block_hash = [0u8; 32];

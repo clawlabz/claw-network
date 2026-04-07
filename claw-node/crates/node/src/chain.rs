@@ -382,10 +382,21 @@ impl Chain {
         // Validate witness (same checks as receive_block)
         Self::validate_checkin_witness(&witness, &inner)?;
 
+        let miner_hex = hex::encode(&witness.miner[..4]);
+        let witness_epoch = witness.epoch;
+
         // Cache it (re-acquire as mutable)
         drop(inner);
         let mut inner = self.inner.lock().expect("chain state mutex poisoned");
         inner.checkin_cache.insert(witness);
+
+        let cache_total: usize = inner.checkin_cache.entries.values().map(|m| m.len()).sum();
+        tracing::info!(
+            miner = %miner_hex,
+            epoch = witness_epoch,
+            cache_total = cache_total,
+            "RPC checkin accepted and cached"
+        );
 
         Ok("checkin accepted".into())
     }
@@ -691,13 +702,24 @@ impl Chain {
             }
 
             // Step 2: get pending witnesses and apply
+            let cache_total: usize = inner.checkin_cache.entries.values().map(|m| m.len()).sum();
+            let cache_epochs: Vec<u64> = inner.checkin_cache.entries.keys().copied().collect();
             let mut witnesses = inner.checkin_cache.get_pending(current_epoch, &inner.state);
             witnesses.sort_by_key(|w| w.miner);
+            if cache_total > 0 || !witnesses.is_empty() {
+                tracing::info!(
+                    current_epoch = current_epoch,
+                    cache_total = cache_total,
+                    cache_epochs = ?cache_epochs,
+                    pending_count = witnesses.len(),
+                    "V3 checkin debug"
+                );
+            }
 
-            // Step 3: apply checkins
+            // Step 3: apply checkins (use w.epoch to match receive_block semantics)
             for w in &witnesses {
                 if let Some(miner) = inner.state.miners.get_mut(&w.miner) {
-                    miner.last_checkin_epoch = current_epoch;
+                    miner.last_checkin_epoch = w.epoch;
                 }
             }
 
@@ -843,6 +865,7 @@ impl Chain {
         tracing::info!(
             height = block.height,
             txs = block.transactions.len(),
+            checkins = block.checkin_witnesses.len(),
             "Block produced"
         );
 
@@ -1382,9 +1405,24 @@ impl Chain {
                 NetworkEvent::MinerCheckin(witness) => {
                     let mut inner = self.inner.lock().expect("chain state mutex poisoned");
                     if inner.state.block_height >= CHECKIN_V3_HEIGHT {
-                        // Full validation (same as submit_miner_checkin / receive_block)
-                        if Self::validate_checkin_witness(&witness, &inner).is_ok() {
-                            inner.checkin_cache.insert(witness);
+                        match Self::validate_checkin_witness(&witness, &inner) {
+                            Ok(()) => {
+                                tracing::debug!(
+                                    miner = hex::encode(&witness.miner[..4]),
+                                    epoch = witness.epoch,
+                                    "Gossip checkin accepted into cache"
+                                );
+                                inner.checkin_cache.insert(witness);
+                            }
+                            Err(reason) => {
+                                tracing::warn!(
+                                    miner = hex::encode(&witness.miner[..4]),
+                                    epoch = witness.epoch,
+                                    ref_height = witness.ref_block_height,
+                                    reason = %reason,
+                                    "Gossip checkin rejected"
+                                );
+                            }
                         }
                     }
                 }
