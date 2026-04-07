@@ -7,7 +7,7 @@ declare function setInterval(fn: () => void, ms: number): unknown
 declare function clearInterval(id: unknown): void
 declare function fetch(url: string, init?: Record<string, unknown>): Promise<{ status: number; ok: boolean; text: () => Promise<string>; json: () => Promise<unknown> }>
 
-const VERSION = '0.1.34'
+const VERSION = '0.1.35'
 const PLUGIN_ID = 'clawnetwork'
 const GITHUB_REPO = 'clawlabz/claw-network'
 const DEFAULT_RPC_PORT = 9710
@@ -916,7 +916,10 @@ async function checkPluginSelfUpdate(api: OpenClawApi): Promise<void> {
     }
 
     api.logger?.info?.(`[clawnetwork] plugin update required: ${VERSION} → ${pluginLatest}, auto-upgrading...`)
-    process.stdout.write(`Plugin update required: ${VERSION} → ${pluginLatest}. Installing...\n`)
+    process.stdout.write(`\n╔══════════════════════════════════════════════════╗\n`)
+    process.stdout.write(`║  Plugin update required: ${VERSION} → ${pluginLatest}             ║\n`)
+    process.stdout.write(`║  Installing...                                   ║\n`)
+    process.stdout.write(`╚══════════════════════════════════════════════════╝\n\n`)
 
     const { execFileSync } = require('child_process')
     const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -926,8 +929,13 @@ async function checkPluginSelfUpdate(api: OpenClawApi): Promise<void> {
         timeout: 120_000,
         env: { HOME: os.homedir(), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' },
       })
-      api.logger?.info?.(`[clawnetwork] plugin upgraded to ${pluginLatest}. Restart OpenClaw to apply.`)
-      process.stdout.write(`Plugin upgraded to ${pluginLatest}. Please restart OpenClaw to apply.\n`)
+      api.logger?.info?.(`[clawnetwork] plugin upgraded to ${pluginLatest}. Exiting for restart...`)
+      process.stdout.write(`\n✅ Plugin upgraded to ${pluginLatest}.\n`)
+      process.stdout.write(`   Exiting now — please restart OpenClaw to load the new version:\n`)
+      process.stdout.write(`   $ openclaw gateway restart\n\n`)
+      // Exit so process manager (systemd/launchd/PM2) auto-restarts with new code.
+      // If no supervisor, user sees the message above and restarts manually.
+      setTimeout(() => process.exit(0), 1_000)
     } catch (e: unknown) {
       api.logger?.warn?.(`[clawnetwork] plugin auto-upgrade failed: ${(e as Error).message.slice(0, 200)}`)
     }

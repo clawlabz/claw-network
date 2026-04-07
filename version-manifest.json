@@ -7,8 +7,8 @@
   "announcement": null,
   "halt_height": null,
   "halt_message": null,
-  "plugin_latest": "0.1.34",
-  "plugin_minimum": "0.1.34",
-  "plugin_changelog": "Fix heartbeat fallback: V3 checkin failure now correctly falls back to legacy heartbeat",
+  "plugin_latest": "0.1.35",
+  "plugin_minimum": "0.1.35",
+  "plugin_changelog": "Fix heartbeat fallback + plugin self-upgrade with auto-restart",
   "updated_at": "2026-04-07T00:00:00Z"
 }
