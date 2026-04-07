@@ -7,7 +7,7 @@ declare function setInterval(fn: () => void, ms: number): unknown
 declare function clearInterval(id: unknown): void
 declare function fetch(url: string, init?: Record<string, unknown>): Promise<{ status: number; ok: boolean; text: () => Promise<string>; json: () => Promise<unknown> }>
 
-const VERSION = '0.1.35'
+const VERSION = '0.1.36'
 const PLUGIN_ID = 'clawnetwork'
 const GITHUB_REPO = 'clawlabz/claw-network'
 const DEFAULT_RPC_PORT = 9710
@@ -799,7 +799,8 @@ async function autoRegisterAgent(cfg: PluginConfig, wallet: WalletData, api: Ope
 
 // V2 heartbeat: chain requires 100 blocks × 3s = 300s minimum between heartbeats.
 // Use 310s to provide margin for block time variance.
-const MINER_HEARTBEAT_INTERVAL_MS = 310 * 1000 // 310 seconds (~5.2 minutes)
+const MINER_CHECKIN_INTERVAL_MS = 60 * 1000 // 60 seconds — retry within epoch until confirmed
+const MINER_HEARTBEAT_INTERVAL_MS = 310 * 1000 // 310 seconds — legacy heartbeat (pre-V3 only)
 let minerHeartbeatTimer: unknown = null
 
 async function autoRegisterMiner(cfg: PluginConfig, wallet: WalletData, api: OpenClawApi): Promise<void> {
@@ -832,22 +833,21 @@ async function autoRegisterMiner(cfg: PluginConfig, wallet: WalletData, api: Ope
   }
 
   // Send first heartbeat immediately
-  await sendMinerHeartbeat(cfg, api)
+  await sendMinerCheckin(cfg, api)
 
   // Start periodic heartbeat loop
   startMinerHeartbeatLoop(cfg, api)
 }
 
-async function sendMinerHeartbeat(cfg: PluginConfig, api: OpenClawApi): Promise<void> {
+async function sendMinerCheckin(cfg: PluginConfig, api: OpenClawApi): Promise<void> {
   const binary = findBinary()
   if (!binary) return
+  const rpcUrl = `http://localhost:${activeRpcPort ?? cfg.rpcPort}`
 
-  // Try V3 checkin first; fall back to legacy heartbeat if not active
+  // Try V3 checkin (primary path after activation)
   try {
     const output = execFileSync(binary, [
-      'miner-checkin',
-      '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
-      '--data-dir', DATA_DIR,
+      'miner-checkin', '--rpc', rpcUrl, '--data-dir', DATA_DIR,
     ], {
       encoding: 'utf8',
       timeout: 30_000,
@@ -857,15 +857,20 @@ async function sendMinerHeartbeat(cfg: PluginConfig, api: OpenClawApi): Promise<
     return
   } catch (e: unknown) {
     const msg = (e as Error).message || ''
-    // Always fall through to legacy heartbeat when V3 checkin fails for any reason
-    api.logger?.warn?.(`[clawnetwork] checkin failed (falling back to legacy): ${msg.slice(0, 200)}`)
+    if (msg.includes('not yet active') || msg.includes('method not found')) {
+      // V3 not active — fall through to legacy heartbeat
+      api.logger?.info?.('[clawnetwork] V3 not active, using legacy heartbeat')
+    } else {
+      // V3 active but failed — log and DON'T fallback to legacy (it would be rejected)
+      api.logger?.warn?.(`[clawnetwork] V3 checkin failed: ${msg.slice(0, 200)}`)
+      return
+    }
   }
 
+  // Legacy heartbeat (only reached if V3 is not yet active)
   try {
     const output = execFileSync(binary, [
-      'miner-heartbeat',
-      '--rpc', `http://localhost:${activeRpcPort ?? cfg.rpcPort}`,
-      '--data-dir', DATA_DIR,
+      'miner-heartbeat', '--rpc', rpcUrl, '--data-dir', DATA_DIR,
     ], {
       encoding: 'utf8',
       timeout: 30_000,
@@ -879,10 +884,11 @@ async function sendMinerHeartbeat(cfg: PluginConfig, api: OpenClawApi): Promise<
 
 function startMinerHeartbeatLoop(cfg: PluginConfig, api: OpenClawApi): void {
   if (minerHeartbeatTimer) clearInterval(minerHeartbeatTimer)
+  // Use shorter interval (60s) — retry within epoch until on-chain confirmed
   minerHeartbeatTimer = setInterval(() => {
-    sendMinerHeartbeat(cfg, api).catch(() => {})
-  }, MINER_HEARTBEAT_INTERVAL_MS)
-  api.logger?.info?.(`[clawnetwork] miner heartbeat loop started (every ${Math.round(MINER_HEARTBEAT_INTERVAL_MS / 60000)}min)`)
+    sendMinerCheckin(cfg, api).catch(() => {})
+  }, MINER_CHECKIN_INTERVAL_MS)
+  api.logger?.info?.(`[clawnetwork] miner checkin loop started (every ${Math.round(MINER_CHECKIN_INTERVAL_MS / 1000)}s)`)
 }
 
 function stopMinerHeartbeatLoop(): void {
