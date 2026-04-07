@@ -7,7 +7,7 @@ declare function setInterval(fn: () => void, ms: number): unknown
 declare function clearInterval(id: unknown): void
 declare function fetch(url: string, init?: Record<string, unknown>): Promise<{ status: number; ok: boolean; text: () => Promise<string>; json: () => Promise<unknown> }>
 
-const VERSION = '0.1.33'
+const VERSION = '0.1.34'
 const PLUGIN_ID = 'clawnetwork'
 const GITHUB_REPO = 'clawlabz/claw-network'
 const DEFAULT_RPC_PORT = 9710
@@ -857,11 +857,8 @@ async function sendMinerHeartbeat(cfg: PluginConfig, api: OpenClawApi): Promise<
     return
   } catch (e: unknown) {
     const msg = (e as Error).message || ''
-    if (!msg.includes('not yet active') && !msg.includes('method not found')) {
-      api.logger?.warn?.(`[clawnetwork] checkin failed: ${msg.slice(0, 200)}`)
-      return
-    }
-    // V3 not active — fall through to legacy heartbeat
+    // Always fall through to legacy heartbeat when V3 checkin fails for any reason
+    api.logger?.warn?.(`[clawnetwork] checkin failed (falling back to legacy): ${msg.slice(0, 200)}`)
   }
 
   try {
@@ -892,6 +889,50 @@ function stopMinerHeartbeatLoop(): void {
   if (minerHeartbeatTimer) {
     clearInterval(minerHeartbeatTimer)
     minerHeartbeatTimer = null
+  }
+}
+
+// ============================================================
+// Plugin Self-Update
+// ============================================================
+
+const MANIFEST_URL = 'https://raw.githubusercontent.com/clawlabz/claw-network/main/version-manifest.json'
+
+async function checkPluginSelfUpdate(api: OpenClawApi): Promise<void> {
+  try {
+    const res = await fetch(MANIFEST_URL, { headers: { 'User-Agent': `clawnetwork-plugin/${VERSION}` } })
+    if (!res.ok) return
+    const manifest = await res.json() as Record<string, unknown>
+    const pluginLatest = typeof manifest.plugin_latest === 'string' ? manifest.plugin_latest : null
+    const pluginMinimum = typeof manifest.plugin_minimum === 'string' ? manifest.plugin_minimum : null
+    if (!pluginLatest || !pluginMinimum) return
+
+    const needsUpdate = isVersionOlder(VERSION, pluginMinimum)
+    if (!needsUpdate) {
+      if (isVersionOlder(VERSION, pluginLatest)) {
+        api.logger?.info?.(`[clawnetwork] plugin update available: ${VERSION} → ${pluginLatest} (optional)`)
+      }
+      return
+    }
+
+    api.logger?.info?.(`[clawnetwork] plugin update required: ${VERSION} → ${pluginLatest}, auto-upgrading...`)
+    process.stdout.write(`Plugin update required: ${VERSION} → ${pluginLatest}. Installing...\n`)
+
+    const { execFileSync } = require('child_process')
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    try {
+      execFileSync(npmCmd, ['install', '-g', `@clawlabz/clawnetwork-openclaw@${pluginLatest}`], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        env: { HOME: os.homedir(), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' },
+      })
+      api.logger?.info?.(`[clawnetwork] plugin upgraded to ${pluginLatest}. Restart OpenClaw to apply.`)
+      process.stdout.write(`Plugin upgraded to ${pluginLatest}. Please restart OpenClaw to apply.\n`)
+    } catch (e: unknown) {
+      api.logger?.warn?.(`[clawnetwork] plugin auto-upgrade failed: ${(e as Error).message.slice(0, 200)}`)
+    }
+  } catch (e: unknown) {
+    api.logger?.debug?.(`[clawnetwork] plugin version check failed: ${(e as Error).message}`)
   }
 }
 
@@ -1402,7 +1443,7 @@ function buildUiHtml(cfg: PluginConfig): string {
       document.getElementById('startBtn').style.opacity = s.running ? '0.4' : '1';
       document.getElementById('stopBtn').style.opacity = !s.running ? '0.4' : '1';
 
-      // Handle upgrade banner
+      // Handle upgrade banner (node binary)
       const bannerEl = document.getElementById('upgradeBanner');
       if (s.upgradeLevel && s.upgradeLevel !== 'up_to_date' && s.upgradeLevel !== 'unknown') {
         bannerEl.style.display = '';
@@ -1431,6 +1472,39 @@ function buildUiHtml(cfg: PluginConfig): string {
         if (dbtn) dbtn.onclick = function() { bannerEl.style.display = 'none'; };
       } else {
         bannerEl.style.display = 'none';
+      }
+
+      // Handle plugin upgrade banner
+      var pluginBannerEl = document.getElementById('pluginUpgradeBanner');
+      if (!pluginBannerEl) {
+        pluginBannerEl = document.createElement('div');
+        pluginBannerEl.id = 'pluginUpgradeBanner';
+        pluginBannerEl.style.display = 'none';
+        bannerEl.parentNode.insertBefore(pluginBannerEl, bannerEl.nextSibling);
+      }
+      if (s.pluginUpgradeLevel && s.pluginUpgradeLevel !== 'up_to_date' && s.pluginUpgradeLevel !== 'unknown') {
+        pluginBannerEl.style.display = '';
+        var pRequired = s.pluginUpgradeLevel === 'required';
+        pluginBannerEl.className = 'upgrade-banner ' + (pRequired ? 'required' : 'recommended');
+        var pHtml = '<div class="upgrade-text">';
+        if (pRequired) {
+          pHtml += '⚠ Plugin update required: v' + (s.pluginLatestVersion || '') + ' — ' + (s.pluginChangelog || 'Critical fix');
+        } else {
+          pHtml += 'Plugin update available: v' + (s.pluginLatestVersion || '') + ' — ' + (s.pluginChangelog || 'New version');
+        }
+        pHtml += '</div><div class="upgrade-actions">';
+        pHtml += '<button class="upgrade-btn" id="pluginUpgradeBtn">Update Plugin</button>';
+        if (!pRequired) {
+          pHtml += '<button class="upgrade-dismiss" id="pluginDismissBtn">Dismiss</button>';
+        }
+        pHtml += '</div>';
+        pluginBannerEl.innerHTML = pHtml;
+        var pubtn = document.getElementById('pluginUpgradeBtn');
+        if (pubtn) pubtn.onclick = function() { doAction('upgrade-plugin'); };
+        var pdbtn = document.getElementById('pluginDismissBtn');
+        if (pdbtn) pdbtn.onclick = function() { pluginBannerEl.style.display = 'none'; };
+      } else {
+        pluginBannerEl.style.display = 'none';
       }
 
       // Wallet
@@ -1481,7 +1555,12 @@ function buildUiHtml(cfg: PluginConfig): string {
         ['Sync Mode', s.syncMode],
         ['RPC URL', s.rpcUrl],
         ['Binary Version', versionStatusHtml],
-        ['Plugin Version', s.pluginVersion],
+        ['Plugin Version', (function() {
+          if (s.pluginUpgradeLevel === 'up_to_date') return s.pluginVersion + ' <span style="color:var(--green)">✓</span>';
+          if (s.pluginUpgradeLevel === 'recommended') return s.pluginVersion + ' <span style="color:#ffaa00">→ ' + (s.pluginLatestVersion || '') + '</span>';
+          if (s.pluginUpgradeLevel === 'required') return s.pluginVersion + ' <span style="color:var(--danger)">⚠ Update required</span>';
+          return s.pluginVersion;
+        })()],
         ['PID', s.pid || '—'],
         ['Restart Count', s.restartCount],
         ['Data Dir', s.dataDir],
@@ -1625,6 +1704,9 @@ async function handle(req, res) {
       let releaseUrl = '';
       let changelog = '';
       let announcement = null;
+      let pluginUpgradeLevel = 'unknown';
+      let pluginLatestVersion = '';
+      let pluginChangelog = '';
       // Fetch version info if available (Phase 1 endpoint)
       try {
         const v = await fetchJson('http://localhost:' + RPC_PORT + '/version');
@@ -1634,6 +1716,19 @@ async function handle(req, res) {
           releaseUrl = v.release_url || '';
           changelog = v.changelog || '';
           announcement = v.announcement || null;
+        }
+        // Plugin version check
+        if (v && v.plugin_latest) {
+          pluginLatestVersion = v.plugin_latest;
+          pluginChangelog = v.plugin_changelog || '';
+          const pluginMin = v.plugin_minimum || '';
+          if (isVersionOlder(_PVER, pluginMin)) {
+            pluginUpgradeLevel = 'required';
+          } else if (isVersionOlder(_PVER, v.plugin_latest)) {
+            pluginUpgradeLevel = 'recommended';
+          } else {
+            pluginUpgradeLevel = 'up_to_date';
+          }
         }
       } catch {}
       try {
@@ -1659,10 +1754,11 @@ async function handle(req, res) {
         uptimeFormatted: h.uptime_secs < 60 ? h.uptime_secs + 's' : h.uptime_secs < 3600 ? Math.floor(h.uptime_secs/60) + 'm' : Math.floor(h.uptime_secs/3600) + 'h ' + Math.floor((h.uptime_secs%3600)/60) + 'm',
         restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance, agentName, syncing: h.status === 'degraded', peerless: h.peer_count === 0, lastBlockAgeSecs: h.last_block_age_secs,
         upgradeLevel, latestVersion, releaseUrl, changelog, announcement,
+        pluginUpgradeLevel, pluginLatestVersion, pluginChangelog,
       });
     } catch {
         const walletAddr = (() => { try { return JSON.parse(fs.readFileSync(OC_WALLET_PATH, 'utf8')).address; } catch { return ''; } })();
-        json(200, { running: false, blockHeight: null, peerCount: null, walletAddress: walletAddr, network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:' + RPC_PORT, pluginVersion: _PVER, restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance: '', agentName: '', syncing: false, uptimeFormatted: '—', pid: null, upgradeLevel: 'unknown', latestVersion: '', releaseUrl: '', changelog: '', announcement: null });
+        json(200, { running: false, blockHeight: null, peerCount: null, walletAddress: walletAddr, network: 'mainnet', syncMode: 'light', rpcUrl: 'http://localhost:' + RPC_PORT, pluginVersion: _PVER, restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance: '', agentName: '', syncing: false, uptimeFormatted: '—', pid: null, upgradeLevel: 'unknown', latestVersion: '', releaseUrl: '', changelog: '', announcement: null, pluginUpgradeLevel: 'unknown', pluginLatestVersion: '', pluginChangelog: '' });
       }
     return;
   }
@@ -1970,6 +2066,18 @@ async function handle(req, res) {
 
         json(200, { message: 'Upgraded to ' + newVersion + '. Click Restart to apply.', newVersion });
       } catch (e) { json(500, { error: e.message }); }
+      return;
+    }
+    if (a === 'upgrade-plugin') {
+      try {
+        const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+        const output = require('child_process').execFileSync(npmCmd, ['install', '-g', '@clawlabz/clawnetwork-openclaw@latest'], {
+          encoding: 'utf8',
+          timeout: 120000,
+          env: { HOME: os.homedir(), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' },
+        });
+        json(200, { message: 'Plugin updated. Please restart OpenClaw to apply.', output: output.trim() });
+      } catch (e) { json(500, { error: 'Plugin update failed: ' + e.message }); }
       return;
     }
     json(400, { error: 'Unknown action: ' + a });
@@ -2545,6 +2653,9 @@ export default function register(api: OpenClawApi) {
               api.logger?.warn?.(`[clawnetwork] upgrade check failed: ${(e as Error).message}`)
             }
 
+            // Check for plugin self-update via version manifest
+            await checkPluginSelfUpdate(api)
+
             startHealthCheck(cfg, api)
             startUiServer(cfg, api)
             const wallet = ensureWallet(cfg.network, api)
@@ -2588,6 +2699,9 @@ export default function register(api: OpenClawApi) {
 
           // Step 6: Start UI dashboard
           startUiServer(cfg, api)
+
+          // Step 6.5: Check for plugin self-update
+          await checkPluginSelfUpdate(api)
 
           // Step 7: Wait for node to sync, then auto-register
           await sleep(15_000)
