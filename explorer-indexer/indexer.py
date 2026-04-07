@@ -106,6 +106,32 @@ def ensure_network_stats_table(cur):
     """, (config.NETWORK,))
 
 
+def ensure_fee_columns(cur):
+    """Add fee columns to explorer_daily_stats if they don't exist."""
+    for col, typ in [("daily_total_fees", "TEXT DEFAULT '0'"), ("daily_avg_fee", "TEXT DEFAULT '0'")]:
+        cur.execute(f"""
+            ALTER TABLE explorer_daily_stats
+            ADD COLUMN IF NOT EXISTS {col} {typ}
+        """)
+
+
+def ensure_validator_history_table(cur):
+    """Create explorer_validator_history table if it doesn't exist."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS explorer_validator_history (
+            id SERIAL PRIMARY KEY,
+            network VARCHAR(50) NOT NULL,
+            epoch BIGINT NOT NULL,
+            validator_address TEXT NOT NULL,
+            stake TEXT DEFAULT '0',
+            weight DOUBLE PRECISION DEFAULT 0,
+            agent_score DOUBLE PRECISION DEFAULT 0,
+            recorded_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(network, epoch, validator_address)
+        )
+    """)
+
+
 def refresh_daily_stats(cur):
     """Rebuild explorer_daily_stats from explorer_transactions."""
     cur.execute("DELETE FROM explorer_daily_stats WHERE network = %s", (config.NETWORK,))
@@ -141,6 +167,23 @@ def refresh_daily_stats(cur):
             "UPDATE explorer_daily_stats SET type_distribution = %s WHERE date = %s AND network = %s",
             (json.dumps(dist), day_str, config.NETWORK),
         )
+    # Update fee statistics per day
+    cur.execute("""
+        UPDATE explorer_daily_stats d SET
+            daily_total_fees = sub.total_fees,
+            daily_avg_fee = sub.avg_fee
+        FROM (
+            SELECT
+                DATE(TO_TIMESTAMP(timestamp)) AS d,
+                network,
+                COALESCE(SUM(CASE WHEN fee IS NOT NULL THEN fee::numeric ELSE 0 END)::TEXT, '0') AS total_fees,
+                COALESCE(AVG(CASE WHEN fee IS NOT NULL THEN fee::numeric ELSE 0 END)::TEXT, '0') AS avg_fee
+            FROM explorer_transactions
+            WHERE network = %s
+            GROUP BY DATE(TO_TIMESTAMP(timestamp)), network
+        ) sub
+        WHERE d.date = sub.d AND d.network = sub.network
+    """, (config.NETWORK,))
 
 
 def refresh_network_stats(cur):
@@ -168,6 +211,41 @@ def refresh_network_stats(cur):
             updated_at = NOW()
         WHERE network = %s
     """, (config.NETWORK,) * 6)
+
+
+def snapshot_validators(cur):
+    """Record current validator state, keyed by epoch. Idempotent via ON CONFLICT."""
+    try:
+        health = requests.get(f"{config.RPC_URL}/health", timeout=5).json()
+        epoch = health.get("epoch", 0)
+        if epoch == 0:
+            return
+
+        validators = rpc_call("claw_getValidators")
+        if not validators:
+            return
+
+        rows = []
+        for v in validators:
+            rows.append((
+                config.NETWORK,
+                epoch,
+                v.get("address", ""),
+                str(v.get("stake", "0")),
+                v.get("weight", 0),
+                v.get("agentScore", 0),
+            ))
+
+        if rows:
+            psycopg2.extras.execute_batch(cur, """
+                INSERT INTO explorer_validator_history
+                    (network, epoch, validator_address, stake, weight, agent_score)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (network, epoch, validator_address) DO NOTHING
+            """, rows)
+            log.info("Validator snapshot: epoch %d, %d validators", epoch, len(rows))
+    except Exception as e:
+        log.warning("Validator snapshot failed: %s", e)
 
 
 INSERT_TX = """
@@ -327,6 +405,7 @@ def run_realtime(conn, last_height: int):
             # Refresh network stats every 100 blocks
             if blocks_since_refresh >= 100:
                 refresh_network_stats(cur)
+                snapshot_validators(cur)
                 blocks_since_refresh = 0
 
             # Refresh daily stats every 1000 blocks
@@ -362,6 +441,8 @@ def main():
 
     cur = conn.cursor()
     ensure_network_stats_table(cur)
+    ensure_fee_columns(cur)
+    ensure_validator_history_table(cur)
     conn.commit()
     last_height = get_last_height(cur)
     chain_height = get_chain_height()
