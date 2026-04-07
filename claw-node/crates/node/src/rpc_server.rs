@@ -525,6 +525,9 @@ async fn handle_rpc(
         "claw_totalSupply" => {
             Ok(serde_json::json!(chain.get_total_supply_audit()))
         }
+        "claw_getSupplyInfo" => {
+            Ok(chain.get_supply_info())
+        }
         "claw_faucet" => {
             if !FAUCET_ENABLED.get().copied().unwrap_or(false) {
                 Err("faucet is disabled on this network".into())

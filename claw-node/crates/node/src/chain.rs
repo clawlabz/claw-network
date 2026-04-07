@@ -1886,6 +1886,27 @@ impl Chain {
         })
     }
 
+    /// Get supply breakdown: circulating, staked, unbonding, and pending mining rewards.
+    pub fn get_supply_info(&self) -> serde_json::Value {
+        let inner = self.inner.lock().expect("chain state mutex poisoned");
+        let total_balances: u128 = inner.state.balances.values().sum();
+        let total_stakes: u128 = inner.state.stakes.values().sum();
+        let total_unbonding: u128 = inner.state.unbonding_queue.iter().map(|e| e.amount).sum();
+        let pending_mining: u128 = inner.state.epoch_reward_bucket
+            + inner.state.miners.values().map(|m| m.pending_rewards).sum::<u128>();
+        let total_supply = total_balances + total_stakes + total_unbonding + pending_mining;
+        let circulating = total_balances;
+        serde_json::json!({
+            "total_supply": total_supply.to_string(),
+            "staked_supply": total_stakes.to_string(),
+            "unbonding_supply": total_unbonding.to_string(),
+            "pending_mining": pending_mining.to_string(),
+            "circulating_supply": circulating.to_string(),
+            "num_balance_entries": inner.state.balances.len(),
+            "num_stake_entries": inner.state.stakes.len(),
+        })
+    }
+
     pub fn get_block(&self, height: u64) -> Option<Block> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
         if height == inner.latest_block.height {
@@ -2320,10 +2341,32 @@ impl Chain {
         self.inner.lock().expect("chain state mutex poisoned").state.miners.get(addr).cloned()
     }
 
+    /// Dedup miners by name: for each unique name, keep only the active miner (if any),
+    /// otherwise keep the one with the highest last_checkin_epoch.
+    fn dedup_miners(&self, inner: &std::sync::MutexGuard<ChainInner>) -> Vec<claw_types::state::MinerInfo> {
+        let mut name_groups: std::collections::HashMap<String, claw_types::state::MinerInfo> = std::collections::HashMap::new();
+
+        for miner in inner.state.miners.values() {
+            name_groups.entry(miner.name.clone())
+                .and_modify(|existing| {
+                    // Prefer active miners; if same active status, prefer higher last_checkin_epoch
+                    if miner.active && !existing.active {
+                        *existing = miner.clone();
+                    } else if miner.active == existing.active && miner.last_checkin_epoch > existing.last_checkin_epoch {
+                        *existing = miner.clone();
+                    }
+                })
+                .or_insert_with(|| miner.clone());
+        }
+
+        name_groups.into_values().collect()
+    }
+
     /// Get a paginated list of miners, optionally filtered to active only.
     pub fn get_miners(&self, active_only: bool, limit: usize, offset: usize) -> Vec<claw_types::state::MinerInfo> {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
-        inner.state.miners.values()
+        let deduped = self.dedup_miners(&inner);
+        deduped.iter()
             .filter(|m| !active_only || m.active)
             .skip(offset)
             .take(limit)
@@ -2334,8 +2377,9 @@ impl Chain {
     /// Get aggregate mining statistics.
     pub fn get_mining_stats(&self) -> serde_json::Value {
         let inner = self.inner.lock().expect("chain state mutex poisoned");
-        let total = inner.state.miners.len();
-        let active = inner.state.miners.values().filter(|m| m.active).count();
+        let deduped = self.dedup_miners(&inner);
+        let total = deduped.len();
+        let active = deduped.iter().filter(|m| m.active).count();
         serde_json::json!({
             "totalMiners": total,
             "activeMiners": active,

@@ -86,6 +86,26 @@ def update_sync_state(cur, height: int, status: str = "syncing", error_msg: str 
     )
 
 
+def ensure_network_stats_table(cur):
+    """Create explorer_network_stats table if it doesn't exist and initialize for this network."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS explorer_network_stats (
+            id SERIAL PRIMARY KEY,
+            network VARCHAR(50) NOT NULL UNIQUE,
+            total_transactions BIGINT DEFAULT 0,
+            total_addresses BIGINT DEFAULT 0,
+            total_transfer_volume TEXT DEFAULT '0',
+            last_indexed_height BIGINT DEFAULT 0,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        INSERT INTO explorer_network_stats (network)
+        VALUES (%s)
+        ON CONFLICT (network) DO NOTHING
+    """, (config.NETWORK,))
+
+
 def refresh_daily_stats(cur):
     """Rebuild explorer_daily_stats from explorer_transactions."""
     cur.execute("DELETE FROM explorer_daily_stats WHERE network = %s", (config.NETWORK,))
@@ -121,6 +141,33 @@ def refresh_daily_stats(cur):
             "UPDATE explorer_daily_stats SET type_distribution = %s WHERE date = %s AND network = %s",
             (json.dumps(dist), day_str, config.NETWORK),
         )
+
+
+def refresh_network_stats(cur):
+    """Update cumulative network statistics from explorer_transactions."""
+    cur.execute("""
+        UPDATE explorer_network_stats SET
+            total_transactions = (
+                SELECT COUNT(*) FROM explorer_transactions WHERE network = %s
+            ),
+            total_addresses = (
+                SELECT COUNT(DISTINCT addr) FROM (
+                    SELECT from_addr AS addr FROM explorer_transactions WHERE network = %s
+                    UNION
+                    SELECT to_addr AS addr FROM explorer_transactions WHERE network = %s AND to_addr IS NOT NULL
+                ) t
+            ),
+            total_transfer_volume = COALESCE((
+                SELECT SUM(amount::numeric)::TEXT
+                FROM explorer_transactions
+                WHERE network = %s AND tx_type = 1 AND amount IS NOT NULL
+            ), '0'),
+            last_indexed_height = (
+                SELECT COALESCE(MAX(block_height), 0) FROM explorer_transactions WHERE network = %s
+            ),
+            updated_at = NOW()
+        WHERE network = %s
+    """, (config.NETWORK,) * 6)
 
 
 INSERT_TX = """
@@ -255,6 +302,8 @@ def run_realtime(conn, last_height: int):
     """Poll for new blocks and index them."""
     cur = conn.cursor()
     current = last_height
+    blocks_since_refresh = 0
+    blocks_since_daily_refresh = 0
 
     while True:
         try:
@@ -270,6 +319,21 @@ def run_realtime(conn, last_height: int):
                     log.info("Block %d: %d txs indexed", h, count)
 
             update_sync_state(cur, chain_height, status="idle")
+
+            # Track blocks processed for periodic stats refresh
+            blocks_since_refresh += chain_height - current
+            blocks_since_daily_refresh += chain_height - current
+
+            # Refresh network stats every 100 blocks
+            if blocks_since_refresh >= 100:
+                refresh_network_stats(cur)
+                blocks_since_refresh = 0
+
+            # Refresh daily stats every 1000 blocks
+            if blocks_since_daily_refresh >= 1000:
+                refresh_daily_stats(cur)
+                blocks_since_daily_refresh = 0
+
             conn.commit()
             current = chain_height
 
@@ -297,6 +361,8 @@ def main():
     log.info("Connected to database %s@%s:%d/%s", config.DB_USER, config.DB_HOST, config.DB_PORT, config.DB_NAME)
 
     cur = conn.cursor()
+    ensure_network_stats_table(cur)
+    conn.commit()
     last_height = get_last_height(cur)
     chain_height = get_chain_height()
     log.info("Last indexed height: %d, chain height: %d", last_height, chain_height)
@@ -311,8 +377,11 @@ def main():
         log.info("Backfill complete: %d transactions indexed", total)
         log.info("Refreshing daily stats...")
         refresh_daily_stats(cur)
-        conn.commit()
         log.info("Daily stats refreshed")
+        log.info("Refreshing network stats...")
+        refresh_network_stats(cur)
+        conn.commit()
+        log.info("Network stats refreshed")
         last_height = chain_height
 
     # One-time fix: set success=true for non-contract txs that have null success
