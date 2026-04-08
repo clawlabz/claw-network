@@ -336,17 +336,7 @@ impl P2pNetwork {
                 _ = bootstrap_redial.tick() => {
                     // Redial bootstrap peers that are not currently connected
                     for addr in &self.bootstrap_addrs {
-                        // Extract peer ID from multiaddr to check if already connected
-                        let peer_id = addr.iter().find_map(|p| {
-                            if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
-                        });
-                        let should_dial = match peer_id {
-                            Some(pid) => !self.peers.contains(&pid),
-                            // Always redial bootstrap peers without embedded PeerID —
-                            // otherwise mDNS-discovered local peers suppress reconnection.
-                            None => true,
-                        };
-                        if should_dial {
+                        if should_redial_bootstrap(addr, &self.peers) {
                             tracing::debug!(%addr, "Redialing disconnected bootstrap peer");
                             let _ = self.swarm.dial(addr.clone());
                         }
@@ -536,4 +526,76 @@ impl P2pNetwork {
     }
 }
 
+/// Determine whether a bootstrap peer address should be redialed.
+///
+/// If the address contains an embedded PeerID (`/p2p/<id>`), only redial when
+/// that specific peer is not in the connected set. If the address has no PeerID
+/// (bare IP+port), always attempt redial — the caller cannot tell whether the
+/// target is already connected, so it must try unconditionally.
+pub fn should_redial_bootstrap(addr: &Multiaddr, connected_peers: &HashSet<PeerId>) -> bool {
+    let peer_id = addr.iter().find_map(|p| {
+        if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None }
+    });
+    match peer_id {
+        Some(pid) => !connected_peers.contains(&pid),
+        None => true,
+    }
+}
+
 use futures::StreamExt;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn make_addr(s: &str) -> Multiaddr {
+        s.parse().unwrap()
+    }
+
+    fn make_peer_id(s: &str) -> PeerId {
+        PeerId::from_str(s).unwrap()
+    }
+
+    const HETZNER_PEER: &str = "12D3KooWGVXR1MTGqQfnxgpguaiKGEtxc8sFYMbkuJkHdfnuHobG";
+
+    #[test]
+    fn bare_address_always_redials_even_with_other_peers() {
+        let addr = make_addr("/ip4/39.102.144.231/tcp/9711");
+        let mut peers = HashSet::new();
+        // Even with unrelated peers connected, bare address should redial
+        peers.insert(make_peer_id("12D3KooWNwBWp2mdsBMXpB7fnteNBkQTAQkXsZGwGzF2zjHpTGyT"));
+        assert!(should_redial_bootstrap(&addr, &peers));
+    }
+
+    #[test]
+    fn bare_address_redials_when_no_peers() {
+        let addr = make_addr("/ip4/178.156.162.162/tcp/9711");
+        let peers = HashSet::new();
+        assert!(should_redial_bootstrap(&addr, &peers));
+    }
+
+    #[test]
+    fn address_with_peer_id_skips_when_connected() {
+        let addr = make_addr(&format!("/ip4/178.156.162.162/tcp/9711/p2p/{HETZNER_PEER}"));
+        let mut peers = HashSet::new();
+        peers.insert(make_peer_id(HETZNER_PEER));
+        assert!(!should_redial_bootstrap(&addr, &peers));
+    }
+
+    #[test]
+    fn address_with_peer_id_redials_when_disconnected() {
+        let addr = make_addr(&format!("/ip4/178.156.162.162/tcp/9711/p2p/{HETZNER_PEER}"));
+        let mut peers = HashSet::new();
+        // Different peer connected, target peer is not
+        peers.insert(make_peer_id("12D3KooWNwBWp2mdsBMXpB7fnteNBkQTAQkXsZGwGzF2zjHpTGyT"));
+        assert!(should_redial_bootstrap(&addr, &peers));
+    }
+
+    #[test]
+    fn address_with_peer_id_redials_when_empty() {
+        let addr = make_addr(&format!("/ip4/178.156.162.162/tcp/9711/p2p/{HETZNER_PEER}"));
+        let peers = HashSet::new();
+        assert!(should_redial_bootstrap(&addr, &peers));
+    }
+}
