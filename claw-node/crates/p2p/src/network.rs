@@ -342,8 +342,9 @@ impl P2pNetwork {
                         });
                         let should_dial = match peer_id {
                             Some(pid) => !self.peers.contains(&pid),
-                            // No PeerID in address: dial whenever we have no peers
-                            None => self.peers.is_empty(),
+                            // Always redial bootstrap peers without embedded PeerID —
+                            // otherwise mDNS-discovered local peers suppress reconnection.
+                            None => true,
                         };
                         if should_dial {
                             tracing::debug!(%addr, "Redialing disconnected bootstrap peer");
