@@ -7,7 +7,7 @@ declare function setInterval(fn: () => void, ms: number): unknown
 declare function clearInterval(id: unknown): void
 declare function fetch(url: string, init?: Record<string, unknown>): Promise<{ status: number; ok: boolean; text: () => Promise<string>; json: () => Promise<unknown> }>
 
-const VERSION = '0.1.36'
+const VERSION = '0.1.38'
 const PLUGIN_ID = 'clawnetwork'
 const GITHUB_REPO = 'clawlabz/claw-network'
 const DEFAULT_RPC_PORT = 9710
@@ -22,7 +22,7 @@ const MAX_RESTART_ATTEMPTS = 3
 // Built-in bootstrap peers for each network
 const BOOTSTRAP_PEERS: Record<string, string[]> = {
   mainnet: [
-    '/ip4/178.156.162.162/tcp/9711',
+    '/ip4/178.156.162.162/tcp/9711/p2p/12D3KooWGVXR1MTGqQfnxgpguaiKGEtxc8sFYMbkuJkHdfnuHobG',
     '/ip4/39.102.144.231/tcp/9711',
   ],
   testnet: [
@@ -395,9 +395,112 @@ function loadWallet(): WalletData | null {
   } catch { return null }
 }
 
+// loadWallet() is bare JSON.parse — field names may be secretKey, secret_key, or private_key
+// depending on when wallet.json was created. This matches /api/wallet/export fallback chain.
+function resolveSecretKey(w: Record<string, unknown>): string {
+  return String(w.secret_key || w.secretKey || w.private_key || '')
+}
+
 function saveWallet(data: WalletData): void {
   ensureDir(WORKSPACE_DIR)
   fs.writeFileSync(WALLET_PATH, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+}
+
+interface IdentityStatus {
+  walletAddress: string | null
+  walletHasSecretKey: boolean
+  keyJsonAddress: string | null
+  keyJsonEncrypted: boolean
+  keyJsonExists: boolean
+  consistent: boolean
+}
+
+function checkIdentityConsistency(api?: OpenClawApi): IdentityStatus {
+  const wallet = loadWallet()
+  const nodeKeyPath = path.join(DATA_DIR, 'key.json')
+  const walletSecret = wallet ? resolveSecretKey(wallet as unknown as Record<string, unknown>) : ''
+
+  const result: IdentityStatus = {
+    walletAddress: wallet?.address || null,
+    walletHasSecretKey: !!walletSecret,
+    keyJsonAddress: null,
+    keyJsonEncrypted: false,
+    keyJsonExists: false,
+    consistent: false,
+  }
+
+  if (fs.existsSync(nodeKeyPath)) {
+    try {
+      const nodeKey = JSON.parse(fs.readFileSync(nodeKeyPath, 'utf8'))
+      result.keyJsonAddress = String(nodeKey.address || nodeKey.public_key || '')
+      result.keyJsonEncrypted = !!nodeKey.encrypted
+      result.keyJsonExists = true
+    } catch { /* */ }
+  }
+
+  result.consistent = !!(
+    result.walletAddress &&
+    result.keyJsonAddress &&
+    result.walletAddress === result.keyJsonAddress
+  )
+
+  if (!result.consistent && result.walletAddress && result.keyJsonAddress) {
+    api?.logger?.warn?.(
+      `[clawnetwork] IDENTITY MISMATCH: wallet=${result.walletAddress.slice(0,12)} key=${result.keyJsonAddress.slice(0,12)}. ` +
+      `Run 'openclaw clawnetwork wallet:migrate' to fix.`
+    )
+  }
+
+  return result
+}
+
+function backupLegacyWallet(): string | null {
+  if (!fs.existsSync(WALLET_PATH)) return null
+  const backupPath = path.join(WORKSPACE_DIR, `wallet.backup.${Date.now()}.json`)
+  fs.copyFileSync(WALLET_PATH, backupPath)
+  fs.chmodSync(backupPath, 0o600)
+  return backupPath
+}
+
+// PHASE 3 — DO NOT ENABLE until all nodes have completed Phase 2 fund migration.
+// When ready: replace ensureWallet() body with this, or call this after ensureWallet().
+// This forces wallet.json to sync with key.json on every startup.
+function syncWalletToKeyJson(network: string, api?: OpenClawApi): void {
+  const nodeKeyPath = path.join(DATA_DIR, 'key.json')
+  if (!fs.existsSync(nodeKeyPath)) return
+
+  const existing = loadWallet()
+  let nodeKey: Record<string, unknown>
+  try {
+    nodeKey = JSON.parse(fs.readFileSync(nodeKeyPath, 'utf8'))
+  } catch { return }
+
+  const keyAddress = String(nodeKey.address || nodeKey.public_key || '')
+  if (!keyAddress) return
+  if (existing && existing.address === keyAddress) return
+
+  // Backup before overwrite
+  const hasBackup = fs.readdirSync(WORKSPACE_DIR).some((f: string) => f.startsWith('wallet.backup.'))
+  if (!hasBackup && existing) {
+    backupLegacyWallet()
+    api?.logger?.warn?.(`[clawnetwork] legacy wallet backed up before sync`)
+  }
+
+  const keyIsEncrypted = !!nodeKey.encrypted
+  const keySecretKey = keyIsEncrypted ? '' : String(nodeKey.secret_key || nodeKey.private_key || '')
+
+  api?.logger?.warn?.(`[clawnetwork] syncing wallet to key.json: ${existing?.address?.slice(0,12) || '(none)'} → ${keyAddress.slice(0,12)}`)
+  const wallet: WalletData = {
+    address: keyAddress,
+    secretKey: keySecretKey,
+    createdAt: new Date().toISOString(),
+    network,
+  }
+  saveWallet(wallet)
+
+  if (keyIsEncrypted) {
+    api?.logger?.warn?.(`[clawnetwork] key.json is encrypted — wallet.json secretKey is empty. Use 'claw-node key export' for private key.`)
+  }
 }
 
 function ensureWallet(network: string, api?: OpenClawApi): WalletData {
@@ -1135,6 +1238,14 @@ function buildUiHtml(cfg: PluginConfig): string {
             <div class="wallet-addr"><span id="walletAddrText" style="flex:1;min-width:0;word-break:break-all"></span><button class="copy-btn" onclick="copyText(cachedAddress)">Copy</button></div>
           </div>
         </div>
+        <div id="identityMismatchBanner" style="display:none;background:rgba(255,160,0,0.12);border:1px solid rgba(255,160,0,0.3);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:12px;line-height:1.5">
+          <div style="color:#ffa000;font-weight:600;margin-bottom:6px">&#x26A0; Identity Mismatch</div>
+          <div>Active (key.json): <span id="mismatchActiveAddr" style="font-family:monospace;color:var(--green)"></span></div>
+          <div style="margin-bottom:4px">Balance: <span id="mismatchActiveBalance" style="color:var(--green)"></span></div>
+          <div>Legacy (wallet.json): <span id="mismatchLegacyAddr" style="font-family:monospace;color:#ffa000"></span></div>
+          <div style="margin-bottom:6px">Balance: <span id="mismatchLegacyBalance" style="color:#ffa000"></span></div>
+          <div style="color:var(--text-dim)">Run <code>openclaw clawnetwork wallet:migrate</code> to transfer legacy funds.</div>
+        </div>
         <div class="quick-actions" id="walletActions">
           <div class="quick-action" onclick="importToExtension()" id="qaImportExt">
             <span class="qa-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
@@ -1548,6 +1659,17 @@ function buildUiHtml(cfg: PluginConfig): string {
         // Extension detection hint
         const hasExt = !!(window.clawNetwork && window.clawNetwork.isClawNetwork);
         document.getElementById('qaImportHint').textContent = hasExt ? 'Extension detected — click to import' : 'Install wallet extension first';
+        // Identity mismatch display
+        const mismatchBanner = document.getElementById('identityMismatchBanner');
+        if (s.identityMismatch && s.legacyAddress) {
+          mismatchBanner.style.display = '';
+          document.getElementById('mismatchActiveAddr').textContent = s.walletAddress.slice(0, 16) + '...';
+          document.getElementById('mismatchActiveBalance').textContent = s.balance || '—';
+          document.getElementById('mismatchLegacyAddr').textContent = s.legacyAddress.slice(0, 16) + '...';
+          document.getElementById('mismatchLegacyBalance').textContent = s.legacyBalance || '—';
+        } else {
+          mismatchBanner.style.display = 'none';
+        }
       } else {
         document.getElementById('walletEmpty').style.display = '';
         document.getElementById('walletLoaded').style.display = 'none';
@@ -1745,13 +1867,33 @@ async function handle(req, res) {
           }
         }
       } catch {}
+      // Identity mismatch detection: check wallet.json vs key.json
+      let legacyAddress = '';
+      let legacyBalance = '';
+      let identityMismatch = false;
+      const keyJsonPath = path.join(OC_WORKSPACE, 'chain-data', 'key.json');
       try {
         const walletPath = OC_WALLET_PATH;
         const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
         walletAddress = w.address || '';
-        if (w.address) {
-          const b = await rpcCall('claw_getBalance', [w.address]); balance = formatClaw(b);
-          try { const ag = await rpcCall('claw_getAgent', [w.address]); agentName = (ag && ag.name) ? ag.name : ''; } catch {}
+        // Check if key.json exists and differs
+        if (fs.existsSync(keyJsonPath)) {
+          try {
+            const nk = JSON.parse(fs.readFileSync(keyJsonPath, 'utf8'));
+            const keyAddr = String(nk.address || nk.public_key || '');
+            if (keyAddr && walletAddress && keyAddr !== walletAddress) {
+              identityMismatch = true;
+              legacyAddress = walletAddress;
+              walletAddress = keyAddr; // show active (key.json) as primary
+            }
+          } catch { /* key.json unreadable, skip */ }
+        }
+        if (walletAddress) {
+          const b = await rpcCall('claw_getBalance', [walletAddress]); balance = formatClaw(b);
+          try { const ag = await rpcCall('claw_getAgent', [walletAddress]); agentName = (ag && ag.name) ? ag.name : ''; } catch {}
+        }
+        if (identityMismatch && legacyAddress) {
+          try { const lb = await rpcCall('claw_getBalance', [legacyAddress]); legacyBalance = formatClaw(lb); } catch {}
         }
       } catch {}
       json(200, {
@@ -1769,6 +1911,7 @@ async function handle(req, res) {
         restartCount: 0, dataDir: path.join(os.homedir(), '.clawnetwork'), balance, agentName, syncing: h.status === 'degraded', peerless: h.peer_count === 0, lastBlockAgeSecs: h.last_block_age_secs,
         upgradeLevel, latestVersion, releaseUrl, changelog, announcement,
         pluginUpgradeLevel, pluginLatestVersion, pluginChangelog,
+        identityMismatch, legacyAddress: identityMismatch ? legacyAddress : undefined, legacyBalance: identityMismatch ? legacyBalance : undefined,
       });
     } catch {
         const walletAddr = (() => { try { return JSON.parse(fs.readFileSync(OC_WALLET_PATH, 'utf8')).address; } catch { return ''; } })();
@@ -1794,7 +1937,12 @@ async function handle(req, res) {
     try {
       const walletPath = OC_WALLET_PATH;
       const w = JSON.parse(fs.readFileSync(walletPath, 'utf8'));
-      json(200, { address: w.address, secretKey: w.secret_key || w.secretKey || w.private_key || '' });
+      const sk = w.secret_key || w.secretKey || w.private_key || '';
+      if (!sk) {
+        json(400, { address: w.address || '', secretKey: null, error: 'Secret key not available in wallet.json (key.json may be encrypted). Use: claw-node key export --data-dir <chain-data-path>' });
+      } else {
+        json(200, { address: w.address, secretKey: sk });
+      }
     } catch (e) { json(400, { error: 'No wallet found' }); }
     return;
   }
@@ -1922,7 +2070,7 @@ async function handle(req, res) {
           if (cfg.syncMode) syncMode = cfg.syncMode;
           if (cfg.extraBootstrapPeers) extraPeers = cfg.extraBootstrapPeers;
         } catch {}
-        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
+        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711/p2p/12D3KooWGVXR1MTGqQfnxgpguaiKGEtxc8sFYMbkuJkHdfnuHobG', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
         const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
         const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--data-dir', OC_DATA_DIR, '--allow-genesis'];
         for (const peer of peers) { args.push('--bootstrap', peer); }
@@ -2005,7 +2153,7 @@ async function handle(req, res) {
           if (cfg.syncMode) syncMode = cfg.syncMode;
           if (cfg.extraBootstrapPeers) extraPeers = cfg.extraBootstrapPeers;
         } catch {}
-        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
+        const bootstrapPeers = { mainnet: ['/ip4/178.156.162.162/tcp/9711/p2p/12D3KooWGVXR1MTGqQfnxgpguaiKGEtxc8sFYMbkuJkHdfnuHobG', '/ip4/39.102.144.231/tcp/9711'], testnet: ['/ip4/178.156.162.162/tcp/9721', '/ip4/39.102.144.231/tcp/9721'], devnet: [] };
         const peers = [...(bootstrapPeers[network] || []), ...extraPeers];
         const args = ['start', '--network', network, '--rpc-port', String(RPC_PORT), '--p2p-port', String(p2pPort), '--sync-mode', syncMode, '--data-dir', OC_DATA_DIR, '--allow-genesis'];
         for (const peer of peers) { args.push('--bootstrap', peer); }
@@ -2181,7 +2329,7 @@ function getDashboardUrl(): string | null {
 
 const CLI_COMMANDS = [
   'clawnetwork:status', 'clawnetwork:start', 'clawnetwork:stop',
-  'clawnetwork:wallet', 'clawnetwork:wallet:import', 'clawnetwork:wallet:export',
+  'clawnetwork:wallet', 'clawnetwork:wallet:import', 'clawnetwork:wallet:export', 'clawnetwork:wallet:migrate',
   'clawnetwork:faucet', 'clawnetwork:transfer', 'clawnetwork:stake',
   'clawnetwork:logs', 'clawnetwork:config', 'clawnetwork:ui',
   'clawnetwork:service:register', 'clawnetwork:service:search',
@@ -2434,7 +2582,159 @@ export default function register(api: OpenClawApi) {
     const handleWalletExport = () => {
       const wallet = loadWallet()
       if (!wallet) { out({ error: 'No wallet found. Run: openclaw clawnetwork wallet' }); return }
-      out({ address: wallet.address, secretKey: wallet.secretKey, _warning: 'NEVER share your secret key with anyone' })
+      const sk = resolveSecretKey(wallet as unknown as Record<string, unknown>)
+      if (!sk) {
+        out({ address: wallet.address, secretKey: null, _error: 'Secret key not available in wallet.json (key.json may be encrypted). Use: claw-node key export --data-dir ' + DATA_DIR })
+        return
+      }
+      out({ address: wallet.address, secretKey: sk, _warning: 'NEVER share your secret key with anyone' })
+    }
+
+    const handleWalletMigrate = async () => {
+      const wallet = loadWallet()
+      const nodeKeyPath = path.join(DATA_DIR, 'key.json')
+
+      if (!wallet) { out({ error: 'No wallet.json found' }); return }
+      if (!fs.existsSync(nodeKeyPath)) { out({ error: 'No key.json found at ' + nodeKeyPath }); return }
+
+      let nodeKey: Record<string, unknown>
+      try {
+        nodeKey = JSON.parse(fs.readFileSync(nodeKeyPath, 'utf8'))
+      } catch { out({ error: 'Cannot parse key.json' }); return }
+
+      const keyAddress = String(nodeKey.address || '')
+      if (!keyAddress) { out({ error: 'key.json has no address field' }); return }
+
+      if (wallet.address === keyAddress) {
+        out({ status: 'consistent', message: 'wallet.json and key.json already match', address: keyAddress })
+        return
+      }
+
+      // Encrypted key.json detection
+      const keyIsEncrypted = !!nodeKey.encrypted
+      const keySecretKey = keyIsEncrypted ? '' : String(nodeKey.secret_key || nodeKey.private_key || '')
+
+      // Step 1: Backup legacy wallet
+      const backupPath = backupLegacyWallet()
+      api?.logger?.info?.(`[migrate] legacy wallet backed up to ${backupPath}`)
+
+      // Step 2: Check legacy balance via RPC
+      const rpcPort = activeRpcPort ?? cfg.rpcPort
+      let balanceRaw = 0n
+      try {
+        const balResult = await rpcCall(rpcPort, 'claw_getBalance', [wallet.address])
+        balanceRaw = BigInt(String(balResult) || '0')
+      } catch (e: unknown) {
+        out({ error: 'Cannot query balance — is the node running?', detail: e instanceof Error ? e.message : String(e) })
+        return
+      }
+
+      const GAS_FEE = 1_000_000n // 0.001 CLAW (types/src/state.rs:142)
+      const transferableRaw = balanceRaw > GAS_FEE ? balanceRaw - GAS_FEE : 0n
+
+      if (transferableRaw <= 0n) {
+        api?.logger?.info?.(`[migrate] legacy wallet balance too low to transfer (raw=${balanceRaw})`)
+      } else {
+        // Step 3: Read legacy wallet secret key
+        const walletSecret = resolveSecretKey(wallet as unknown as Record<string, unknown>)
+        if (!walletSecret) {
+          out({ error: 'Cannot read secret key from wallet.json (tried secret_key/secretKey/private_key)' })
+          return
+        }
+
+        // chain_id from key.json, never hardcoded
+        const chainId = String(nodeKey.chain_id || '')
+        if (!chainId) { out({ error: 'key.json missing chain_id field' }); return }
+
+        // Create temp data-dir with legacy key for signing
+        const tmpDir = path.join(os.tmpdir(), `claw-migrate-${Date.now()}`)
+        fs.mkdirSync(tmpDir, { recursive: true })
+        fs.writeFileSync(path.join(tmpDir, 'key.json'), JSON.stringify({
+          address: wallet.address,
+          secret_key: walletSecret,
+          chain_id: chainId,
+        }), { mode: 0o600 })
+
+        // Format amount as CLAW string for CLI (parse_claw_amount expects human-readable)
+        const wholePart = transferableRaw / ONE_CLAW
+        const fracPart = transferableRaw % ONE_CLAW
+        const transferAmountClaw = fracPart > 0n
+          ? `${wholePart}.${fracPart.toString().padStart(DECIMALS, '0').replace(/0+$/, '')}`
+          : `${wholePart}`
+
+        api?.logger?.info?.(`[migrate] transferring ${transferAmountClaw} CLAW to ${keyAddress.slice(0,12)}... (reserving gas)`)
+
+        let txHash = ''
+        try {
+          const binary = findBinary()
+          if (!binary) { out({ error: 'claw-node binary not found' }); return }
+          const result = execFileSync(binary, [
+            'transfer', keyAddress, transferAmountClaw,
+            '--data-dir', tmpDir,
+            '--rpc', `http://localhost:${rpcPort}`,
+          ], { encoding: 'utf8', timeout: 30_000 })
+          const hashMatch = result.match(/TX:\s+([0-9a-f]{64})/i)
+          txHash = hashMatch?.[1] || ''
+          api?.logger?.info?.(`[migrate] transfer submitted: ${txHash}`)
+        } catch (e: unknown) {
+          out({ error: 'Transfer failed', detail: e instanceof Error ? e.message : String(e) })
+          return
+        } finally {
+          fs.rmSync(tmpDir, { recursive: true, force: true })
+        }
+
+        // Step 4: txHash is required for safe confirmation
+        if (!txHash) {
+          out({ error: 'Transfer CLI did not return a tx hash — cannot verify. wallet.json NOT overwritten. Check manually.' })
+          return
+        }
+
+        // Step 4b: Poll receipt for confirmation
+        let confirmed = false
+        for (let i = 0; i < 10; i++) {
+          try {
+            const receipt = await rpcCall(rpcPort, 'claw_getTransactionReceipt', [txHash]) as Record<string, unknown> | null
+            if (receipt && receipt.blockHeight) {
+              confirmed = receipt.success !== false
+              break
+            }
+          } catch { /* retry */ }
+          await new Promise(r => setTimeout(r, 3000))
+        }
+        if (!confirmed) {
+          out({ error: `Transfer ${txHash} not confirmed after 30s — wallet.json NOT overwritten. Check manually.` })
+          return
+        }
+
+        // Step 5: Verify legacy balance is dust (≤ GAS_FEE)
+        const oldBalAfter = BigInt(String(await rpcCall(rpcPort, 'claw_getBalance', [wallet.address])) || '0')
+        if (oldBalAfter > GAS_FEE) {
+          out({ error: `Legacy address still has ${oldBalAfter} raw after transfer — wallet.json NOT overwritten.` })
+          return
+        }
+      }
+
+      // Step 6: Overwrite wallet.json with key.json identity
+      const newWallet: WalletData = {
+        address: keyAddress,
+        secretKey: keySecretKey,
+        createdAt: new Date().toISOString(),
+        network: wallet.network,
+      }
+      saveWallet(newWallet)
+
+      if (keyIsEncrypted) {
+        api?.logger?.warn?.(`[migrate] key.json is encrypted — wallet.json secretKey is empty. Use 'claw-node key export' for private key.`)
+      }
+
+      out({
+        status: 'migrated',
+        previousAddress: wallet.address,
+        newAddress: keyAddress,
+        backupPath,
+        transferred: transferableRaw > 0n ? formatClaw(transferableRaw) : 'nothing (zero balance)',
+        encrypted: keyIsEncrypted,
+      })
     }
 
     const handleFaucet = async () => {
@@ -2569,6 +2869,7 @@ export default function register(api: OpenClawApi) {
     cmd(walletGroup, 'show').description('Show wallet address and balance').action(handleWallet)
     cmd(walletGroup, 'import').description('Import wallet from private key').argument('<key>', 'Private key hex').action(handleWalletImport)
     cmd(walletGroup, 'export').description('Export wallet private key').action(handleWalletExport)
+    cmd(walletGroup, 'migrate').description('Migrate legacy wallet to key.json identity').action(handleWalletMigrate)
 
     // Service subcommands
     const serviceGroup = cmd(group, 'service').description('Service discovery')
@@ -2583,6 +2884,7 @@ export default function register(api: OpenClawApi) {
       cmd(program, `${prefix}:wallet`).description('Show wallet').action(handleWallet)
       cmd(program, `${prefix}:wallet:import`).description('Import wallet').argument('<key>', 'Private key hex').action(handleWalletImport)
       cmd(program, `${prefix}:wallet:export`).description('Export wallet').action(handleWalletExport)
+      cmd(program, `${prefix}:wallet:migrate`).description('Migrate legacy wallet to key.json').action(handleWalletMigrate)
       cmd(program, `${prefix}:faucet`).description('Get testnet CLAW').action(handleFaucet)
       cmd(program, `${prefix}:transfer`).description('Transfer CLAW').argument('<to>', 'Recipient').argument('<amount>', 'Amount').action(handleTransfer)
       cmd(program, `${prefix}:stake`).description('Stake CLAW').argument('<amount>', 'Amount').action(handleStake)
@@ -2703,6 +3005,9 @@ export default function register(api: OpenClawApi) {
 
           // Step 3: Wallet
           const wallet = ensureWallet(cfg.network, api)
+
+          // Step 3.1: Auto-sync wallet.json to key.json identity (backs up before overwrite)
+          syncWalletToKeyJson(cfg.network, api)
 
           // Step 4: Save config for UI server to read
           const cfgPath = path.join(WORKSPACE_DIR, 'config.json')
