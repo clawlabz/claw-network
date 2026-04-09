@@ -11,7 +11,7 @@ use claw_p2p::{BlockVote, NetworkEvent, P2pCommand, SyncRequest, SyncResponse};
 use claw_state::WorldState;
 use claw_storage::ChainStore;
 use claw_types::block::Block;
-use claw_types::state::{MinerCheckinWitness, CHECKIN_V3_HEIGHT, MINER_EPOCH_LENGTH};
+use claw_types::state::{MinerCheckinWitness, CHECKIN_V3_HEIGHT, CHECKIN_V3_1_HEIGHT, MINER_EPOCH_LENGTH};
 use claw_types::transaction::Transaction;
 use tokio::sync::mpsc;
 
@@ -34,16 +34,37 @@ impl CheckinCache {
         self.entries.entry(w.epoch).or_default().insert(w.miner, w);
     }
 
-    /// Get witnesses for `epoch` whose miners have not yet checked in on-chain.
-    fn get_pending(&self, epoch: u64, state: &WorldState) -> Vec<MinerCheckinWitness> {
-        self.entries.get(&epoch)
-            .map(|m| m.values()
-                .filter(|w| state.miners.get(&w.miner)
-                    .map(|mi| mi.last_checkin_epoch != epoch)
-                    .unwrap_or(false))
-                .cloned()
-                .collect())
-            .unwrap_or_default()
+    /// Get witnesses whose miners have not yet checked in this epoch.
+    /// After V3.1: queries both current and previous epoch, per-miner dedup
+    /// (prefer current-epoch witness). Before V3.1: current epoch only (legacy).
+    fn get_pending(&self, epoch: u64, state: &WorldState, v3_1_active: bool) -> Vec<MinerCheckinWitness> {
+        let mut by_miner: std::collections::HashMap<[u8; 32], MinerCheckinWitness> =
+            std::collections::HashMap::new();
+
+        let epochs_to_check: &[u64] = if v3_1_active {
+            &[epoch, epoch.saturating_sub(1)]
+        } else {
+            std::slice::from_ref(&epoch)
+        };
+
+        // Current epoch first — first insert wins (preferred)
+        for &e in epochs_to_check {
+            if let Some(m) = self.entries.get(&e) {
+                for w in m.values() {
+                    // Use `e` (the cache entry's epoch), not `epoch` (current_epoch).
+                    // A witness cached at epoch N with last_checkin_epoch=N (already credited)
+                    // must be excluded even when queried from epoch N+1.
+                    let already_credited = state.miners.get(&w.miner)
+                        .map(|mi| mi.last_checkin_epoch >= e)
+                        .unwrap_or(true);
+                    if !already_credited {
+                        by_miner.entry(w.miner).or_insert_with(|| w.clone());
+                    }
+                }
+            }
+        }
+
+        by_miner.into_values().collect()
     }
 
     /// Garbage-collect old epochs. Keep current and previous.
@@ -410,18 +431,23 @@ impl Chain {
             return Err(format!("miner {} not registered", hex::encode(witness.miner)));
         }
 
-        // (b) epoch is current
+        // (b) epoch check — after V3.1, accept current or previous epoch
         let current_epoch = inner.state.block_height / MINER_EPOCH_LENGTH;
-        if witness.epoch != current_epoch {
+        let v3_1_active = inner.state.block_height >= CHECKIN_V3_1_HEIGHT;
+        if v3_1_active {
+            if witness.epoch != current_epoch && witness.epoch != current_epoch.saturating_sub(1) {
+                return Err(format!("epoch mismatch: expected {} or {}, got {}", current_epoch, current_epoch.saturating_sub(1), witness.epoch));
+            }
+        } else if witness.epoch != current_epoch {
             return Err(format!("epoch mismatch: expected {current_epoch}, got {}", witness.epoch));
         }
 
-        // (c) ref_block_height in [epoch_start, latest_height]
-        let epoch_start = current_epoch * MINER_EPOCH_LENGTH;
-        if witness.ref_block_height < epoch_start || witness.ref_block_height > inner.latest_block.height {
+        // (c) ref_block_height in [witness_epoch_start, latest_height]
+        let witness_epoch_start = witness.epoch * MINER_EPOCH_LENGTH;
+        if witness.ref_block_height < witness_epoch_start || witness.ref_block_height > inner.latest_block.height {
             return Err(format!(
                 "ref_block_height {} out of range [{}, {}]",
-                witness.ref_block_height, epoch_start, inner.latest_block.height
+                witness.ref_block_height, witness_epoch_start, inner.latest_block.height
             ));
         }
         // Verify ref_block_hash matches known block
@@ -704,7 +730,8 @@ impl Chain {
             // Step 2: get pending witnesses and apply
             let cache_total: usize = inner.checkin_cache.entries.values().map(|m| m.len()).sum();
             let cache_epochs: Vec<u64> = inner.checkin_cache.entries.keys().copied().collect();
-            let mut witnesses = inner.checkin_cache.get_pending(current_epoch, &inner.state);
+            let v3_1_active = new_height >= CHECKIN_V3_1_HEIGHT;
+            let mut witnesses = inner.checkin_cache.get_pending(current_epoch, &inner.state, v3_1_active);
             witnesses.sort_by_key(|w| w.miner);
             if cache_total > 0 || !witnesses.is_empty() {
                 tracing::info!(
@@ -716,10 +743,11 @@ impl Chain {
                 );
             }
 
-            // Step 3: apply checkins (use w.epoch to match receive_block semantics)
+            // Step 3: apply checkins — credit to current_epoch (block's epoch),
+            // not w.epoch, so settlement at next epoch boundary sees it.
             for w in &witnesses {
                 if let Some(miner) = inner.state.miners.get_mut(&w.miner) {
-                    miner.last_checkin_epoch = w.epoch;
+                    miner.last_checkin_epoch = current_epoch;
                 }
             }
 
@@ -1090,7 +1118,7 @@ impl Chain {
 
             // Step 2: verify checkin_witnesses
             let block_epoch = block.height / MINER_EPOCH_LENGTH;
-            let epoch_start = block_epoch * MINER_EPOCH_LENGTH;
+            let v3_1_active = block.height >= CHECKIN_V3_1_HEIGHT;
             let mut seen_in_block = std::collections::HashSet::<[u8; 32]>::new();
 
             for w in &block.checkin_witnesses {
@@ -1098,13 +1126,18 @@ impl Chain {
                 if !state_clone.miners.contains_key(&w.miner) {
                     return Err(format!("checkin from unregistered miner {}", hex::encode(w.miner)));
                 }
-                // (b) epoch match
-                if w.epoch != block_epoch {
+                // (b) epoch match — after V3.1, accept current or previous epoch
+                if v3_1_active {
+                    if w.epoch != block_epoch && w.epoch != block_epoch.saturating_sub(1) {
+                        return Err(format!("checkin epoch mismatch: expected {} or {}, got {}", block_epoch, block_epoch.saturating_sub(1), w.epoch));
+                    }
+                } else if w.epoch != block_epoch {
                     return Err(format!("checkin epoch mismatch: expected {block_epoch}, got {}", w.epoch));
                 }
-                // (c) ref_block in [epoch_start, block.height)
-                if w.ref_block_height < epoch_start || w.ref_block_height >= block.height {
-                    return Err(format!("checkin ref_block_height {} out of range [{epoch_start}, {})", w.ref_block_height, block.height));
+                // (c) ref_block in [witness_epoch_start, block.height)
+                let witness_epoch_start = w.epoch * MINER_EPOCH_LENGTH;
+                if w.ref_block_height < witness_epoch_start || w.ref_block_height >= block.height {
+                    return Err(format!("checkin ref_block_height {} out of range [{witness_epoch_start}, {})", w.ref_block_height, block.height));
                 }
                 // Verify ref_block_hash matches known block
                 if let Ok(Some(known)) = inner.store.get_block(w.ref_block_height) {
@@ -1134,9 +1167,10 @@ impl Chain {
                 }
             }
 
-            // Step 3: apply checkins
+            // Step 3: apply checkins — credit to block_epoch (not w.epoch)
+            // so settlement sees the checkin for this epoch regardless of witness origin epoch
             for w in &block.checkin_witnesses {
-                state_clone.miners.get_mut(&w.miner).unwrap().last_checkin_epoch = w.epoch;
+                state_clone.miners.get_mut(&w.miner).unwrap().last_checkin_epoch = block_epoch;
             }
 
             // Cache received witnesses for our own future blocks
@@ -2526,5 +2560,148 @@ impl claw_vm::ChainState for ChainStateSnapshot {
         // View calls are read-only and cross-contract calls are blocked,
         // so we don't need to look up contract code here.
         None
+    }
+}
+
+#[cfg(test)]
+mod checkin_cache_tests {
+    use super::*;
+    use claw_types::state::{MinerInfo, MinerTier, MINER_EPOCH_LENGTH};
+    use claw_state::WorldState;
+
+    fn make_witness(miner: [u8; 32], epoch: u64) -> MinerCheckinWitness {
+        MinerCheckinWitness {
+            miner,
+            epoch,
+            ref_block_height: epoch * MINER_EPOCH_LENGTH + 5,
+            ref_block_hash: [0u8; 32],
+            signature: [0u8; 64],
+        }
+    }
+
+    fn make_miner(addr: [u8; 32], last_checkin_epoch: u64) -> MinerInfo {
+        MinerInfo {
+            address: addr,
+            tier: MinerTier::Online,
+            name: "test-miner".into(),
+            registered_at: 0,
+            last_heartbeat: 0,
+            ip_prefix: vec![0, 0, 0],
+            active: true,
+            reputation_bps: 2000,
+            pending_rewards: 0,
+            pending_epoch: 0,
+            epoch_attendance: 0,
+            consecutive_misses: 0,
+            last_checkin_epoch,
+        }
+    }
+
+    /// Case 1: epoch=N-1 witness at block_epoch=N → accepted, credited to N
+    #[test]
+    fn test_prev_epoch_witness_included_v3_1() {
+        let miner_a = [1u8; 32];
+        let mut cache = CheckinCache::default();
+        cache.insert(make_witness(miner_a, 99)); // epoch N-1
+
+        let mut state = WorldState::default();
+        state.miners.insert(miner_a, make_miner(miner_a, 50)); // old checkin
+
+        // V3.1 active: should find the epoch-99 witness when querying epoch 100
+        let pending = cache.get_pending(100, &state, true);
+        assert_eq!(pending.len(), 1, "should find prev-epoch witness");
+        assert_eq!(pending[0].miner, miner_a);
+        assert_eq!(pending[0].epoch, 99); // witness epoch is 99
+
+        // Legacy (pre-V3.1): should NOT find it
+        let pending_legacy = cache.get_pending(100, &state, false);
+        assert_eq!(pending_legacy.len(), 0, "legacy should not find prev-epoch witness");
+    }
+
+    /// Case 2: same miner has both epoch N and N-1 witness → producer picks only one
+    #[test]
+    fn test_same_miner_two_epochs_dedup() {
+        let miner_a = [2u8; 32];
+        let mut cache = CheckinCache::default();
+        cache.insert(make_witness(miner_a, 99));  // epoch N-1
+        cache.insert(make_witness(miner_a, 100)); // epoch N
+
+        let mut state = WorldState::default();
+        state.miners.insert(miner_a, make_miner(miner_a, 50));
+
+        let pending = cache.get_pending(100, &state, true);
+        assert_eq!(pending.len(), 1, "should dedup to one witness per miner");
+        // Should prefer current epoch (100) since we iterate current first
+        assert_eq!(pending[0].epoch, 100);
+    }
+
+    /// Case 3: activation boundary — pre-V3.1 height uses strict rules
+    #[test]
+    fn test_activation_boundary() {
+        let miner_a = [3u8; 32];
+        let mut cache = CheckinCache::default();
+        cache.insert(make_witness(miner_a, 99)); // prev epoch only
+
+        let mut state = WorldState::default();
+        state.miners.insert(miner_a, make_miner(miner_a, 50));
+
+        // Pre-V3.1: only current epoch, should find nothing
+        let pending_old = cache.get_pending(100, &state, false);
+        assert_eq!(pending_old.len(), 0);
+
+        // Post-V3.1: relaxed, should find the witness
+        let pending_new = cache.get_pending(100, &state, true);
+        assert_eq!(pending_new.len(), 1);
+    }
+
+    /// Already-credited miner should be excluded
+    #[test]
+    fn test_already_credited_excluded() {
+        let miner_a = [4u8; 32];
+        let mut cache = CheckinCache::default();
+        cache.insert(make_witness(miner_a, 100));
+
+        let mut state = WorldState::default();
+        state.miners.insert(miner_a, make_miner(miner_a, 100)); // already credited this epoch
+
+        let pending = cache.get_pending(100, &state, true);
+        assert_eq!(pending.len(), 0, "already credited miner should be excluded");
+    }
+
+    /// Replay prevention: witness cached at epoch N, credited to block_epoch N (last_checkin_epoch=N),
+    /// must NOT be re-included when get_pending is called at epoch N+1.
+    /// This is the critical cross-epoch replay case.
+    #[test]
+    fn test_cross_epoch_replay_prevented() {
+        let miner_a = [5u8; 32];
+        let mut cache = CheckinCache::default();
+        cache.insert(make_witness(miner_a, 100)); // cached under epoch 100
+
+        let mut state = WorldState::default();
+        // Miner was credited to block_epoch=100 (via produce_block writing current_epoch)
+        state.miners.insert(miner_a, make_miner(miner_a, 100));
+
+        // Now at epoch 101, get_pending queries [101, 100].
+        // The epoch-100 entry has last_checkin_epoch=100 >= 100 → excluded.
+        let pending = cache.get_pending(101, &state, true);
+        assert_eq!(pending.len(), 0, "epoch-100 witness must not replay at epoch 101");
+    }
+
+    /// Replay prevention: witness credited to block_epoch N+1 (via previous-epoch inclusion),
+    /// must NOT be re-included at epoch N+2.
+    #[test]
+    fn test_cross_epoch_replay_after_prev_epoch_credit() {
+        let miner_a = [6u8; 32];
+        let mut cache = CheckinCache::default();
+        cache.insert(make_witness(miner_a, 99)); // cached under epoch 99
+
+        let mut state = WorldState::default();
+        // Miner was credited to block_epoch=100 (previous-epoch witness included at epoch 100)
+        state.miners.insert(miner_a, make_miner(miner_a, 100));
+
+        // At epoch 101, queries [101, 100]. Epoch 99 entry already GC'd (gc keeps current-1=100).
+        // But even if it weren't: last_checkin_epoch=100 >= 99 → excluded.
+        let pending = cache.get_pending(101, &state, true);
+        assert_eq!(pending.len(), 0, "prev-epoch credited witness must not replay");
     }
 }

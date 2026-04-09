@@ -282,7 +282,7 @@ impl P2pNetwork {
             .gossipsub
             .publish(self.checkin_topic.clone(), bytes)
         {
-            tracing::debug!(error=%e, "Failed to publish miner checkin (no peers yet)");
+            tracing::warn!(error=%e, "Failed to publish miner checkin to gossipsub");
         }
     }
 

@@ -391,6 +391,15 @@ pub const CHECKIN_V3_HEIGHT: u64 = 280_500;
 const _: () = assert!(CHECKIN_V3_HEIGHT % MINER_EPOCH_LENGTH == 0, "CHECKIN_V3_HEIGHT must be a multiple of MINER_EPOCH_LENGTH");
 const _: () = assert!(CHECKIN_V3_HEIGHT > HEARTBEAT_V2_HEIGHT, "CHECKIN_V3_HEIGHT must be after HEARTBEAT_V2_HEIGHT");
 
+/// Block height at which Checkin V3.1 activates (relaxed epoch validation).
+/// Before: witnesses must have w.epoch == current_epoch (strict).
+/// After: witnesses may have w.epoch == current_epoch OR current_epoch - 1.
+/// State writes use block_epoch (not w.epoch) so settlement is unaffected.
+/// MUST be after CHECKIN_V3_HEIGHT.
+pub const CHECKIN_V3_1_HEIGHT: u64 = 384_500;
+
+const _: () = assert!(CHECKIN_V3_1_HEIGHT > CHECKIN_V3_HEIGHT, "CHECKIN_V3_1_HEIGHT must be after CHECKIN_V3_HEIGHT");
+
 /// Uptime tier multiplier (out of 100) based on epoch attendance count.
 pub fn miner_uptime_multiplier(attendance_count: u32) -> u128 {
     match attendance_count {

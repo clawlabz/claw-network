@@ -204,6 +204,9 @@ mod tests {
             halt_height: None,
             halt_message: None,
             updated_at: "2026-04-03T00:00:00Z".to_string(),
+            plugin_latest: None,
+            plugin_minimum: None,
+            plugin_changelog: None,
         };
         assert_eq!(check_version("0.4.19", &manifest, None), UpgradeLevel::Critical);
         assert_eq!(check_version("0.5.0", &manifest, None), UpgradeLevel::UpToDate);
@@ -221,6 +224,9 @@ mod tests {
             halt_height: Some(300000),
             halt_message: Some("Halt at 300000".to_string()),
             updated_at: "2026-04-03T00:00:00Z".to_string(),
+            plugin_latest: None,
+            plugin_minimum: None,
+            plugin_changelog: None,
         };
         assert_eq!(check_version("0.4.19", &manifest, Some(250000)), UpgradeLevel::Recommended);
         assert_eq!(check_version("0.4.19", &manifest, Some(300000)), UpgradeLevel::Critical);
@@ -239,6 +245,9 @@ mod tests {
             halt_height: None,
             halt_message: None,
             updated_at: "2026-04-03T00:00:00Z".to_string(),
+            plugin_latest: None,
+            plugin_minimum: None,
+            plugin_changelog: None,
         };
         assert_eq!(check_version("0.4.18", &manifest, None), UpgradeLevel::Required);
     }
