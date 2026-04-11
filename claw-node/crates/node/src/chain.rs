@@ -1461,12 +1461,44 @@ impl Chain {
                     }
                 }
                 NetworkEvent::SyncRequest { peer, request, channel, .. } => {
-                    let response = self.handle_sync_request(&request);
-                    tracing::debug!(?peer, "Sync request handled, sending response");
-                    let _ = command_tx.send(P2pCommand::SendSyncResponse {
-                        channel,
-                        response,
-                    });
+                    match request {
+                        SyncRequest::PushMinerCheckin(witness) => {
+                            // Handle checkin push fallback (same logic as gossip MinerCheckin)
+                            let mut inner = self.inner.lock().expect("chain state mutex poisoned");
+                            if inner.state.block_height >= CHECKIN_V3_HEIGHT {
+                                match Self::validate_checkin_witness(&witness, &inner) {
+                                    Ok(()) => {
+                                        tracing::debug!(
+                                            miner = hex::encode(&witness.miner[..4]),
+                                            epoch = witness.epoch,
+                                            "Direct-push checkin accepted into cache"
+                                        );
+                                        inner.checkin_cache.insert(witness);
+                                    }
+                                    Err(reason) => {
+                                        tracing::warn!(
+                                            miner = hex::encode(&witness.miner[..4]),
+                                            reason = %reason,
+                                            "Direct-push checkin rejected"
+                                        );
+                                    }
+                                }
+                            }
+                            drop(inner);
+                            let _ = command_tx.send(P2pCommand::SendSyncResponse {
+                                channel,
+                                response: SyncResponse::CheckinAccepted,
+                            });
+                        }
+                        other => {
+                            let response = self.handle_sync_request(&other);
+                            tracing::debug!(?peer, "Sync request handled, sending response");
+                            let _ = command_tx.send(P2pCommand::SendSyncResponse {
+                                channel,
+                                response,
+                            });
+                        }
+                    }
                 }
                 NetworkEvent::SyncResponse { peer, response } => {
                     if let Some(follow_up) = self.handle_sync_response(&response) {
@@ -1555,6 +1587,10 @@ impl Chain {
             SyncRequest::GetStatus => SyncResponse::Status {
                 height: inner.latest_block.height,
             },
+            SyncRequest::PushMinerCheckin(_) => {
+                // Handled in event loop, not here. Return ACK.
+                SyncResponse::CheckinAccepted
+            }
             SyncRequest::GetStateSnapshot => {
                 match inner.store.get_state_snapshot() {
                     Ok(Some(state_data)) => {
@@ -1857,6 +1893,10 @@ impl Chain {
                         Some(SyncRequest::GetStatus)
                     }
                 }
+            }
+            SyncResponse::CheckinAccepted => {
+                // Pure ACK for PushMinerCheckin — no follow-up sync needed.
+                None
             }
         }
     }

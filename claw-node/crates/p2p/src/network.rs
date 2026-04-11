@@ -270,19 +270,54 @@ impl P2pNetwork {
     }
 
     /// Broadcast a miner checkin witness (V3).
+    /// Falls back to request-response direct push if gossipsub publish fails.
     pub fn broadcast_checkin(&mut self, witness: &claw_types::state::MinerCheckinWitness) {
+        // Fix 4: diagnostic logging before publish
+        let checkin_hash = self.checkin_topic.hash();
+        let topic_peer_count = self.swarm.behaviour()
+            .gossipsub.all_peers()
+            .filter(|(_, topics)| topics.contains(&&checkin_hash))
+            .count();
+        let mesh_count = self.swarm.behaviour()
+            .gossipsub.mesh_peers(&checkin_hash).count();
+        let tcp_connected = self.swarm.connected_peers().count();
+        tracing::debug!(
+            topic_peers = topic_peer_count,
+            mesh_peers = mesh_count,
+            tcp_connected = tcp_connected,
+            mdns_peers = self.peers.len(),
+            "Attempting checkin publish"
+        );
+
         let msg = GossipMessage::MinerCheckin(witness.clone());
         let bytes = borsh::to_vec(&msg).expect("serialize gossip msg");
         if bytes.len() > protocol::MAX_P2P_MESSAGE_SIZE {
             return;
         }
-        if let Err(e) = self
+        match self
             .swarm
             .behaviour_mut()
             .gossipsub
             .publish(self.checkin_topic.clone(), bytes)
         {
-            tracing::warn!(error=%e, "Failed to publish miner checkin to gossipsub");
+            Ok(_) => {
+                tracing::debug!("Checkin published via gossipsub");
+            }
+            Err(e) => {
+                // Fix 1b: fallback to request-response direct push
+                let tcp_peers: Vec<PeerId> = self.swarm.connected_peers().copied().collect();
+                tracing::warn!(
+                    error=%e, tcp_connected=tcp_peers.len(),
+                    "Gossipsub publish failed, falling back to direct push"
+                );
+                for peer_id in &tcp_peers {
+                    let req = SyncRequest::PushMinerCheckin(witness.clone());
+                    let req_bytes = borsh::to_vec(&req).expect("serialize sync request");
+                    self.swarm.behaviour_mut().request_response
+                        .send_request(peer_id, req_bytes);
+                    tracing::info!(%peer_id, "Checkin pushed via request-response fallback");
+                }
+            }
         }
     }
 
@@ -339,6 +374,25 @@ impl P2pNetwork {
                         if should_redial_bootstrap(addr, &self.peers) {
                             tracing::debug!(%addr, "Redialing disconnected bootstrap peer");
                             let _ = self.swarm.dial(addr.clone());
+                        }
+                    }
+
+                    // Fix 3: If TCP-connected but no peers subscribed to checkin topic,
+                    // re-subscribe to trigger fresh subscription exchange with connected peers.
+                    let tcp_count = self.swarm.connected_peers().count();
+                    if tcp_count > 0 {
+                        let checkin_hash = self.checkin_topic.hash();
+                        let has_topic_peers = self.swarm.behaviour()
+                            .gossipsub.all_peers()
+                            .any(|(_, topics)| topics.contains(&&checkin_hash));
+
+                        if !has_topic_peers {
+                            tracing::warn!(
+                                tcp_connected = tcp_count,
+                                "No peers subscribed to checkin topic, re-subscribing to trigger exchange"
+                            );
+                            let _ = self.swarm.behaviour_mut().gossipsub.unsubscribe(&self.checkin_topic);
+                            let _ = self.swarm.behaviour_mut().gossipsub.subscribe(&self.checkin_topic);
                         }
                     }
                 }

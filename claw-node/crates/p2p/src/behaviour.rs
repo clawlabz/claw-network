@@ -102,6 +102,13 @@ impl ClawBehaviour {
             .heartbeat_interval(Duration::from_secs(1))
             .validation_mode(gossipsub::ValidationMode::Strict)
             .max_transmit_size(MAX_P2P_MESSAGE_SIZE)
+            // Tuned for small networks (<10 nodes).
+            // Defaults (mesh_n=6, mesh_n_low=4) cause excessive GRAFT churn
+            // when fewer than 4 peers are available per topic.
+            .mesh_n(3)
+            .mesh_n_low(1)
+            .mesh_n_high(6)
+            .mesh_outbound_min(1)
             .build()
             .map_err(|e| format!("gossipsub config: {e}"))?;
 
