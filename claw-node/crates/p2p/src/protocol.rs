@@ -102,15 +102,34 @@ pub enum SyncResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use borsh::BorshSerialize;
+    use borsh::{BorshDeserialize, BorshSerialize};
 
-    /// Verify that old nodes (3-variant SyncRequest) reject the new PushMinerCheckin
-    /// variant with Err rather than panic. Borsh encodes enum variants by index;
-    /// index 3 is unknown to old code → try_from_slice returns Err.
+    /// Old SyncRequest enum (v0.5.7) — 3 variants only.
+    /// Used to verify that old nodes reject new variant index 3 with Err, not panic.
+    #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+    enum SyncRequestV057 {
+        GetBlocks { from_height: u64, count: u32 },
+        GetStatus,
+        GetStateSnapshot,
+    }
+
+    /// Old SyncResponse enum (v0.5.7) — 3 variants only.
+    #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+    enum SyncResponseV057 {
+        Blocks(Vec<Block>),
+        Status { height: u64 },
+        StateSnapshot {
+            height: u64,
+            state_root: [u8; 32],
+            state_data: Vec<u8>,
+            latest_block: Block,
+            genesis_hash: [u8; 32],
+        },
+    }
+
     #[test]
-    fn borsh_sync_request_backward_compat() {
-        // PushMinerCheckin is variant index 3 — build raw bytes manually
-        // to simulate what old code would receive
+    fn old_sync_request_rejects_new_push_miner_checkin() {
+        // Serialize the NEW variant (index 3)
         let witness = MinerCheckinWitness {
             miner: [0u8; 32],
             epoch: 100,
@@ -118,30 +137,41 @@ mod tests {
             ref_block_height: 1000,
             signature: [0u8; 64],
         };
-        let req = SyncRequest::PushMinerCheckin(witness);
-        let bytes = borsh::to_vec(&req).unwrap();
+        let new_bytes = borsh::to_vec(&SyncRequest::PushMinerCheckin(witness)).unwrap();
+        assert_eq!(new_bytes[0], 3, "PushMinerCheckin should be variant index 3");
 
-        // Old enum would have indices 0-2; index 3 should fail gracefully
-        // (borsh returns Err for unknown variant, not panic)
-        assert!(bytes[0] == 3, "PushMinerCheckin should be variant index 3");
-        // Truncate to simulate old-version deserialization attempt:
-        // a 3-variant enum rejects variant index >= 3
-        // We verify the current code can round-trip it
-        let roundtrip = SyncRequest::try_from_slice(&bytes);
-        assert!(roundtrip.is_ok(), "Current code must deserialize its own variant");
+        // Old enum (3 variants) must reject index 3 with Err, not panic
+        let old_result = SyncRequestV057::try_from_slice(&new_bytes);
+        assert!(old_result.is_err(), "Old SyncRequest must reject unknown variant 3");
+
+        // New enum must round-trip successfully
+        let new_result = SyncRequest::try_from_slice(&new_bytes);
+        assert!(new_result.is_ok(), "New SyncRequest must deserialize its own variant");
     }
 
-    /// Verify that old nodes (3-variant SyncResponse) reject CheckinAccepted
-    /// with Err rather than panic.
     #[test]
-    fn borsh_sync_response_backward_compat() {
-        let resp = SyncResponse::CheckinAccepted;
-        let bytes = borsh::to_vec(&resp).unwrap();
+    fn old_sync_response_rejects_new_checkin_accepted() {
+        // Serialize the NEW variant (index 3)
+        let new_bytes = borsh::to_vec(&SyncResponse::CheckinAccepted).unwrap();
+        assert_eq!(new_bytes[0], 3, "CheckinAccepted should be variant index 3");
 
-        // CheckinAccepted is variant index 3 (after Blocks=0, Status=1, StateSnapshot=2)
-        assert!(bytes[0] == 3, "CheckinAccepted should be variant index 3");
-        // Round-trip with current code
-        let roundtrip = SyncResponse::try_from_slice(&bytes);
-        assert!(roundtrip.is_ok(), "Current code must deserialize its own variant");
+        // Old enum (3 variants) must reject index 3 with Err, not panic
+        let old_result = SyncResponseV057::try_from_slice(&new_bytes);
+        assert!(old_result.is_err(), "Old SyncResponse must reject unknown variant 3");
+
+        // New enum must round-trip successfully
+        let new_result = SyncResponse::try_from_slice(&new_bytes);
+        assert!(new_result.is_ok(), "New SyncResponse must deserialize its own variant");
+    }
+
+    #[test]
+    fn old_variants_still_round_trip_with_new_enum() {
+        // Old GetStatus serialized → new enum can still deserialize
+        let old_bytes = borsh::to_vec(&SyncRequestV057::GetStatus).unwrap();
+        assert!(SyncRequest::try_from_slice(&old_bytes).is_ok());
+
+        // Old Status response serialized → new enum can still deserialize
+        let old_resp = borsh::to_vec(&SyncResponseV057::Status { height: 42 }).unwrap();
+        assert!(SyncResponse::try_from_slice(&old_resp).is_ok());
     }
 }
